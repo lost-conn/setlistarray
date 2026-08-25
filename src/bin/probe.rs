@@ -14,6 +14,10 @@
 //!
 //! `cargo run --release --bin probe`
 
+// Same rsx! lint artifact as main.rs: bindings used inside generated closures
+// are reported as unused.
+#![allow(unused_variables)]
+
 use rinch::prelude::*;
 
 /// The library's attachment thumb, reduced: a block box whose only content is
