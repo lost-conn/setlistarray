@@ -5,9 +5,9 @@ use rinch::prelude::*;
 use rinch_tabler_icons::TablerIcon;
 
 use crate::model::{AttachmentKind, Song};
+use crate::derive::{GROUP_PREVIEW, visible_songs};
 use crate::store::{
-    AttachmentsStore, Density, GROUP_PREVIEW, LibraryViewStore, NavStore, Route, SettingsStore,
-    SongsStore,
+    AttachmentsStore, Density, LibraryViewStore, NavStore, Route, SettingsStore, SongsStore,
 };
 use crate::theme::{SCREEN_PAD, T_META, T_META_SMALL, T_SCREEN_TITLE};
 use crate::ui::{Chip, GroupHeader, IconButton, SongRow, icon};
@@ -163,15 +163,6 @@ pub fn Library() -> NodeHandle {
     }
 }
 
-/// Per-group truncation: a preview until the user asks for the rest.
-fn visible_songs(view: LibraryViewStore, label: &str, songs: &[Song]) -> Vec<Song> {
-    if view.is_expanded(label) || songs.len() <= GROUP_PREVIEW {
-        songs.to_vec()
-    } else {
-        songs[..GROUP_PREVIEW].to_vec()
-    }
-}
-
 /// The rows one group shows, recomputed from the stores. Takes only `Copy`
 /// arguments so it can be called from inside a reactive closure.
 fn songs_in_group(
@@ -181,7 +172,7 @@ fn songs_in_group(
     index: usize,
 ) -> Vec<Song> {
     match view.grouped(songs.songs.get()).into_iter().nth(index) {
-        Some(group) => visible_songs(view, &group.label, &group.songs),
+        Some(group) => visible_songs(&group.songs, view.is_expanded(&group.label)),
         None => Vec::new(),
     }
 }

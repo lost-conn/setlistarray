@@ -16,9 +16,7 @@ mod setlists;
 mod songs;
 
 pub use attachments::AttachmentsStore;
-pub use library_view::{
-    Density, GROUP_PREVIEW, Group, GroupBy, LibraryViewStore, SortDir, SortField,
-};
+pub use library_view::{Density, Group, GroupBy, LibraryViewStore, SortDir, SortField};
 pub use nav::{NavStore, Route, Tab};
 pub use playback::PlaybackStore;
 pub use settings::{AccentChoice, PerformanceTheme, SettingsStore};

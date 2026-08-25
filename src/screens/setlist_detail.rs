@@ -4,6 +4,7 @@
 use rinch::prelude::*;
 use rinch_tabler_icons::TablerIcon;
 
+use crate::derive::{cumulative_starts, prep_facts, total_runtime};
 use crate::model::{SetlistId, Song, fmt_duration};
 use crate::store::{NavStore, PlaybackStore, Route, SetlistsStore, SongsStore};
 use crate::theme::{SCREEN_PAD, T_META, T_META_SMALL, T_SECTION_CAPS, T_SETLIST_TITLE};
@@ -29,7 +30,7 @@ pub fn SetlistDetail(id: Option<SetlistId>) -> NodeHandle {
         .iter()
         .filter_map(|sid| songs.get(*sid))
         .collect();
-    let total: u32 = ordered.iter().filter_map(|s| s.duration).sum();
+    let total = total_runtime(&ordered);
     let prep = prep_facts(&ordered);
     let header_meta = {
         let mut parts = vec![format!("{} songs", ordered.len()), fmt_duration(total)];
@@ -39,16 +40,12 @@ pub fn SetlistDetail(id: Option<SetlistId>) -> NodeHandle {
         parts.join(" · ")
     };
 
-    // Cumulative start times, computed alongside the rows.
-    let mut running = 0u32;
+    // The running clock a musician reads down to see where they'll be.
+    let starts = cumulative_starts(&ordered);
     let rows: Vec<(usize, Song, u32)> = ordered
         .iter()
         .enumerate()
-        .map(|(i, song)| {
-            let start = running;
-            running += song.duration.unwrap_or(0);
-            (i, song.clone(), start)
-        })
+        .map(|(i, song)| (i, song.clone(), starts[i]))
         .collect();
 
     rsx! {
@@ -149,37 +146,4 @@ pub fn SetlistDetail(id: Option<SetlistId>) -> NodeHandle {
             }
         }
     }
-}
-
-/// The prep facts: which tunings the set needs, how many songs want a capo,
-/// and whether everything is available offline.
-fn prep_facts(songs: &[Song]) -> String {
-    let mut tunings: Vec<String> = Vec::new();
-    for song in songs {
-        if let Some(t) = &song.tuning
-            && !tunings.contains(t)
-        {
-            tunings.push(t.clone());
-        }
-    }
-    let capos = songs.iter().filter(|s| s.capo.is_some()).count();
-    let missing = songs.iter().filter(|s| !s.has_chart()).count();
-
-    let mut sentences = Vec::new();
-    match tunings.len() {
-        0 => {}
-        1 => sentences.push(format!("Everything is in {}.", tunings[0])),
-        _ => sentences.push(format!("You'll need {}.", tunings.join(" and "))),
-    }
-    match capos {
-        0 => {}
-        1 => sentences.push("One song wants a capo.".to_string()),
-        n => sentences.push(format!("{n} songs want a capo.")),
-    }
-    match missing {
-        0 => sentences.push("Every chart is on this phone and works with no signal.".to_string()),
-        1 => sentences.push("One song has no chart attached.".to_string()),
-        n => sentences.push(format!("{n} songs have no chart attached.")),
-    }
-    sentences.join(" ")
 }

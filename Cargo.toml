@@ -4,21 +4,25 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-# Pinned to a commit rather than a local path: the app should not depend on the
-# state of a sibling working tree.
+# TEMPORARY, and the one place this project depends on a working tree.
 #
-# NOT on current main. Between d25f646 (2026-03-17) and 1f16bed (2026-08-24) a
-# paint regression landed: nodes keep their layout boxes but are never drawn —
-# the library row loses its thumb, meta line and hairline. See "The paint
-# regression" in the README. Move the pin forward once that is fixed.
-rinch = { git = "https://github.com/joeleaver/rinch.git", rev = "d25f646", default-features = false, features = [
+# `local/both-fixes` in that checkout is main plus the two branches under review
+# upstream — joeleaver/rinch#245 (paint) and #246 (viewport scale). Developing
+# against them beats developing against the old d25f646 pin, which renders
+# correctly but predates five months of the framework.
+#
+# When both PRs merge, card A1/A2: replace these two lines with
+#   rinch = { git = "https://github.com/joeleaver/rinch.git", rev = "<merged>", … }
+#   rinch-tabler-icons = { git = "https://github.com/joeleaver/rinch.git", rev = "<merged>" }
+# and delete src/bin/probe.rs.
+rinch = { path = "../rinch-fixes/crates/rinch", default-features = false, features = [
     "desktop",
     "components",
     "theme",
 ] }
 # Not re-exported by the rinch prelude, but ActionIcon's `icon` prop needs the type
 # and the handoff calls for Tabler icons throughout.
-rinch-tabler-icons = { git = "https://github.com/joeleaver/rinch.git", rev = "d25f646" }
+rinch-tabler-icons = { path = "../rinch-fixes/crates/rinch-tabler-icons" }
 
 [features]
 # Rinch's debug IPC server: DOM dumps, computed styles, screenshots, synthetic

@@ -209,3 +209,85 @@ pub struct Setlist {
     pub song_ids: Vec<SongId>,
     pub last_played: Option<Day>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn durations_read_as_minutes_and_seconds() {
+        assert_eq!(fmt_duration(0), "0:00");
+        assert_eq!(fmt_duration(9), "0:09");
+        assert_eq!(fmt_duration(224), "3:44");
+        assert_eq!(fmt_duration(3600), "60:00");
+    }
+
+    #[test]
+    fn a_meta_line_holds_only_the_fields_that_exist() {
+        let mut song = Song::new(1, "Carolina", "M. Ward");
+        assert_eq!(song.meta_line(), "M. Ward");
+
+        song.key = Some("G".into());
+        assert_eq!(song.meta_line(), "M. Ward · G");
+
+        song.tempo = Some(96);
+        assert_eq!(song.meta_line(), "M. Ward · G · 96 bpm");
+    }
+
+    #[test]
+    fn a_tempo_with_no_key_still_reads_cleanly() {
+        let mut song = Song::new(1, "Carolina", "M. Ward");
+        song.tempo = Some(96);
+        assert_eq!(song.meta_line(), "M. Ward · 96 bpm");
+    }
+
+    #[test]
+    fn the_played_variant_falls_back_when_nothing_was_played() {
+        let mut song = Song::new(1, "Carolina", "M. Ward");
+        song.key = Some("G".into());
+        assert_eq!(song.meta_line_played(), song.meta_line());
+
+        song.last_played = Some(Day::new(2026, 3, 14));
+        assert_eq!(song.meta_line_played(), "M. Ward · played March");
+    }
+
+    #[test]
+    fn days_render_short_and_long() {
+        let day = Day::new(2026, 6, 2);
+        assert_eq!(day.short(), "Jun 2");
+        assert_eq!(day.month_long(), "June");
+    }
+
+    #[test]
+    fn days_order_by_calendar() {
+        assert!(Day::new(2026, 8, 14) > Day::new(2026, 3, 2));
+        assert!(Day::new(2026, 3, 2) > Day::new(2025, 12, 31));
+    }
+
+    #[test]
+    fn confidence_fills_dots_and_dims_anything_shaky() {
+        assert_eq!(Confidence::Solid.dots(), 3);
+        assert_eq!(Confidence::Rusty.dots(), 2);
+        assert_eq!(Confidence::Learning.dots(), 1);
+        assert_eq!(Confidence::Solid.dot_color(), "var(--sla-accent)");
+        assert_eq!(Confidence::Rusty.dot_color(), "var(--sla-accent-dim)");
+        assert_eq!(Confidence::Learning.dot_color(), "var(--sla-accent-dim)");
+    }
+
+    #[test]
+    fn a_song_has_a_chart_only_once_something_is_attached() {
+        let mut song = Song::new(1, "Carolina", "M. Ward");
+        assert!(!song.has_chart());
+        song.attachments.push(101);
+        assert!(song.has_chart());
+    }
+
+    #[test]
+    fn attachment_kinds_carry_their_badge_and_descriptor() {
+        assert_eq!(AttachmentKind::Pdf.badge(), "PDF");
+        assert_eq!(AttachmentKind::CapturedPage.badge(), "WEB");
+        assert_eq!(AttachmentKind::Text.badge(), "TXT");
+        assert_eq!(AttachmentKind::CapturedPage.descriptor(), "saved page");
+        assert_eq!(AttachmentKind::Text.descriptor(), "typed");
+    }
+}

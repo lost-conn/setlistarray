@@ -1,6 +1,6 @@
 use rinch::prelude::*;
 
-use crate::model::{Confidence, Song};
+use crate::model::Song;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GroupBy {
@@ -176,9 +176,6 @@ pub struct LibraryViewStore {
     pub expanded: Signal<Vec<String>>,
 }
 
-/// How many rows a group shows before "Show N more".
-pub const GROUP_PREVIEW: usize = 6;
-
 impl LibraryViewStore {
     pub fn new() -> Self {
         Self {
@@ -235,131 +232,22 @@ impl LibraryViewStore {
         });
     }
 
-    /// The library list, grouped and sorted. Derived on read — nothing here
-    /// is stored.
+    /// The library list, grouped and sorted. Derived on read — the rules live
+    /// in [`crate::derive`] as plain functions so they can be tested without a
+    /// window.
     pub fn grouped(self, all: Vec<Song>) -> Vec<Group> {
-        let query = self.query.get().trim().to_lowercase();
-        let matching: Vec<Song> = all
-            .into_iter()
-            .filter(|s| {
-                query.is_empty()
-                    || s.title.to_lowercase().contains(&query)
-                    || s.artist.to_lowercase().contains(&query)
-                    || s.tags.iter().any(|t| t.to_lowercase().contains(&query))
-            })
-            .collect();
-
-        let mut groups = match self.group_by.get() {
-            GroupBy::Confidence => bucket_by_confidence(matching),
-            GroupBy::FirstLetter => bucket_by(matching, |s| {
-                s.title
-                    .chars()
-                    .next()
-                    .map(|c| c.to_ascii_uppercase().to_string())
-                    .unwrap_or_else(|| "#".into())
-            }),
-            GroupBy::Artist => bucket_by(matching, |s| s.artist.clone()),
-            GroupBy::Tuning => bucket_by(matching, |s| {
-                s.tuning.clone().unwrap_or_else(|| "No tuning set".into())
-            }),
-            GroupBy::Tag => bucket_by(matching, |s| {
-                s.tags.first().cloned().unwrap_or_else(|| "Untagged".into())
-            }),
-            GroupBy::None => vec![Group {
-                label: "All songs".into(),
-                songs: matching,
-            }],
-        };
-
-        let field = self.sort_field.get();
-        let dir = self.sort_dir.get();
-        for group in &mut groups {
-            sort_songs(&mut group.songs, field, dir);
-        }
-        groups
+        crate::derive::grouped(
+            all,
+            &self.query.get(),
+            self.group_by.get(),
+            self.sort_field.get(),
+            self.sort_dir.get(),
+        )
     }
 }
 
 impl Default for LibraryViewStore {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-/// Groups in the fixed order Solid · Rusty · Learning · Unrated. Empty groups
-/// are dropped.
-fn bucket_by_confidence(songs: Vec<Song>) -> Vec<Group> {
-    let order = [
-        (Some(Confidence::Solid), "Solid"),
-        (Some(Confidence::Rusty), "Rusty"),
-        (Some(Confidence::Learning), "Learning"),
-        (None, "Unrated"),
-    ];
-    order
-        .into_iter()
-        .filter_map(|(confidence, label)| {
-            let songs: Vec<Song> = songs
-                .iter()
-                .filter(|s| s.confidence == confidence)
-                .cloned()
-                .collect();
-            (!songs.is_empty()).then(|| Group {
-                label: label.into(),
-                songs,
-            })
-        })
-        .collect()
-}
-
-fn bucket_by(songs: Vec<Song>, key: impl Fn(&Song) -> String) -> Vec<Group> {
-    let mut groups: Vec<Group> = Vec::new();
-    for song in songs {
-        let label = key(&song);
-        match groups.iter_mut().find(|g| g.label == label) {
-            Some(group) => group.songs.push(song),
-            None => groups.push(Group {
-                label,
-                songs: vec![song],
-            }),
-        }
-    }
-    groups.sort_by(|a, b| a.label.cmp(&b.label));
-    groups
-}
-
-fn sort_songs(songs: &mut [Song], field: SortField, dir: SortDir) {
-    songs.sort_by(|a, b| {
-        // Missing-field songs go last regardless of direction.
-        match (field.is_present(a), field.is_present(b)) {
-            (true, false) => return std::cmp::Ordering::Less,
-            (false, true) => return std::cmp::Ordering::Greater,
-            _ => {}
-        }
-        let ordering = match field {
-            SortField::Artist => a.artist.to_lowercase().cmp(&b.artist.to_lowercase()),
-            SortField::Title => a.title.to_lowercase().cmp(&b.title.to_lowercase()),
-            SortField::Confidence => confidence_rank(a).cmp(&confidence_rank(b)),
-            // "newest first" is the ascending reading of a date field.
-            SortField::LastPlayed => b.last_played.cmp(&a.last_played),
-            SortField::DateAdded => b.created_at.cmp(&a.created_at),
-            SortField::Key => a.key.cmp(&b.key),
-            SortField::Tempo => a.tempo.cmp(&b.tempo),
-            SortField::Duration => a.duration.cmp(&b.duration),
-            SortField::Capo => a.capo.cmp(&b.capo),
-            SortField::Tuning => a.tuning.cmp(&b.tuning),
-        };
-        match dir {
-            SortDir::Asc => ordering,
-            SortDir::Desc => ordering.reverse(),
-        }
-    });
-}
-
-fn confidence_rank(song: &Song) -> u8 {
-    match song.confidence {
-        Some(Confidence::Solid) => 0,
-        Some(Confidence::Rusty) => 1,
-        Some(Confidence::Learning) => 2,
-        None => 3,
     }
 }
