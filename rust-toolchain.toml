@@ -1,2 +1,10 @@
+# Stable, not nightly.
+#
+# Rinch's docs ask for nightly, but current main plus this app builds and tests
+# clean on stable — and the Android targets have to be installed against
+# whatever toolchain cargo-ndk uses, so pinning a nightly means keeping android
+# std in step with it. Flip back if a rinch update starts needing an unstable
+# feature.
 [toolchain]
-channel = "nightly"
+channel = "stable"
+targets = ["aarch64-linux-android", "x86_64-linux-android"]

@@ -57,18 +57,20 @@ Two more crates change earlier assumptions:
 | No wallpaper colours | Material You accent extraction, per the handoff's resolution order | `WallpaperManager.getWallpaperColors()` over JNI; until then `AccentChoice::FromSystem` falls back to Rust, which the handoff explicitly allows |
 | Status bar space is hard-coded 44px | `src/main.rs` reserves it as a fixed strip | Use `display::safe_area_insets()` / `density_dpi()` as `hello-android` does |
 
-### 2. Where the data lives
+### 2. Where the data lives — settled: SQLite
 
-The handoff says "local files/SQLite". Two shapes:
+`rusqlite` with the `bundled` feature, one database file plus an attachments
+directory. The open question was whether its C would cross-compile to Android;
+card K6 proved it does:
 
-- **SQLite (recommended)** — `rusqlite` with the bundled feature, one file plus
-  an attachments directory. Real queries for the search screen, a migration
-  path, and full-text search over captured pages comes free with FTS5.
-- **One JSON document** — simpler, no C dependency, but "search inside
-  attachments" means loading every capture into memory, and every write
-  rewrites the file.
+- builds clean for `aarch64-linux-android` and `x86_64-linux-android` under
+  cargo-ndk with NDK r27c
+- the linked artefact carries FTS5 (291 fts5 symbols in a forced-export build),
+  so "search inside attachments" (card G2) works the same on both platforms
+- costs about 2 MB of `.so` per ABI
 
-Song counts of ~300 with multi-megabyte captures make SQLite the safer call.
+The alternative — one JSON document — would have meant loading every capture
+into memory to search it, and rewriting the file on every edit.
 
 ### 3. PDF rendering
 
@@ -240,7 +242,7 @@ sit alongside Phase C.
 | K3 | Storage path from `AndroidApp::internal_data_path()`; make the Phase B database and attachments directory take their root from a platform seam rather than a desktop path. | S |
 | K4 | Attachment import through `rinch_android::file_picker::pick_file` + `read_content_uri`; backup export through `save_file`. Same trait the desktop `rfd` path implements. | M |
 | K5 | Keep-awake: contribute `FLAG_KEEP_SCREEN_ON` to `rinch-android`, then wire F4 to it. | M |
-| K6 | Confirm SQLite cross-compiles under cargo-ndk (`rusqlite` bundled needs a C toolchain per ABI); fall back to `rinch-storage` blobs if it fights back. | S? |
+| K6 | ~~Confirm SQLite cross-compiles under cargo-ndk~~ — done, see decision 2. | ✔ |
 | K7 | Text input on device: the typed-lyrics editor and every text field through `RinchInputConnection`/IME. Most likely place for surprises. | M |
 | K8 | Optional upstream contribution: wallpaper colours via `WallpaperManager`, completing the accent resolution order. | M |
 

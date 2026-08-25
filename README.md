@@ -15,8 +15,8 @@ the wireframes (turn 2 wins over turn 1) for flow.
 cargo run --release          # always --release; debug Stylo/Parley is slow
 ```
 
-Requires the Rust nightly toolchain (`rust-toolchain.toml` pins it). Rinch
-comes from git, pinned to a revision — no local checkout needed.
+Requires stable Rust (`rust-toolchain.toml` pins it, along with the two Android
+targets). Rinch's docs ask for nightly; current main does not need it.
 
 **The pin is deliberately not on `main`.** See "The flex regression" below.
 
