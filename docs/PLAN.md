@@ -18,19 +18,44 @@ first, estimate after.
 These change what gets built, not just how. Everything up to Phase B is safe to
 start now.
 
-### 1. Android
+### 1. Android — settled, and better than I first reported
 
-The handoff targets Android. Rinch has no Android backend — `crates/rinch`
-ships desktop (winit + software/GPU renderer) and wasm32, and `rinch-web`
-renders through real browser DOM. Three ways out:
+Rinch **does** have an Android backend. My earlier "desktop and wasm only" came
+from grepping the March revision the app is pinned to; it landed after that.
+On current `main`:
 
-| Option | What it means | Cost |
+- `crates/rinch-android` — a JNI bridge (~1,300 lines) over Java companion
+  classes (`RinchActivity`, `RinchInputView`, `RinchInputConnection`), covering
+  clipboard, IME, file picker (`pick_file` / `save_file` / `read_content_uri`),
+  share, camera, location, sensors, notifications, permissions, and display
+  (`safe_area_insets()`, `density_dpi()`).
+- `crates/rinch/src/shell/android_runtime.rs` — `run(android_app, title, w, h,
+  component)` and `run_with_theme(...)`, mirroring the desktop entry points, on
+  android-activity + softbuffer. Features: `android`, `android-gpu`.
+- `examples/hello-android` — a `cdylib` with an `android_main`, an
+  `AndroidManifest.xml`, and `build-apk.sh`: cargo-ndk → javac → d8 → aapt2 →
+  zipalign → apksigner → adb install. minSdk 28, targetSdk 35.
+
+So the port is: a second `cdylib` target with an `android_main`, a manifest, and
+a build script. The UI code carries over unchanged.
+
+Two more crates change earlier assumptions:
+
+- `rinch-http` — one API over `ureq` natively and `fetch` on wasm. The webpage
+  capture in Phase E should use it rather than taking a direct `ureq` dependency.
+- `rinch-storage` — cross-platform durable key/blob store (atomic filesystem
+  writes natively, IndexedDB on web). Not SQL, so it does not replace SQLite for
+  search, but it is the right seam if cross-compiling SQLite to Android proves
+  annoying.
+
+**Gaps this app will hit** (all small, and all worth contributing upstream):
+
+| Gap | Why we need it | Shape of the fix |
 | --- | --- | --- |
-| **Desktop-shaped now** (recommended) | Keep building in the phone-sized window. Nothing in the UI assumes a desktop, so the screens carry over. | none |
-| **WASM + installable PWA** | `rinch-web` mounts the same components in a browser; Android installs it to the home screen. Loses native file pickers and keep-awake; webpage capture must go through browser fetch and CORS. | M, plus ongoing divergence |
-| **Native Android backend for Rinch** | winit supports Android; the renderer, font stack and event loop need porting. | L+, framework work |
-
-The plan below assumes the first. It only bites at Phase K.
+| No keep-awake API | "Keep screen awake while playing" is a Settings toggle and a performance-mode control | `FLAG_KEEP_SCREEN_ON` on the activity window: a Java method plus a JNI wrapper in `rinch-android` |
+| No writable-storage accessor | The database and attachments directory need a path | `AndroidApp::internal_data_path()` from android-activity is already in scope at `android_main`; thread it into the app, or expose it from `rinch-android` |
+| No wallpaper colours | Material You accent extraction, per the handoff's resolution order | `WallpaperManager.getWallpaperColors()` over JNI; until then `AccentChoice::FromSystem` falls back to Rust, which the handoff explicitly allows |
+| Status bar space is hard-coded 44px | `src/main.rs` reserves it as a fixed strip | Use `display::safe_area_insets()` / `density_dpi()` as `hello-android` does |
 
 ### 2. Where the data lives
 
@@ -202,13 +227,22 @@ staying awake.
 
 ---
 
-## Phase K — Packaging
+## Phase K — Android
 
-Blocked on decision 1. Desktop: an AppImage or a `.deb`, fonts bundled rather
-than fontconfig-discovered (they are already vendored in `assets/fonts`).
-Android: whatever decision 1 chose.
+No longer a question mark. Do it early enough that the phone is the reference
+device rather than a port at the end — K1 and K2 are worth pulling forward to
+sit alongside Phase C.
 
----
+| # | Card | Size |
+| --- | --- | --- |
+| K1 | Second crate target: `cdylib` + `android_main` calling `run_android`, an `AndroidManifest.xml` (no camera/location permissions — this app needs none), and a `build-apk.sh` adapted from `hello-android`. Get the library screen onto a device. | M |
+| K2 | Replace the hard-coded 44px status strip with `safe_area_insets()` and `density_dpi()`; check every screen against a notch and the gesture bar. | S |
+| K3 | Storage path from `AndroidApp::internal_data_path()`; make the Phase B database and attachments directory take their root from a platform seam rather than a desktop path. | S |
+| K4 | Attachment import through `rinch_android::file_picker::pick_file` + `read_content_uri`; backup export through `save_file`. Same trait the desktop `rfd` path implements. | M |
+| K5 | Keep-awake: contribute `FLAG_KEEP_SCREEN_ON` to `rinch-android`, then wire F4 to it. | M |
+| K6 | Confirm SQLite cross-compiles under cargo-ndk (`rusqlite` bundled needs a C toolchain per ABI); fall back to `rinch-storage` blobs if it fights back. | S? |
+| K7 | Text input on device: the typed-lyrics editor and every text field through `RinchInputConnection`/IME. Most likely place for surprises. | M |
+| K8 | Optional upstream contribution: wallpaper colours via `WallpaperManager`, completing the accent resolution order. | M |
 
 ## Cross-cutting
 
