@@ -4,16 +4,21 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-# Local checkout. Swap for the git dep if you build elsewhere:
-#   rinch = { git = "https://github.com/joeleaver/rinch.git", features = [...] }
-rinch = { path = "../rinch/crates/rinch", default-features = false, features = [
+# Pinned to a commit rather than a local path: the app should not depend on the
+# state of a sibling working tree.
+#
+# NOT on current main. Between d25f646 (2026-03-17) and 1f16bed (2026-08-24) a
+# flex regression landed: in a `display: flex` row, any sibling after a
+# flex-grow child stops rendering. `src/bin/probe.rs` rows 9 and 10 are the
+# minimal repro. Move this forward once that is fixed.
+rinch = { git = "https://github.com/joeleaver/rinch.git", rev = "d25f646", default-features = false, features = [
     "desktop",
     "components",
     "theme",
 ] }
 # Not re-exported by the rinch prelude, but ActionIcon's `icon` prop needs the type
 # and the handoff calls for Tabler icons throughout.
-rinch-tabler-icons = { path = "../rinch/crates/rinch-tabler-icons" }
+rinch-tabler-icons = { git = "https://github.com/joeleaver/rinch.git", rev = "d25f646" }
 
 [profile.dev]
 opt-level = 1

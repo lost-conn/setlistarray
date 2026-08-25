@@ -15,9 +15,10 @@ the wireframes (turn 2 wins over turn 1) for flow.
 cargo run --release          # always --release; debug Stylo/Parley is slow
 ```
 
-Requires the Rust nightly toolchain (`rust-toolchain.toml` pins it) and a
-sibling checkout of Rinch at `../rinch`. Swap the path dependency in
-`Cargo.toml` for the git one to build elsewhere.
+Requires the Rust nightly toolchain (`rust-toolchain.toml` pins it). Rinch
+comes from git, pinned to a revision — no local checkout needed.
+
+**The pin is deliberately not on `main`.** See "The flex regression" below.
 
 The handoff targets Android. Rinch currently ships desktop and wasm backends,
 so this runs in a 393×852 phone-shaped desktop window; nothing in the UI code
@@ -60,6 +61,31 @@ Also outstanding:
 - **Accent from the system.** `AccentChoice::FromSystem` falls back to Rust
   until Rinch exposes the wallpaper colour.
 - **Drag-to-reorder and swipe-to-remove** in setlists.
+
+## The flex regression
+
+The app is pinned to Rinch `d25f646` (2026-03-17), not to `main`. Somewhere in
+the 196 commits between that and `1f16bed` (2026-08-24) — the run of
+flex/IFC/`display:contents` layout fixes — this broke:
+
+> In a `display: flex` row, any sibling **after** a flex-grow child stops
+> rendering.
+
+`src/bin/probe.rs` is the minimal repro; `cargo run --release --bin probe`
+draws ten numbered cases. Rows **9** and **10** are the regression: a fixed
+box, a `flex: 1` middle child, another fixed box — the trailing box never
+appears, with either the `flex: 1` shorthand or the `flex-grow`/`flex-basis`
+longhands. Rows 2 and 7 are the same fault reached through a list row.
+
+On `1f16bed` this costs the app its attachment thumbs, row meta lines,
+confidence dots and row hairlines, because every list row is a flex row with a
+`flex: 1` text block in the middle. On `d25f646` all of it renders.
+
+One thing that only works on `main`: the search field's placeholder text. It
+paints there and does not on the pinned revision.
+
+Move the pin forward once the flex fault is fixed; nothing in the app code
+works around it.
 
 ## Notes for the next person
 
