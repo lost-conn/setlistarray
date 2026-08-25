@@ -1,0 +1,22 @@
+[package]
+name = "setlistarray"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# Local checkout. Swap for the git dep if you build elsewhere:
+#   rinch = { git = "https://github.com/joeleaver/rinch.git", features = [...] }
+rinch = { path = "../rinch/crates/rinch", default-features = false, features = [
+    "desktop",
+    "components",
+    "theme",
+] }
+# Not re-exported by the rinch prelude, but ActionIcon's `icon` prop needs the type
+# and the handoff calls for Tabler icons throughout.
+rinch-tabler-icons = { path = "../rinch/crates/rinch-tabler-icons" }
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
