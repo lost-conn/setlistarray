@@ -1,146 +1,112 @@
-//! Minimal repro harness: a list row shaped like the library's, with a child
-//! component on each side and two text children in the middle.
+//! Layout probe for a Rinch flex fault the app has to live with.
+//!
+//! A `flex: 1` child is not shrunk to the space left over by its siblings; it
+//! takes its content width, so the row overflows its container and anything
+//! after it is laid out past the viewport. Row A is the plain case, B shows it
+//! is not a wrap/overflow-visible question, C is the same children with
+//! nothing after the growing child (fine), D is a percentage width instead of
+//! flex-grow (same fault).
+//!
+//! Present on both d25f646 and 1f16bed, so this is long-standing rather than a
+//! regression. In the app it is why a library row measures 501px inside a
+//! 447px content box and the confidence dots sit off the right edge.
+//!
+//! `cargo run --release --bin probe`
+
+// Same rsx! lint artifact as main.rs: bindings used inside generated closures
+// are reported as unused.
+#![allow(unused_variables)]
 
 use rinch::prelude::*;
 
-/// Background comes from a custom property set on an ancestor.
+/// The library's attachment thumb, reduced: a block box whose only content is
+/// an inline span, behind an `if let`.
 #[component]
-fn VarBadge(label: String) -> NodeHandle {
+fn Thumb(label: String, show: bool) -> NodeHandle {
     rsx! {
         div {
-            style: "width: 38px; height: 38px; background: var(--probe-accent); color: #fff; \
+            style: "width: 38px; height: 38px; background: #c04a24; \
                     display: flex; align-items: center; justify-content: center;",
-            span { {label.clone()} }
+            if show {
+                span { style: "font-size: 9px; color: #ffffff;", {label.clone()} }
+            }
         }
     }
 }
 
+/// The library row, reduced.
 #[component]
-fn Badge(label: String) -> NodeHandle {
+fn Row(title: String, meta: String) -> NodeHandle {
     rsx! {
         div {
-            style: "width: 38px; height: 38px; background: #c04a24; color: #fff; \
-                    display: flex; align-items: center; justify-content: center;",
-            span { {label.clone()} }
-        }
-    }
-}
-
-/// Same shape as the library's attachment thumb: the style comes from a block
-/// expression rather than a literal.
-#[component]
-fn BlockStyled(filled: bool) -> NodeHandle {
-    rsx! {
-        div {
-            style: {
-                match filled {
-                    true => "width: 38px; height: 38px; background: #2f6f4e;".to_string(),
-                    false => "width: 38px; height: 38px; border: 1px dashed #999;".to_string(),
+            style: "display: flex; align-items: center; gap: 13px; padding: 11px 0; \
+                    border-bottom: 2px solid #2f6f4e;",
+            Thumb { label: "TXT", show: true }
+            div { style: "flex: 1; min-width: 0;",
+                div { style: "font-size: 18px;", {title.clone()} }
+                div { style: "font-size: 13px; color: #3d5a9e; margin-top: 2px;", {meta.clone()} }
+            }
+            div { style: "display: flex; gap: 4px; flex-shrink: 0;",
+                for i in 0u8..3 {
+                    div { key: i, style: "width: 6px; height: 6px; background: #7a4c86;" }
                 }
-            },
+            }
         }
     }
 }
+
+const ROW: &str = "display: flex; align-items: center; gap: 12px;";
+const LABEL: &str = "width: 40px; font-size: 12px;";
+const ORANGE: &str = "width: 38px; height: 38px; background: #c04a24;";
+const PURPLE: &str = "width: 38px; height: 38px; background: #7a4c86;";
 
 #[component]
 fn app() -> NodeHandle {
     rsx! {
         div {
             style: "padding: 20px; background: #ffffff; color: #111111; \
-                    display: flex; flex-direction: column; gap: 16px;",
+                    display: flex; flex-direction: column; gap: 18px;",
 
-            // 1: two component siblings, nothing else.
-            div { style: "display: flex; align-items: center; gap: 12px;",
-                div { style: "width: 30px; font-size: 12px;", "1" }
-                Badge { label: "AAA" }
-                Badge { label: "BBB" }
-            }
-
-            // 2: component, plain div, component.
-            div { style: "display: flex; align-items: center; gap: 12px;",
-                div { style: "width: 30px; font-size: 12px;", "2" }
-                Badge { label: "CCC" }
-                div { style: "flex: 1;",
-                    div { style: "font-size: 18px;", "Title line" }
-                    div { style: "font-size: 12px; color: #666666;", {"meta line".to_string()} }
-                }
-                Badge { label: "DDD" }
-            }
-
-            // 3: a component after a plain div.
-            div { style: "display: flex; align-items: center; gap: 12px;",
-                div { style: "width: 30px; font-size: 12px;", "3" }
-                div { style: "font-size: 12px;", "before" }
-                Badge { label: "EEE" }
-            }
-
-            // 4: style from a block expression, filled and dashed.
-            div { style: "display: flex; align-items: center; gap: 12px;",
-                div { style: "width: 30px; font-size: 12px;", "4" }
-                BlockStyled { filled: true }
-                BlockStyled { filled: false }
-            }
-
-            // 6: a custom property set here, read inside a child component
-            // and by a plain div.
-            div {
-                style: "display: flex; align-items: center; gap: 12px; --probe-accent: #3d5a9e;",
-                div { style: "width: 30px; font-size: 12px;", "6" }
-                VarBadge { label: "FFF" }
-                div { style: "font-size: 14px; color: var(--probe-accent);", "var text" }
-            }
-
-            // 7: after a div with element children — a plain div, then a
-            // component wrapped in a plain div.
-            div { style: "display: flex; align-items: center; gap: 12px;",
-                div { style: "width: 30px; font-size: 12px;", "7" }
-                div { style: "flex: 1;",
-                    div { style: "font-size: 18px;", "Title line" }
-                    div { style: "font-size: 12px; color: #666666;", "meta line" }
-                }
-                div { style: "width: 38px; height: 38px; background: #7a4c86;" }
-                div { Badge { label: "GGG" } }
-            }
-
-            // 8: same as 7, but the middle block is an explicit flex column
-            // instead of a block container with block children.
-            div { style: "display: flex; align-items: center; gap: 12px;",
-                div { style: "width: 30px; font-size: 12px;", "8" }
-                div { style: "flex: 1; display: flex; flex-direction: column;",
-                    div { style: "font-size: 18px;", "Title line" }
-                    div { style: "font-size: 12px; color: #666666;", "meta line" }
-                }
-                div { style: "width: 38px; height: 38px; background: #7a4c86;" }
-                Badge { label: "HHH" }
-            }
-
-            // 9: `flex: 1` shorthand on a middle child with no children.
-            div { style: "display: flex; align-items: center; gap: 12px;",
-                div { style: "width: 30px; font-size: 12px;", "9" }
-                div { style: "width: 38px; height: 38px; background: #c04a24;" }
+            // A — fixed, grows, fixed. The purple box never appears.
+            div { style: {ROW},
+                div { style: {LABEL}, "A" }
+                div { style: {ORANGE} }
                 div { style: "flex: 1; font-size: 14px;", "grows" }
-                div { style: "width: 38px; height: 38px; background: #7a4c86;" }
+                div { style: {PURPLE} }
             }
 
-            // 10: the same, written as longhands.
-            div { style: "display: flex; align-items: center; gap: 12px;",
-                div { style: "width: 30px; font-size: 12px;", "10" }
-                div { style: "width: 38px; height: 38px; background: #c04a24;" }
-                div { style: "flex-grow: 1; flex-shrink: 1; flex-basis: 0; font-size: 14px;", "grows" }
-                div { style: "width: 38px; height: 38px; background: #7a4c86;" }
+            // B — the same, wrapping. It does not wrap to a second line.
+            div { style: {format!("{ROW} flex-wrap: wrap;")},
+                div { style: {LABEL}, "B" }
+                div { style: {ORANGE} }
+                div { style: "flex: 1; font-size: 14px;", "grows" }
+                div { style: {PURPLE} }
             }
 
-            // 5: a keyed for loop of plain divs.
-            div { style: "display: flex; align-items: center; gap: 6px;",
-                div { style: "width: 30px; font-size: 12px;", "5" }
-                for i in 0u8..3 {
-                    div { key: i, style: "width: 8px; height: 8px; background: #111111;" }
-                }
+            // C — nothing after the growing child. Fine.
+            div { style: {ROW},
+                div { style: {LABEL}, "C" }
+                div { style: {ORANGE} }
+                div { style: {PURPLE} }
+                div { style: "flex: 1; font-size: 14px;", "grows" }
+            }
+
+            // E — the library row, reduced. On 1f16bed the thumb fill, the
+            // "TXT" badge, the meta line, the border and the dots are all
+            // absent while the title paints; on d25f646 every part draws.
+            Row { title: "Landslide", meta: "Fleetwood Mac · Eb" }
+
+            // D — a percentage width instead of flex-grow. Same fault.
+            div { style: {ROW},
+                div { style: {LABEL}, "D" }
+                div { style: {ORANGE} }
+                div { style: "width: 70%; font-size: 14px;", "70%" }
+                div { style: {PURPLE} }
             }
         }
     }
 }
 
 fn main() {
-    run("probe", 460, 620, app);
+    run("probe", 460, 300, app);
 }

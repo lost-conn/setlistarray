@@ -8,9 +8,9 @@ edition = "2024"
 # state of a sibling working tree.
 #
 # NOT on current main. Between d25f646 (2026-03-17) and 1f16bed (2026-08-24) a
-# flex regression landed: in a `display: flex` row, any sibling after a
-# flex-grow child stops rendering. `src/bin/probe.rs` rows 9 and 10 are the
-# minimal repro. Move this forward once that is fixed.
+# paint regression landed: nodes keep their layout boxes but are never drawn —
+# the library row loses its thumb, meta line and hairline. See "The paint
+# regression" in the README. Move the pin forward once that is fixed.
 rinch = { git = "https://github.com/joeleaver/rinch.git", rev = "d25f646", default-features = false, features = [
     "desktop",
     "components",
@@ -19,6 +19,13 @@ rinch = { git = "https://github.com/joeleaver/rinch.git", rev = "d25f646", defau
 # Not re-exported by the rinch prelude, but ActionIcon's `icon` prop needs the type
 # and the handoff calls for Tabler icons throughout.
 rinch-tabler-icons = { git = "https://github.com/joeleaver/rinch.git", rev = "d25f646" }
+
+[features]
+# Rinch's debug IPC server: DOM dumps, computed styles, screenshots, synthetic
+# input. It listens on a localhost port whenever it is compiled in, so it is
+# off by default and switched on explicitly:
+#   cargo run --release --features devtools
+devtools = ["rinch/debug"]
 
 [profile.dev]
 opt-level = 1

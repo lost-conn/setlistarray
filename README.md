@@ -62,30 +62,55 @@ Also outstanding:
   until Rinch exposes the wallpaper colour.
 - **Drag-to-reorder and swipe-to-remove** in setlists.
 
-## The flex regression
+## The paint regression
 
-The app is pinned to Rinch `d25f646` (2026-03-17), not to `main`. Somewhere in
-the 196 commits between that and `1f16bed` (2026-08-24) — the run of
-flex/IFC/`display:contents` layout fixes — this broke:
+The app is pinned to Rinch `d25f646` (2026-03-17), not to `main` (`1f16bed`,
+2026-08-24). On `main` the library loses its attachment thumbs, row meta lines
+and row hairlines — the confidence dots too, but those are a separate,
+older fault (below).
 
-> In a `display: flex` row, any sibling **after** a flex-grow child stops
-> rendering.
+It is a **paint** problem, not a layout one. Dumping the live DOM through the
+debug IPC (`--features devtools`, then the `dom_tree` command) gives byte-for-byte
+the same tree with the same boxes on both revisions:
 
-`src/bin/probe.rs` is the minimal repro; `cargo run --release --bin probe`
-draws ten numbered cases. Rows **9** and **10** are the regression: a fixed
-box, a `flex: 1` middle child, another fixed box — the trailing box never
-appears, with either the `flex: 1` shorthand or the `flex-grow`/`flex-basis`
-longhands. Rows 2 and 7 are the same fault reached through a list row.
+```
+row   box=(22, 251, 501x66)   style="… border-bottom: 1px solid var(--sla-hairline-soft)"
+thumb box=(22, 264, 38x38)    style="… background: var(--sla-fill)"
+text  box=(73, 262, 411x43)
+title box=(73, 262, 411x22)   -> painted on both
+meta  box=(73, 287, 411x19)   -> painted only on d25f646
+```
 
-On `1f16bed` this costs the app its attachment thumbs, row meta lines,
-confidence dots and row hairlines, because every list row is a flex row with a
-`flex: 1` text block in the middle. On `d25f646` all of it renders.
+Sampling the thumb on a screenshot: `#EFE7DA` (the fill token, painted) on
+`d25f646`, exactly `#FBF7F0` (bare paper) on `1f16bed`.
 
-One thing that only works on `main`: the search field's placeholder text. It
-paints there and does not on the pinned revision.
+`git bisect` over the 196 commits, using "is the first row's thumb painted" as
+the test, lands on:
 
-Move the pin forward once the flex fault is fixed; nothing in the app code
-works around it.
+> **a433811** — `fix(layout): flow inline content through display:contents in a
+> block parent (#61) (#84)`, 2026-07-01
+
+That commit reworks `setup_inline_formatting_contexts` so a block container
+detects inline content through `display:contents` wrappers, and marks
+`ifc_root` on the wrapper "so IFC discovery finds the container and paint skips
+the wrapper". Something in that skip takes the app's rows with it.
+
+A reduced version of the row — thumb with an `if`-guarded span, a `flex: 1`
+text block, a `for` of dots — paints correctly on `main` (`cargo run --release
+--bin probe`, row E). It needs the whole screen to reproduce, so the app itself
+is the repro: pin the two dependencies to `1f16bed` and run it.
+
+One thing that only works on `main`: the search field's placeholder text.
+
+## The flex sizing fault
+
+Older, on both revisions, and not the reason for the pin: a `flex: 1` child is
+sized from its content instead of the space its siblings leave, so a list row
+measures 501px inside a 447px content box and the confidence dots are laid out
+past the right edge of the window. `cargo run --release --bin probe` rows A–D
+cover it: wrapping does not rescue the trailing box, and `flex-grow`/`flex-basis`
+longhands, `min-width: 0`, a percentage width and `display: grid` with `1fr` all
+behave the same. Only moving the growing child last works.
 
 ## Notes for the next person
 
