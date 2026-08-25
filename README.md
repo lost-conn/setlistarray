@@ -47,6 +47,8 @@ assumes the desktop.
   Play set.
 - **Setlists tab** — wireframe `1m`, styled with the hi-fi tokens.
 
+See [docs/PLAN.md](docs/PLAN.md) for the phased plan to finish the rest.
+
 ## What is not
 
 Each of these has a `Stub` screen naming its wireframe: Settings (`1q`),
