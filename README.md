@@ -64,11 +64,16 @@ Also outstanding:
   until Rinch exposes the wallpaper colour.
 - **Drag-to-reorder and swipe-to-remove** in setlists.
 
-## The two Rinch faults (both fixed, not yet merged)
+## The two Rinch faults (fixed upstream, awaiting review)
 
 The app is pinned to Rinch `d25f646` (2026-03-17). Two faults on `main` kept it
-there; both now have fixes on branches in a separate checkout, each with a
-regression test that fails before and passes after.
+there; both now have PRs, each with a regression test that fails before and
+passes after:
+
+- [joeleaver/rinch#245](https://github.com/joeleaver/rinch/pull/245) — the paint regression
+- [joeleaver/rinch#246](https://github.com/joeleaver/rinch/pull/246) — the viewport scale fault
+
+Move the pin once they land.
 
 ### The paint regression
 
