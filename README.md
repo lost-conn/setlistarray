@@ -64,55 +64,47 @@ Also outstanding:
   until Rinch exposes the wallpaper colour.
 - **Drag-to-reorder and swipe-to-remove** in setlists.
 
-## The paint regression
+## The two Rinch faults (both fixed, not yet merged)
 
-The app is pinned to Rinch `d25f646` (2026-03-17), not to `main` (`1f16bed`,
-2026-08-24). On `main` the library loses its attachment thumbs, row meta lines
-and row hairlines — the confidence dots too, but those are a separate,
-older fault (below).
+The app is pinned to Rinch `d25f646` (2026-03-17). Two faults on `main` kept it
+there; both now have fixes on branches in a separate checkout, each with a
+regression test that fails before and passes after.
 
-It is a **paint** problem, not a layout one. Dumping the live DOM through the
-debug IPC (`--features devtools`, then the `dom_tree` command) gives byte-for-byte
-the same tree with the same boxes on both revisions:
+### The paint regression
 
-```
-row   box=(22, 251, 501x66)   style="… border-bottom: 1px solid var(--sla-hairline-soft)"
-thumb box=(22, 264, 38x38)    style="… background: var(--sla-fill)"
-text  box=(73, 262, 411x43)
-title box=(73, 262, 411x22)   -> painted on both
-meta  box=(73, 287, 411x19)   -> painted only on d25f646
-```
+On `main` the library lost its attachment thumbs, row meta lines, hairlines and
+confidence dots. Same DOM, same layout boxes — the boxes simply were not drawn.
+`git bisect` over 196 commits (test: "is the first row's thumb painted") landed
+on **a433811**, `fix(layout): flow inline content through display:contents in a
+block parent`.
 
-Sampling the thumb on a screenshot: `#EFE7DA` (the fill token, painted) on
-`d25f646`, exactly `#FBF7F0` (bare paper) on `1f16bed`.
+Cause: `mark_inline_descendants` marked *every* `display:contents` child of an
+IFC root as IFC content, and `ifc_root` means "the IFC draws this, skip it in
+the paint walk". Two details make that bite everywhere: `Node::is_inline()`
+counts comment nodes, and rsx emits a comment marker for every `if`/`for`/
+`match`, so a block container becomes an IFC root as soon as it contains any
+control flow. Wrappers holding block content — every component — vanished with
+their whole subtree. Only descendants creating their own stacking context
+survived, which is exactly why row titles (`overflow: hidden`) painted and
+nothing else did.
 
-`git bisect` over the 196 commits, using "is the first row's thumb painted" as
-the test, lands on:
+Fix: a wrapper is IFC content only when it wraps no block-level box.
 
-> **a433811** — `fix(layout): flow inline content through display:contents in a
-> block parent (#61) (#84)`, 2026-07-01
+### The viewport scale fault
 
-That commit reworks `setup_inline_formatting_contexts` so a block container
-detects inline content through `display:contents` wrappers, and marks
-`ifc_root` on the wrapper "so IFC discovery finds the container and paint skips
-the wrapper". Something in that skip takes the app's rows with it.
+The one I first wrote up as "a `flex: 1` child is sized from its content".
+It was not a flex fault at all, and Taffy was innocent.
 
-A reduced version of the row — thumb with an `if`-guarded span, a `flex: 1`
-text block, a `for` of dots — paints correctly on `main` (`cargo run --release
---bin probe`, row E). It needs the whole screen to reproduce, so the app itself
-is the repro: pin the two dependencies to `1f16bed` and run it.
+`rinch_runtime.rs` handed the layout engine `PlatformWindow::inner_size()` —
+winit's **physical** surface size — while `paint_document` multiplies every
+coordinate by the same window's scale factor. On this 1.25× display the page
+was laid out 1.25× too wide and then drawn 1.25× larger again, so the rightmost
+fifth fell off the surface. That is why the confidence dots were never visible,
+why `flex-wrap` had nothing to wrap, and why only moving the growing child last
+appeared to help. A 1× display is unaffected.
 
-One thing that only works on `main`: the search field's placeholder text.
-
-## The flex sizing fault
-
-Older, on both revisions, and not the reason for the pin: a `flex: 1` child is
-sized from its content instead of the space its siblings leave, so a list row
-measures 501px inside a 447px content box and the confidence dots are laid out
-past the right edge of the window. `cargo run --release --bin probe` rows A–D
-cover it: wrapping does not rescue the trailing box, and `flex-grow`/`flex-basis`
-longhands, `min-width: 0`, a percentage width and `display: grid` with `1fr` all
-behave the same. Only moving the growing child last works.
+Fix: lay out at the logical size (`inner_size() / scale_factor`), through one
+seam every window-backed layout and paint site uses.
 
 ## Notes for the next person
 

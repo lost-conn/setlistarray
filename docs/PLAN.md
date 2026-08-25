@@ -91,7 +91,7 @@ Depends on the Rinch fixes in flight (see "The paint regression" in the README).
 | # | Card | Size |
 | --- | --- | --- |
 | A1 | Move the `rinch`/`rinch-tabler-icons` pin to a revision with the paint fix; re-verify all four screens against the hi-fi. | S |
-| A2 | Confirm the flex sizing fix lands the confidence dots inside the row; drop any layout hacks added meanwhile. | S |
+| A2 | Confirm the viewport-scale fix lands the confidence dots inside the row on a HiDPI display; drop any layout hacks added meanwhile. | S |
 | A3 | Fold the pixel checks into a repeatable script (`scripts/screenshot.sh`) — build, run under X11, capture the window, sample the known-good regions. This is the regression net for every phase after. | S |
 
 **Done when** the library, song detail, setlist detail and setlists tab render

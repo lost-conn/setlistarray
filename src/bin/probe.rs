@@ -1,21 +1,18 @@
-//! Layout probe for a Rinch flex fault the app has to live with.
+//! Probe for the Rinch viewport-scale fault (fixed on a branch, unmerged).
 //!
-//! A `flex: 1` child is not shrunk to the space left over by its siblings; it
-//! takes its content width, so the row overflows its container and anything
-//! after it is laid out past the viewport. Row A is the plain case, B shows it
-//! is not a wrap/overflow-visible question, C is the same children with
-//! nothing after the growing child (fine), D is a percentage width instead of
-//! flex-grow (same fault).
+//! The desktop shell laid the document out at the window's *physical* surface
+//! size and then painted it scaled by the same factor again, so on a HiDPI
+//! display the page was drawn oversized and its right edge fell outside the
+//! surface. Rows A, B and D lose their trailing purple box to that; row C — the
+//! same children with nothing after the growing child — is unaffected.
 //!
-//! Present on both d25f646 and 1f16bed, so this is long-standing rather than a
-//! regression. In the app it is why a library row measures 501px inside a
-//! 447px content box and the confidence dots sit off the right edge.
+//! It reads like a flex bug and is not: `flex-wrap` has nothing to wrap because
+//! nothing overflows in layout terms, and `flex-grow`/`flex-basis` longhands,
+//! `min-width: 0`, a percentage width and grid `1fr` all measure correctly.
+//!
+//! Keep this around until the fix is merged and the pin has moved.
 //!
 //! `cargo run --release --bin probe`
-
-// Same rsx! lint artifact as main.rs: bindings used inside generated closures
-// are reported as unused.
-#![allow(unused_variables)]
 
 use rinch::prelude::*;
 
