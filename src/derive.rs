@@ -5,7 +5,7 @@
 //! plain functions — no signals, no stores — means the rules the screens are
 //! thin over can be tested without a window.
 
-use crate::model::{Confidence, Song};
+use crate::model::{Confidence, Setlist, Song, fmt_duration};
 use crate::store::{Group, GroupBy, SortDir, SortField};
 
 /// How many rows a group shows before "Show N more".
@@ -212,6 +212,76 @@ pub fn prep_facts(songs: &[Song]) -> String {
         n => sentences.push(format!("{n} songs have no chart attached.")),
     }
     sentences.join(" ")
+}
+
+// ---------------------------------------------------------------------------
+// Add-to-setlist sheet (`2e`)
+// ---------------------------------------------------------------------------
+
+/// Setlists matching the sheet's search field, over the set name alone. An
+/// empty query matches everything.
+pub fn filter_setlists(setlists: Vec<Setlist>, query: &str) -> Vec<Setlist> {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return setlists;
+    }
+    setlists
+        .into_iter()
+        .filter(|s| s.name.to_lowercase().contains(&query))
+        .collect()
+}
+
+/// The sub-line under a setlist name in the sheet: `9 songs · 32:04`. Songs
+/// with no duration contribute nothing to the clock, exactly as they do on the
+/// setlist screen. An empty set says so rather than reading `0 songs · 0:00`.
+pub fn setlist_summary(setlist: &Setlist, songs: &[Song]) -> String {
+    let members: Vec<Song> = setlist
+        .song_ids
+        .iter()
+        .filter_map(|id| songs.iter().find(|s| s.id == *id).cloned())
+        .collect();
+    match members.len() {
+        0 => "empty".to_string(),
+        1 => format!("1 song · {}", fmt_duration(total_runtime(&members))),
+        n => format!("{n} songs · {}", fmt_duration(total_runtime(&members))),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sort & group sheet (`2c`)
+// ---------------------------------------------------------------------------
+
+/// How many songs have a given metadata field filled in.
+pub fn field_fill_count(songs: &[Song], field: SortField) -> usize {
+    songs.iter().filter(|s| field.is_present(s)).count()
+}
+
+/// Whether the sort sheet greys a field out. "Almost nobody has filled this
+/// in" is fewer than one song in four — which leaves capo and tuning greyed in
+/// a typical book while last-played, filled by a handful of gigs, stays live.
+/// A greyed field is still selectable; the grey only says it will not help.
+pub fn is_sparse_field(songs: &[Song], field: SortField) -> bool {
+    !songs.is_empty() && field_fill_count(songs, field) * 4 < songs.len()
+}
+
+/// The arrow beside a sort row. It points the way the row's own words read,
+/// which is not always the way the field sorts: `Asc` on a date field means
+/// "newest first", and newest-first reads downward. Everything else ascends.
+pub fn direction_arrow(field: SortField, dir: SortDir) -> &'static str {
+    let downward = matches!(field, SortField::LastPlayed | SortField::DateAdded);
+    match (dir, downward) {
+        (SortDir::Asc, false) | (SortDir::Desc, true) => "↑",
+        (SortDir::Asc, true) | (SortDir::Desc, false) => "↓",
+    }
+}
+
+/// The greyed row's explanation: `3 songs have this`.
+pub fn fill_note(count: usize) -> String {
+    if count == 1 {
+        "1 song has this".to_string()
+    } else {
+        format!("{count} songs have this")
+    }
 }
 
 #[cfg(test)]
@@ -425,6 +495,145 @@ mod tests {
         assert!(!facts.contains("tuning"), "{facts}");
         assert!(!facts.contains("capo"), "{facts}");
         assert_eq!(facts, "Every chart is on this phone and works with no signal.");
+    }
+
+    // ── add to setlist sheet ────────────────────────────────────────────
+
+    fn set(id: u32, name: &str, song_ids: Vec<u32>) -> Setlist {
+        Setlist {
+            id,
+            name: name.into(),
+            song_ids,
+            last_played: None,
+        }
+    }
+
+    #[test]
+    fn setlist_search_matches_the_name_and_ignores_case() {
+        let sets = vec![
+            set(1, "Porch, Saturday", vec![]),
+            set(2, "Quiet set", vec![]),
+        ];
+        let names: Vec<String> = filter_setlists(sets.clone(), "quiet")
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
+        assert_eq!(names, ["Quiet set"]);
+        assert_eq!(filter_setlists(sets.clone(), "   ").len(), 2);
+        assert!(filter_setlists(sets, "wedding").is_empty());
+    }
+
+    #[test]
+    fn a_setlist_sub_line_counts_songs_and_adds_up_the_clock() {
+        let songs = vec![durated(1, 224), durated(2, 138), song(3, "No clock", "A")];
+        assert_eq!(
+            setlist_summary(&set(1, "Set", vec![1, 2]), &songs),
+            "2 songs · 6:02"
+        );
+        assert_eq!(
+            setlist_summary(&set(2, "Set", vec![1]), &songs),
+            "1 song · 3:44"
+        );
+    }
+
+    #[test]
+    fn a_song_with_no_duration_adds_to_the_count_but_not_the_clock() {
+        let songs = vec![durated(1, 224), song(2, "No clock", "A")];
+        assert_eq!(
+            setlist_summary(&set(1, "Set", vec![1, 2]), &songs),
+            "2 songs · 3:44"
+        );
+    }
+
+    #[test]
+    fn an_empty_setlist_says_so_rather_than_counting_to_zero() {
+        assert_eq!(setlist_summary(&set(1, "Set", vec![]), &[]), "empty");
+    }
+
+    #[test]
+    fn a_setlist_holding_a_deleted_song_only_counts_what_survives() {
+        let songs = vec![durated(1, 224)];
+        assert_eq!(
+            setlist_summary(&set(1, "Set", vec![1, 99]), &songs),
+            "1 song · 3:44"
+        );
+    }
+
+    // ── sort & group sheet ──────────────────────────────────────────────
+
+    fn capoed(id: u32, capo: u8) -> Song {
+        let mut s = song(id, &format!("Song {id}"), "A");
+        s.capo = Some(capo);
+        s
+    }
+
+    #[test]
+    fn a_field_almost_nobody_fills_in_is_sparse() {
+        // One song in five has a capo — under the one-in-four line.
+        let mut songs: Vec<Song> = (1..=4).map(|i| song(i, "Plain", "A")).collect();
+        songs.push(capoed(5, 2));
+        assert_eq!(field_fill_count(&songs, SortField::Capo), 1);
+        assert!(is_sparse_field(&songs, SortField::Capo));
+    }
+
+    #[test]
+    fn a_field_a_quarter_of_the_book_fills_in_is_not_sparse() {
+        let mut songs: Vec<Song> = (1..=3).map(|i| song(i, "Plain", "A")).collect();
+        songs.push(capoed(4, 2));
+        assert!(!is_sparse_field(&songs, SortField::Capo));
+    }
+
+    #[test]
+    fn fields_every_song_has_are_never_sparse() {
+        let songs: Vec<Song> = (1..=40).map(|i| song(i, "Plain", "A")).collect();
+        for field in [SortField::Artist, SortField::Title, SortField::DateAdded] {
+            assert_eq!(field_fill_count(&songs, field), 40);
+            assert!(!is_sparse_field(&songs, field));
+        }
+    }
+
+    #[test]
+    fn an_empty_library_greys_nothing() {
+        assert!(!is_sparse_field(&[], SortField::Capo));
+    }
+
+    #[test]
+    fn the_arrow_follows_the_words_beside_it_not_the_comparator() {
+        // "A → Z" reads up the alphabet; "newest first" reads down the calendar.
+        assert_eq!(direction_arrow(SortField::Artist, SortDir::Asc), "↑");
+        assert_eq!(direction_arrow(SortField::Artist, SortDir::Desc), "↓");
+        assert_eq!(direction_arrow(SortField::LastPlayed, SortDir::Asc), "↓");
+        assert_eq!(direction_arrow(SortField::LastPlayed, SortDir::Desc), "↑");
+        assert_eq!(direction_arrow(SortField::DateAdded, SortDir::Asc), "↓");
+        assert_eq!(direction_arrow(SortField::Tempo, SortDir::Asc), "↑");
+    }
+
+    #[test]
+    fn every_sort_field_has_words_and_an_arrow_in_both_directions() {
+        for field in SortField::ALL {
+            for dir in [SortDir::Asc, SortDir::Desc] {
+                assert!(!field.direction_label(dir).is_empty(), "{field:?}");
+                assert!(["↑", "↓"].contains(&direction_arrow(field, dir)), "{field:?}");
+            }
+            // Reversing has to actually change what the row says.
+            assert_ne!(
+                field.direction_label(SortDir::Asc),
+                field.direction_label(SortDir::Desc),
+                "{field:?}"
+            );
+            assert_ne!(
+                direction_arrow(field, SortDir::Asc),
+                direction_arrow(field, SortDir::Desc),
+                "{field:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_grey_note_counts_in_words_the_row_has_room_for() {
+        assert_eq!(fill_note(0), "0 songs have this");
+        assert_eq!(fill_note(1), "1 song has this");
+        assert_eq!(fill_note(3), "3 songs have this");
     }
 
     // ── helpers ─────────────────────────────────────────────────────────

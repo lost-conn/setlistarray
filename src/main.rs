@@ -26,7 +26,9 @@ mod ui;
 use rinch::prelude::*;
 use rinch_tabler_icons::TablerIcon;
 
-use screens::{Library, SetlistDetail, Setlists, SongDetail, Stub};
+use screens::{
+    AddToSetlistSheet, Library, SetlistDetail, Setlists, SongDetail, SortGroupSheet, Stub,
+};
 use store::{
     AttachmentsStore, LibraryViewStore, NavStore, PlaybackStore, Route, SettingsStore,
     SetlistsStore, SongsStore, Tab,
@@ -52,7 +54,7 @@ fn app() -> NodeHandle {
         div {
             // Every token lives here; nothing downstream hard-codes a hex.
             style: {move || format!(
-                "{} height: 100vh; display: flex; flex-direction: column;",
+                "{} height: 100vh; display: flex; flex-direction: column; position: relative; overflow: hidden;",
                 tokens(settings.dark_mode.get(), settings.accent_resolved())
             )},
 
@@ -70,6 +72,12 @@ fn app() -> NodeHandle {
             }
 
             {bottom_nav(__scope)}
+
+            // The two bottom sheets. Both stay mounted for the life of the app,
+            // parked below the fold, so that opening one has something to slide.
+            // They sit last so they paint over the screen and the nav.
+            SortGroupSheet {}
+            AddToSetlistSheet {}
         }
     }
 }
