@@ -36,7 +36,7 @@ use rinch::prelude::*;
 use rinch_tabler_icons::TablerIcon;
 
 use crate::model::{Confidence, Day, SetlistId, SongId};
-use crate::store::{NavStore, SetlistsStore, SongsStore};
+use crate::store::{NavStore, Route, SetlistsStore, SongsStore};
 
 /// Surface for a dropdown/context menu panel — the app's `card` token, not
 /// the component's own default theme.
@@ -71,9 +71,17 @@ fn confidence_choices() -> [(&'static str, Option<Confidence>); 4] {
 }
 
 /// The song overflow menu — wireframe `2d`, order matters: **Add to
-/// setlist…** (first, highlighted) · Set confidence · Mark played today ·
-/// Duplicate · Delete song (destructive). The same menu reachable from song
-/// detail's ⋮ and from a library row's right-click.
+/// setlist…** (first, highlighted) · Edit song… · Set confidence · Mark
+/// played today · Duplicate · Delete song (destructive). The same menu
+/// reachable from song detail's ⋮ and from a library row's right-click.
+///
+/// "Edit song…" is the one row `2d` does not draw. The add/edit screen (`1j`)
+/// exists and has to be reachable from a library row as well as from song
+/// detail's pencil, and this menu is the only thing a library row opens. It
+/// sits second because the wireframe is deliberate about Add-to-setlist being
+/// first, and because everything below the label is a one-tap change to a
+/// single field — Edit belongs with the whole-song actions at the top, not
+/// buried under them.
 ///
 /// "Set confidence" is spelled out as four always-visible rows rather than a
 /// collapsible submenu: a submenu toggled by a signal would insert its items
@@ -95,6 +103,12 @@ pub fn SongMenuItems(id: SongId) -> NodeHandle {
                 style: {ITEM_HIGHLIGHT},
                 onclick: move || nav.add_to_setlist_for.set(Some(id)),
                 "Add to setlist…"
+            }
+            DropdownMenuItem {
+                left_section: TablerIcon::Pencil,
+                style: {ITEM},
+                onclick: move || nav.go(Route::EditSong(id)),
+                "Edit song…"
             }
             DropdownMenuLabel { style: {LABEL}, "Set confidence" }
             for (label, value) in confidence_choices() {

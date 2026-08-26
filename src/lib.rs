@@ -40,7 +40,8 @@ use rinch_tabler_icons::TablerIcon;
 use db::DataDir;
 use platform::SafeArea;
 use screens::{
-    AddToSetlistSheet, Library, SetlistDetail, Setlists, SongDetail, SortGroupSheet, Stub,
+    AddToSetlistSheet, Library, SetlistDetail, Setlists, SongDetail, SongForm, SortGroupSheet,
+    Stub,
 };
 use store::{
     AttachmentsStore, LibraryViewStore, NavStore, PlaybackStore, Route, SettingsStore,
@@ -133,7 +134,10 @@ pub fn app() -> NodeHandle {
                 Route::SongDetail(song_id) => SongDetail { id: {song_id} },
                 Route::SetlistDetail(setlist_id) => SetlistDetail { id: {setlist_id} },
                 Route::Settings => Stub { title: "Settings", wireframe: "1q" },
-                Route::AddSong => Stub { title: "New song", wireframe: "1j" },
+                // One screen, two doors: adding starts blank, editing arrives
+                // carrying the song it is about to overwrite.
+                Route::AddSong => SongForm {},
+                Route::EditSong(song_id) => SongForm { editing: {song_id} },
                 Route::Performance(_) => Stub { title: "Performance", wireframe: "1o" },
             }
 

@@ -5,7 +5,7 @@ use rinch_tabler_icons::TablerIcon;
 
 use crate::menu::{MENU_SURFACE, SongMenuItems};
 use crate::model::{Attachment, Song, SongId, fmt_duration};
-use crate::store::{AttachmentsStore, NavStore, SetlistsStore, SongsStore};
+use crate::store::{AttachmentsStore, NavStore, Route, SetlistsStore, SongsStore};
 use crate::theme::{SCREEN_PAD, T_BODY, T_DETAIL_TITLE, T_META, T_META_SMALL};
 use crate::ui::{ConfidenceDots, IconButton, MetaChip, icon};
 
@@ -55,7 +55,11 @@ pub fn SongDetail(id: Option<SongId>) -> NodeHandle {
             div { style: "padding: 2px 18px 8px; display: flex; align-items: center; gap: 6px;",
                 IconButton { glyph: TablerIcon::ChevronLeft, size: 19, onclick: move || nav.back() }
                 div { style: "flex: 1;" }
-                IconButton { glyph: TablerIcon::Pencil, size: 17, onclick: move || {} }
+                IconButton {
+                    glyph: TablerIcon::Pencil,
+                    size: 17,
+                    onclick: move || nav.go(Route::EditSong(id)),
+                }
                 DropdownMenu {
                     opened_fn: move || menu_open.get(),
                     on_close: move || menu_open.set(false),

@@ -41,26 +41,34 @@ impl SongsStore {
 
     /// Adding a song has to be possible in a few seconds: a title is enough.
     pub fn add(self, title: impl Into<String>, artist: impl Into<String>) -> SongId {
-        let mut song = Song::new(0, title, artist);
+        // The write did not land. Nothing was added, and the caller gets an id
+        // that matches nothing — every lookup on it returns None, which is
+        // exactly what "there is no such song" looks like everywhere else in
+        // this store.
+        self.create(Song::new(0, title, artist)).unwrap_or(0)
+    }
+
+    /// A song filled in before it exists: the add form's Save, where the
+    /// optional fields behind **More details** are already typed in.
+    ///
+    /// One write, not an insert followed by an edit — a form that saved twice
+    /// would be two chances to half-fail, and the second would leave a song in
+    /// the book missing everything the user had just entered. The id and the
+    /// added-at time are the store's to set, whatever the draft says.
+    pub fn create(self, mut song: Song) -> Option<SongId> {
+        song.id = 0;
         song.created_at = now_millis();
 
-        let minted = self.storage.create(
+        let id = self.storage.create(
             "adding a song",
             || self.next_id.get(),
             |repo| repo.create_song(&song),
-        );
-        let Some(id) = minted else {
-            // The write did not land. Nothing was added, and the caller gets an
-            // id that matches nothing — every lookup on it returns None, which
-            // is exactly what "there is no such song" looks like everywhere
-            // else in this store.
-            return 0;
-        };
+        )?;
 
         song.id = id;
         self.songs.update(|list| list.push(song));
         self.bump_next_id(id);
-        id
+        Some(id)
     }
 
     pub fn edit(self, id: SongId, f: impl FnOnce(&mut Song)) {

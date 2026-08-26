@@ -16,8 +16,11 @@ pub enum Route {
     SongDetail(SongId),
     SetlistDetail(SetlistId),
     Settings,
-    /// Wireframe screens still to be built out.
+    /// The add/edit form (`1j`). One screen serves both: adding starts empty,
+    /// editing arrives carrying the song it is about to overwrite.
     AddSong,
+    EditSong(SongId),
+    /// Wireframe screens still to be built out.
     Performance(SetlistId),
 }
 

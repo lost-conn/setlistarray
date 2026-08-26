@@ -284,6 +284,186 @@ pub fn fill_note(count: usize) -> String {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Add / edit song (`1j`)
+// ---------------------------------------------------------------------------
+
+/// One row of the artist autocomplete: an artist already in the book, spelled
+/// the way the book spells it, and how many songs are filed under it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ArtistSuggestion {
+    pub name: String,
+    pub songs: usize,
+}
+
+/// How many suggestions the artist field offers at once. Four fits under the
+/// input without pushing "More details" off a phone screen, and a fifth
+/// near-match has never been the one you meant.
+pub const ARTIST_SUGGESTION_LIMIT: usize = 4;
+
+/// Every artist in the book, folded case-insensitively.
+///
+/// Derived rather than stored: there is no artist table, and there should not
+/// be one — an artist exists exactly as long as a song credits them, and a
+/// separate list would need reconciling on every edit and every delete.
+///
+/// A book that holds both "the beatles" and "The Beatles" has one artist with
+/// two spellings, not two artists. The spelling offered back is the one used
+/// most; ties go to whichever sorts first, so the same library always suggests
+/// the same word however the songs happen to be ordered.
+pub fn known_artists(songs: &[Song]) -> Vec<ArtistSuggestion> {
+    let mut folded: Vec<(String, Vec<String>)> = Vec::new();
+    for song in songs {
+        let name = song.artist.trim();
+        if name.is_empty() {
+            continue;
+        }
+        let key = name.to_lowercase();
+        match folded.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, spellings)) => spellings.push(name.to_string()),
+            None => folded.push((key, vec![name.to_string()])),
+        }
+    }
+
+    let mut artists: Vec<ArtistSuggestion> = folded
+        .into_iter()
+        .map(|(_, spellings)| ArtistSuggestion {
+            songs: spellings.len(),
+            name: commonest_spelling(&spellings),
+        })
+        .collect();
+    artists.sort_by_key(|a| a.name.to_lowercase());
+    artists
+}
+
+/// The spelling used by the most songs, with ties broken alphabetically so the
+/// answer does not depend on the order the songs arrived in.
+fn commonest_spelling(spellings: &[String]) -> String {
+    let mut distinct: Vec<&String> = Vec::new();
+    for spelling in spellings {
+        if !distinct.contains(&spelling) {
+            distinct.push(spelling);
+        }
+    }
+    distinct.sort();
+    distinct
+        .into_iter()
+        .max_by_key(|candidate| spellings.iter().filter(|s| s == candidate).count())
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// The artists to offer for what has been typed so far.
+///
+/// Matching is case-insensitive — someone typing `led zep` mid-practice should
+/// not have to reach for the shift key — but nothing here rewrites the field.
+/// What gets stored is what was typed, unless a suggestion is actually tapped.
+///
+/// Names that *start* with the typed text come before names that merely
+/// contain it, because the first is nearly always what was meant and the
+/// second is what saves you when you remember the surname first.
+///
+/// An empty field asks no question, and neither does a name typed out in full:
+/// both return nothing, so the list appears while it can help and gets out of
+/// the way the moment it cannot.
+pub fn artist_suggestions(songs: &[Song], typed: &str) -> Vec<ArtistSuggestion> {
+    let typed = typed.trim().to_lowercase();
+    if typed.is_empty() {
+        return Vec::new();
+    }
+
+    let known = known_artists(songs);
+    if known.iter().any(|a| a.name.to_lowercase() == typed) {
+        return Vec::new();
+    }
+
+    let mut opens: Vec<ArtistSuggestion> = Vec::new();
+    let mut holds: Vec<ArtistSuggestion> = Vec::new();
+    for artist in known {
+        let folded = artist.name.to_lowercase();
+        if folded.starts_with(&typed) {
+            opens.push(artist);
+        } else if folded.contains(&typed) {
+            holds.push(artist);
+        }
+    }
+    opens.append(&mut holds);
+    opens.truncate(ARTIST_SUGGESTION_LIMIT);
+    opens
+}
+
+/// The grey half of a suggestion row: `· 12 songs`.
+pub fn artist_count_note(songs: usize) -> String {
+    if songs == 1 {
+        "· 1 song".to_string()
+    } else {
+        format!("· {songs} songs")
+    }
+}
+
+/// A number typed into one of the optional metadata fields.
+///
+/// Blank is "not set", and so is zero: a capo on the nut is no capo, and a
+/// song at nought beats a minute is a song nobody has timed. Anything that is
+/// not a plain positive number stays unset rather than being guessed at.
+pub fn parse_count(text: &str) -> Option<u32> {
+    let text = text.trim();
+    if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let value: u32 = text.parse().ok()?;
+    (value > 0).then_some(value)
+}
+
+/// `3:44` back into the 224 seconds `fmt_duration` made it from.
+///
+/// A bare number is minutes. The field's example reads `3:44`, so a lone `4`
+/// typed under it means four minutes to everyone who has ever timed a song —
+/// nothing about that field suggests four seconds.
+pub fn parse_duration(text: &str) -> Option<u32> {
+    let text = text.trim();
+    let Some((minutes, seconds)) = text.split_once(':') else {
+        return parse_count(text).map(|m| m * 60);
+    };
+    let minutes: u32 = parse_count(minutes).unwrap_or(0);
+    let seconds = seconds.trim();
+    // `3:4` is not three minutes and four seconds to anyone reading a clock.
+    if seconds.len() != 2 || !seconds.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let seconds: u32 = seconds.parse().ok()?;
+    if seconds > 59 {
+        return None;
+    }
+    let total = minutes * 60 + seconds;
+    (total > 0).then_some(total)
+}
+
+/// One line of comma-separated words into the tag list.
+///
+/// Two spellings of one tag would split a group header in two on the library
+/// screen, so a repeat is dropped case-insensitively — but the spelling that
+/// survives is the one that was typed first, not a lowercased version of it.
+pub fn parse_tags(text: &str) -> Vec<String> {
+    let mut tags: Vec<String> = Vec::new();
+    for raw in text.split(',') {
+        let tag = raw.trim();
+        if tag.is_empty() {
+            continue;
+        }
+        if tags.iter().any(|t| t.to_lowercase() == tag.to_lowercase()) {
+            continue;
+        }
+        tags.push(tag.to_string());
+    }
+    tags
+}
+
+/// The tag list back into the one line the field edits.
+pub fn format_tags(tags: &[String]) -> String {
+    tags.join(", ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -634,6 +814,179 @@ mod tests {
         assert_eq!(fill_note(0), "0 songs have this");
         assert_eq!(fill_note(1), "1 song has this");
         assert_eq!(fill_note(3), "3 songs have this");
+    }
+
+    // ── add / edit song ─────────────────────────────────────────────────
+
+    fn by(id: u32, artist: &str) -> Song {
+        song(id, &format!("Song {id}"), artist)
+    }
+
+    fn names(suggestions: &[ArtistSuggestion]) -> Vec<String> {
+        suggestions.iter().map(|s| s.name.clone()).collect()
+    }
+
+    #[test]
+    fn artists_are_derived_from_the_songs_that_credit_them() {
+        let songs = vec![
+            by(1, "Led Zeppelin"),
+            by(2, "Joni Mitchell"),
+            by(3, "Led Zeppelin"),
+        ];
+        let known = known_artists(&songs);
+        assert_eq!(names(&known), ["Joni Mitchell", "Led Zeppelin"]);
+        assert_eq!(known[1].songs, 2);
+    }
+
+    #[test]
+    fn one_artist_spelled_two_ways_is_still_one_artist() {
+        // Three songs, one artist, and the majority spelling is what gets
+        // offered back — not the first one typed.
+        let songs = vec![by(1, "the beatles"), by(2, "The Beatles"), by(3, "The Beatles")];
+        let known = known_artists(&songs);
+        assert_eq!(names(&known), ["The Beatles"]);
+        assert_eq!(known[0].songs, 3);
+    }
+
+    #[test]
+    fn a_tie_between_spellings_resolves_the_same_way_whatever_the_order() {
+        let one = vec![by(1, "the beatles"), by(2, "The Beatles")];
+        let other = vec![by(1, "The Beatles"), by(2, "the beatles")];
+        assert_eq!(known_artists(&one), known_artists(&other));
+    }
+
+    #[test]
+    fn a_song_with_no_artist_credits_nobody() {
+        let songs = vec![by(1, ""), by(2, "   "), by(3, "Nick Drake")];
+        assert_eq!(names(&known_artists(&songs)), ["Nick Drake"]);
+    }
+
+    #[test]
+    fn suggestions_match_case_insensitively() {
+        let songs = vec![by(1, "Led Zeppelin"), by(2, "Joni Mitchell")];
+        assert_eq!(names(&artist_suggestions(&songs, "led zep")), ["Led Zeppelin"]);
+        assert_eq!(names(&artist_suggestions(&songs, "LED")), ["Led Zeppelin"]);
+        assert_eq!(names(&artist_suggestions(&songs, "  joni ")), ["Joni Mitchell"]);
+    }
+
+    #[test]
+    fn a_name_that_starts_with_the_typing_beats_one_that_merely_contains_it() {
+        // Remembering the surname first is what the second kind of match is
+        // for; it should not outrank the artist whose name opens that way.
+        let songs = vec![by(1, "Neil Young"), by(2, "Young Marble Giants")];
+        assert_eq!(
+            names(&artist_suggestions(&songs, "young")),
+            ["Young Marble Giants", "Neil Young"]
+        );
+    }
+
+    #[test]
+    fn an_untouched_artist_field_asks_nothing() {
+        let songs = vec![by(1, "Led Zeppelin")];
+        assert!(artist_suggestions(&songs, "").is_empty());
+        assert!(artist_suggestions(&songs, "   ").is_empty());
+    }
+
+    #[test]
+    fn a_name_typed_out_in_full_stops_being_a_question() {
+        // The list is there to save typing. Once the typing is done — in any
+        // case — it has nothing left to offer and gets out of the way.
+        let songs = vec![by(1, "Led Zeppelin")];
+        assert!(artist_suggestions(&songs, "Led Zeppelin").is_empty());
+        assert!(artist_suggestions(&songs, "led zeppelin").is_empty());
+        assert!(!artist_suggestions(&songs, "Led Zeppeli").is_empty());
+    }
+
+    #[test]
+    fn an_artist_nobody_has_played_yet_matches_nothing() {
+        let songs = vec![by(1, "Led Zeppelin")];
+        assert!(artist_suggestions(&songs, "Sibylle Baier").is_empty());
+    }
+
+    #[test]
+    fn the_suggestion_list_stays_short_enough_to_read() {
+        let songs: Vec<Song> = (1..=9).map(|i| by(i, &format!("Artist {i}"))).collect();
+        assert_eq!(
+            artist_suggestions(&songs, "artist").len(),
+            ARTIST_SUGGESTION_LIMIT
+        );
+    }
+
+    #[test]
+    fn an_empty_library_suggests_nothing_and_does_not_panic() {
+        assert!(known_artists(&[]).is_empty());
+        assert!(artist_suggestions(&[], "anyone").is_empty());
+    }
+
+    #[test]
+    fn the_suggestion_count_reads_as_words() {
+        assert_eq!(artist_count_note(1), "· 1 song");
+        assert_eq!(artist_count_note(12), "· 12 songs");
+    }
+
+    #[test]
+    fn an_optional_number_is_unset_unless_it_is_a_real_one() {
+        assert_eq!(parse_count("96"), Some(96));
+        assert_eq!(parse_count("  3  "), Some(3));
+        assert_eq!(parse_count(""), None);
+        assert_eq!(parse_count("   "), None);
+        // A capo on the nut is no capo; nought beats a minute is no tempo.
+        assert_eq!(parse_count("0"), None);
+        assert_eq!(parse_count("fast"), None);
+        assert_eq!(parse_count("-4"), None);
+        assert_eq!(parse_count("3.5"), None);
+    }
+
+    #[test]
+    fn a_duration_round_trips_through_the_form_it_is_shown_in() {
+        for seconds in [1u32, 59, 60, 224, 3599, 3600] {
+            assert_eq!(parse_duration(&fmt_duration(seconds)), Some(seconds));
+        }
+    }
+
+    #[test]
+    fn a_bare_number_in_the_duration_field_is_minutes() {
+        assert_eq!(parse_duration("4"), Some(240));
+        assert_eq!(parse_duration(" 4 "), Some(240));
+    }
+
+    #[test]
+    fn a_duration_that_is_not_a_clock_reading_stays_unset() {
+        assert_eq!(parse_duration(""), None);
+        assert_eq!(parse_duration("3:4"), None);
+        assert_eq!(parse_duration("3:444"), None);
+        assert_eq!(parse_duration("3:60"), None);
+        assert_eq!(parse_duration("3:ab"), None);
+        assert_eq!(parse_duration("about four minutes"), None);
+        assert_eq!(parse_duration("0:00"), None);
+    }
+
+    #[test]
+    fn a_duration_under_a_minute_keeps_its_zero_minutes() {
+        assert_eq!(parse_duration("0:45"), Some(45));
+    }
+
+    #[test]
+    fn tags_are_one_line_of_commas_and_survive_a_round_trip() {
+        let tags = parse_tags("campfire, open mic , wedding");
+        assert_eq!(tags, ["campfire", "open mic", "wedding"]);
+        assert_eq!(format_tags(&tags), "campfire, open mic, wedding");
+        assert_eq!(parse_tags(&format_tags(&tags)), tags);
+    }
+
+    #[test]
+    fn empty_tags_and_stray_commas_are_dropped() {
+        assert!(parse_tags("").is_empty());
+        assert!(parse_tags(" , ,, ").is_empty());
+        assert_eq!(parse_tags("campfire,,"), ["campfire"]);
+    }
+
+    #[test]
+    fn one_tag_typed_twice_stays_one_tag_in_the_spelling_that_came_first() {
+        // Two spellings would split a group header in two on the library
+        // screen; the first one typed is the one kept.
+        assert_eq!(parse_tags("Campfire, campfire"), ["Campfire"]);
+        assert_eq!(parse_tags("campfire, Campfire"), ["campfire"]);
     }
 
     // ── helpers ─────────────────────────────────────────────────────────

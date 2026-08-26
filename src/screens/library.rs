@@ -173,9 +173,24 @@ pub fn Library() -> NodeHandle {
             }
 
             // FAB — creates a song.
+            //
+            // `z-index` is load-bearing, not decoration: without it the FAB
+            // paints over the list but cannot be tapped. Rinch makes an
+            // `overflow: auto` box a stacking context (`Node::
+            // creates_stacking_context`), so the scrolling list is hoisted into
+            // the app root's z-index-0 stacking phase, which hit-testing walks
+            // *before* the plain non-stacking children — and the FAB, being
+            // `position: absolute` with `z-index: auto`, is one of those. Every
+            // tap on it therefore landed on whatever row happened to be
+            // underneath, or on nothing at all. CSS says a positioned element
+            // paints above its in-flow siblings and rinch's painter agrees,
+            // which is why this only ever showed up as a dead button and never
+            // as a wrong picture. Naming a layer puts the FAB in the phase that
+            // is tested first, below the bottom sheets' 40.
             div {
                 onclick: move || nav.go(Route::AddSong),
-                style: "position: absolute; right: 20px; bottom: 16px; width: 60px; height: 60px; \
+                style: "position: absolute; right: 20px; bottom: 16px; z-index: 10; \
+                        width: 60px; height: 60px; \
                         border-radius: 20px; background: var(--sla-accent); color: var(--sla-on-accent); \
                         display: flex; align-items: center; justify-content: center; \
                         box-shadow: 0 8px 18px -4px rgba(181,71,36,.5);",

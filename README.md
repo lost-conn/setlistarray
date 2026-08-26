@@ -135,14 +135,20 @@ nothing in the UI code assumes either platform. See "Android" below.
 - **Sort & group sheet** — wireframe `2c`. Group-by chips, every metadata field
   as a sort row, tap the active row to reverse, sparse fields greyed with a
   count but still selectable.
+- **Add / edit song** — wireframe `1j`. One screen for both. Title and artist
+  visible, everything else behind a collapsed **More details**; the artist field
+  autocompletes against the artists already in the book, with the `use
+  "<typed>"` escape hatch. Reached from the library FAB (add) and from song
+  detail's pencil or a row's overflow menu (edit). Its **Attachments** section
+  is not built — those are Phase D.
 
 See [docs/PLAN.md](docs/PLAN.md) for the phased plan to finish the rest.
 
 ## What is not
 
 Each of these has a `Stub` screen naming its wireframe: Settings (`1q`),
-Add/edit song (`1j`), Performance view (`1o`). Not yet started: attachment
-viewer (`1k`), search & filter (`1p`), first run (`1r`).
+Performance view (`1o`). Not yet started: attachment viewer (`1k`), search &
+filter (`1p`), first run (`1r`).
 
 Offline webpage capture (`1l`) has its **engine** — `src/capture/`, tested and
 proven against eight real chord sites — and none of its UI. It runs on both
@@ -356,6 +362,14 @@ seam every window-backed layout and paint site uses.
 - Statements inside `rsx!` bodies get re-emitted into those closures, so rustc
   reports plainly-used bindings as unused. `#![allow(unused_variables)]` in
   `main.rs` covers it.
+- **A `position: absolute` child needs an explicit `z-index` to be tappable**
+  when it overlaps a scrolling sibling. `Node::creates_stacking_context` counts
+  `overflow: auto`, so the scroll box is hoisted into its ancestor's
+  z-index-0 stacking phase — which hit-testing walks before the plain
+  non-stacking children, where a `z-index: auto` positioned element sits.
+  Paint disagrees with that and draws the positioned element on top, so the
+  symptom is a button that looks right and does nothing. The library FAB was
+  dead for exactly this reason until card C1 gave it a layer.
 - Rinch interpolates a `transform` transition through its **matrix**, and the
   matrix does not carry percentage translations (`rinch-dom`'s
   `transition/apply.rs` zeroes them). `translateY(100%) → translateY(0)` snaps
