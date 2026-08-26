@@ -20,20 +20,26 @@ targets). Rinch's docs ask for nightly; current main does not need it.
 
 **The pin is deliberately not on `main`.** See "The flex regression" below.
 
-The handoff targets Android. Rinch currently ships desktop and wasm backends,
-so this runs in a 393×852 phone-shaped desktop window; nothing in the UI code
-assumes the desktop.
+The handoff targets Android, and Rinch has an Android backend, so the app
+builds for both. On the desktop it runs in a 393×852 phone-shaped window;
+nothing in the UI code assumes either platform. See "Android" below.
 
 ## Layout
 
 | Path | What lives there |
 | --- | --- |
+| `src/lib.rs` | The app root: the stores, the route switch, the bottom nav. Both entry points run this. |
+| `src/main.rs` | The desktop binary. Three lines. |
+| `src/android.rs` | `android_main`. Picks the data directory and starts the Android shell. |
+| `src/platform.rs` | The safe-area seam: real insets on Android, a phone stand-in on the desktop. |
 | `src/theme.rs` | Every design token, as CSS custom properties. Nothing downstream hard-codes a hex. |
 | `src/model.rs` | `Song`, `Setlist`, `Attachment`, `Confidence`, `Day`. Every field but id/title/artist/created_at is optional. |
 | `src/store/` | One `Copy` struct of Signals per store, registered in `app()`. Derived values are computed on read, never stored. |
 | `src/ui.rs` | Shared pieces: chips, confidence dots, attachment thumbs, list rows. |
 | `src/screens/` | One file per screen. |
 | `src/seed.rs` | Demo content, until persistence lands. |
+| `android/` | `AndroidManifest.xml`. No permissions, and a test asserts it stays that way. |
+| `build-apk.sh` | cargo-ndk → javac → d8 → aapt2 → zipalign → apksigner → adb. |
 
 ## What is built
 
@@ -63,6 +69,113 @@ Also outstanding:
 - **Accent from the system.** `AccentChoice::FromSystem` falls back to Rust
   until Rinch exposes the wallpaper colour.
 - **Drag-to-reorder and swipe-to-remove** in setlists.
+
+## Android
+
+> **Unverified on hardware.** There is no device and no emulator on the machine
+> this was built on. `./build-apk.sh --build-only` produces a signed,
+> `apksigner`-verified APK and that is the whole of what has been checked. The
+> app has never been launched on a phone. Every claim below about how it
+> *behaves* on device is a reading of the code, not an observation.
+
+One crate, two targets. `src/main.rs` is the desktop binary; the same crate also
+builds as a `cdylib` whose `android_main` (`src/android.rs`) starts Rinch's
+Android shell with the same `app()` component. There is no `#[cfg]` in any
+screen — the two things that genuinely differ each have a seam:
+
+- **`src/platform.rs`** — `safe_area()`. On Android, `safe_area_insets()` and
+  `density_dpi()` from `rinch-android`, converted from physical pixels to CSS
+  pixels. On the desktop, the numbers a phone would report, because the desktop
+  window is a preview of one. This replaced a hard-coded 44px status strip.
+- **`src/db/DataDir`** — installed once by the entry point. `android_main` uses
+  `AndroidApp::internal_data_path()`, i.e. `/data/data/<package>/files`:
+  app-private, needs no permission, removed with the app. The desktop keeps
+  `$XDG_DATA_HOME/setlistarray`. `app()` publishes it as a context, so a
+  repository can reach it without knowing which platform it is on.
+
+### Prerequisites
+
+| What | Default the script looks in | Override |
+| --- | --- | --- |
+| NDK r27c | `~/android/android-ndk-r27c` | `ANDROID_NDK_HOME` |
+| SDK build-tools 35 | `~/android/sdk/build-tools/35.0.0` | `ANDROID_SDK_BUILD_TOOLS` |
+| `android.jar` (android-35) | `~/android/sdk/platforms/android-35/android.jar` | `ANDROID_SDK_PLATFORM` |
+| The Rinch checkout (for `RinchActivity.java`) | `../rinch-fixes` | `RINCH_DIR` |
+| Signing key | `target/debug.keystore`, generated on first run | `ANDROID_DEBUG_KEYSTORE` |
+
+Also `cargo-ndk` on `PATH` (`cargo install cargo-ndk`), a JDK for `javac`, and
+the Android targets — which `rust-toolchain.toml` already declares. `adb` is
+needed only to install.
+
+### Building
+
+```bash
+export ANDROID_NDK_HOME=$HOME/android/android-ndk-r27c
+./build-apk.sh --build-only          # signed APK at ./setlistarray.apk
+./build-apk.sh --target x86_64       # for an emulator instead of a phone
+./build-apk.sh                       # the above, then adb install and launch
+```
+
+Defaults to `arm64-v8a` and the release profile. It builds `--lib` only: the
+desktop binary and the probe are not part of the APK. Roughly 5.8 MiB, almost
+all of it `libsetlistarray.so`.
+
+### No permissions, on purpose
+
+`android/AndroidManifest.xml` declares none, and
+`the_android_manifest_asks_for_no_permissions` fails the build if one appears.
+This app is offline-first: app-private storage needs no permission, and
+attachment import (card K4) goes through the system file picker, which grants
+access per file without one either. `android:allowBackup="false"` for the same
+reason — "nothing uploaded" includes Google's cloud backup.
+
+### Known unknowns
+
+Things that cannot be settled without a device:
+
+- **Insets may double up below Android 15.** `RinchActivity` never opts into
+  edge-to-edge. Android 15 enforces it for anything targeting SDK 35, so there
+  the insets are ours to apply and `safe_area()` is right. On Android 14 and
+  below the system already insets the window, and the strip this app reserves
+  would be added on top of that. The fix is upstream (`setDecorFitsSystemWindows`
+  in `RinchActivity`), not here.
+- **The fonts do not ship.** Newsreader and Karla are picked up from the system
+  font list, which on Android does not have them; the app will fall back to
+  Noto Serif and Roboto. Rinch can register font bytes
+  (`RinchApp::register_font_data`) but neither `run_android` nor
+  `ThemeProviderProps` exposes a way to reach it, so `assets/fonts/` cannot get
+  into the APK yet. Small upstream fix; the app is already carrying the files.
+- **Touch, IME and the soft keyboard** are all untried. Card K7.
+- **Keep-awake** does not exist in Rinch's Android backend at all. Card K5.
+- **`ClickContext`'s viewport is wrong by one scale factor on Android** — see
+  below. Popup placement, not tap targets.
+
+### A third Rinch fault, found by reading
+
+`shell/android_runtime.rs` passes its `logical_size` as `handle_event`'s
+`window_size`. That parameter is documented on the desktop side as *physical*
+("`RinchApp::handle_event` divides it by the scale factor itself"), and
+`handle_event` does exactly that:
+
+```rust
+let vp_w = window_size.0 as f32 / scale_factor as f32;
+```
+
+So on Android the viewport handed to every `ClickContext` is
+`physical / scale²` — 143×310 where it should read 393×852 on a 2.75× phone.
+
+It is narrower than it sounds. Pointer coordinates are *separately* divided by
+the scale factor in `collect_input_events`, and the layout tree is resolved at
+the logical size, so hit-testing agrees with itself and **taps land where they
+should**. What is wrong is `ClickContext::viewport_width` / `viewport_height`,
+which is what decides whether a `<select>` popup or a dropdown flips up or down
+and how it is clamped to the screen edge. This app has no such control yet, so
+nothing visible is broken today.
+
+Found while fixing the desktop equivalent
+([joeleaver/rinch#246](https://github.com/joeleaver/rinch/pull/246)), which left
+it out of scope. The fix is one line — pass `physical_size` — and a follow-up
+PR upstream, not a change here.
 
 ## The two Rinch faults (fixed upstream, awaiting review)
 

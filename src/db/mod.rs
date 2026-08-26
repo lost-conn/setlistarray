@@ -11,7 +11,7 @@
 //! that renders a list row ever reads them.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use rhypedb_engine::database::Database;
 
@@ -61,7 +61,26 @@ impl DataDir {
     pub fn path(&self) -> &Path {
         &self.0
     }
+
+    /// Install the platform's root, once, from the entry point — `main` on the
+    /// desktop, `android_main` on Android. `app()` publishes it as a context
+    /// from there, so nothing in between has to carry it.
+    ///
+    /// A second call is ignored rather than a panic: the entry points call this
+    /// exactly once, and a test that opens its own scratch directory should not
+    /// be able to break the next one.
+    pub fn install(self) {
+        let _ = INSTALLED.set(self);
+    }
+
+    /// The installed root. Falls back to the desktop default for anything that
+    /// starts without an entry point — the tests, and `src/bin/probe.rs`.
+    pub fn current() -> Self {
+        INSTALLED.get_or_init(Self::desktop_default).clone()
+    }
 }
+
+static INSTALLED: OnceLock<DataDir> = OnceLock::new();
 
 #[derive(Debug)]
 pub enum DbError {
@@ -143,6 +162,18 @@ mod tests {
             dir.attachment(42),
             PathBuf::from("/tmp/example/attachments/42")
         );
+    }
+
+    #[test]
+    fn the_installed_root_is_what_the_app_reads_back() {
+        DataDir::new("/tmp/sla-installed").install();
+        assert_eq!(DataDir::current().path(), Path::new("/tmp/sla-installed"));
+
+        // Installing is the entry point's one decision, and it is final: a
+        // second caller cannot move the library out from under an open
+        // database.
+        DataDir::new("/tmp/sla-elsewhere").install();
+        assert_eq!(DataDir::current().path(), Path::new("/tmp/sla-installed"));
     }
 
     #[test]

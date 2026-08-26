@@ -3,23 +3,14 @@ name = "setlistarray"
 version = "0.1.0"
 edition = "2024"
 
+# Two targets from one crate. The desktop binary is `main.rs`; Android loads the
+# `cdylib` and calls `android_main`. `rlib` is what the binary and the tests
+# link against — everything but the entry points lives in `src/lib.rs`.
+[lib]
+name = "setlistarray"
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
-# TEMPORARY, and the one place this project depends on a working tree.
-#
-# `local/both-fixes` in that checkout is main plus the two branches under review
-# upstream — joeleaver/rinch#245 (paint) and #246 (viewport scale). Developing
-# against them beats developing against the old d25f646 pin, which renders
-# correctly but predates five months of the framework.
-#
-# When both PRs merge, card A1/A2: replace these two lines with
-#   rinch = { git = "https://github.com/joeleaver/rinch.git", rev = "<merged>", … }
-#   rinch-tabler-icons = { git = "https://github.com/joeleaver/rinch.git", rev = "<merged>" }
-# and delete src/bin/probe.rs.
-rinch = { path = "../rinch-fixes/crates/rinch", default-features = false, features = [
-    "desktop",
-    "components",
-    "theme",
-] }
 # Not re-exported by the rinch prelude, but ActionIcon's `icon` prop needs the type
 # and the handoff calls for Tabler icons throughout.
 rinch-tabler-icons = { path = "../rinch-fixes/crates/rinch-tabler-icons" }
@@ -29,6 +20,42 @@ rinch-tabler-icons = { path = "../rinch-fixes/crates/rinch-tabler-icons" }
 # ship on a phone, and nothing here needs vector search.
 rhypedb-engine = { path = "../rhypedb-main/crates/rhypedb-engine", default-features = false }
 rhypedb-schema = { path = "../rhypedb-main/crates/rhypedb-schema" }
+
+# TEMPORARY, and the one place this project depends on a working tree.
+#
+# `local/both-fixes` in that checkout is main plus the two branches under review
+# upstream — joeleaver/rinch#245 (paint) and #246 (viewport scale). Developing
+# against them beats developing against the old d25f646 pin, which renders
+# correctly but predates five months of the framework.
+#
+# When both PRs merge, card A1/A2: replace the path with
+#   rinch = { git = "https://github.com/joeleaver/rinch.git", rev = "<merged>", … }
+#   rinch-tabler-icons = { git = "https://github.com/joeleaver/rinch.git", rev = "<merged>" }
+# and delete src/bin/probe.rs.
+#
+# `desktop` and `android` are mutually exclusive backends — one shell each — so
+# the dependency is declared per target rather than in `[dependencies]`. Only
+# one of these tables is ever active in a given build, so cargo's feature
+# unification never sees both.
+[target.'cfg(not(target_os = "android"))'.dependencies]
+rinch = { path = "../rinch-fixes/crates/rinch", default-features = false, features = [
+    "desktop",
+    "components",
+    "theme",
+] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+rinch = { path = "../rinch-fixes/crates/rinch", default-features = false, features = [
+    "android",
+    "components",
+    "theme",
+] }
+# Pulled in transitively by `rinch/android`, but named here too: the safe-area
+# insets and the display density are read directly (src/platform.rs).
+rinch-android = { path = "../rinch-fixes/crates/rinch-android" }
+# `android_main` reports a failure to find app-private storage through the
+# logger `rinch`'s Android shell installs; stderr goes nowhere on a phone.
+log = "0.4"
 
 [features]
 # Rinch's debug IPC server: DOM dumps, computed styles, screenshots, synthetic
