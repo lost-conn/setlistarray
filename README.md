@@ -24,6 +24,20 @@ content, and only ever into a library that has nothing in it.
 Requires stable Rust (`rust-toolchain.toml` pins it, along with the two Android
 targets). Rinch's docs ask for nightly; current main does not need it.
 
+**This will not build from a fresh clone on its own.** Both frameworks are
+local path dependencies, so `Cargo.toml` expects three checkouts side by side:
+
+```
+projects/personal/
+├── setlistarray/     ← this
+├── rinch-fixes/      ← github.com/joeleaver/rinch, on a branch carrying #245 + #246
+└── rhypedb-main/     ← github.com/joeleaver/rhypedb, main
+```
+
+Both pins are deliberate and temporary — see "The two Rinch faults" below, and
+card A1. When those PRs land, `rinch` goes back to a git revision; rhypedb stays
+a path dep while this app is its early in-process consumer.
+
 ### Visual regression check
 
 ```bash
