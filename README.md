@@ -13,7 +13,13 @@ the wireframes (turn 2 wins over turn 1) for flow.
 ```bash
 ./scripts/install-fonts.sh   # once — Newsreader and Karla, via fontconfig
 cargo run --release          # always --release; debug Stylo/Parley is slow
+cargo run --release -- --seed   # ...with the demo library, if yours is empty
 ```
+
+The library lives in `$XDG_DATA_HOME/setlistarray` (`~/.local/share/setlistarray`):
+a rhypedb database in `db/`, and one directory per attachment under
+`attachments/`. A first run opens an empty book; `--seed` fills it with the demo
+content, and only ever into a library that has nothing in it.
 
 Requires stable Rust (`rust-toolchain.toml` pins it, along with the two Android
 targets). Rinch's docs ask for nightly; current main does not need it.
@@ -30,10 +36,11 @@ assumes the desktop.
 | --- | --- |
 | `src/theme.rs` | Every design token, as CSS custom properties. Nothing downstream hard-codes a hex. |
 | `src/model.rs` | `Song`, `Setlist`, `Attachment`, `Confidence`, `Day`. Every field but id/title/artist/created_at is optional. |
-| `src/store/` | One `Copy` struct of Signals per store, registered in `app()`. Derived values are computed on read, never stored. |
+| `src/store/` | One `Copy` struct of Signals per store, registered in `app()`. Derived values are computed on read, never stored. Every mutation writes through `Storage` to the database before it reaches a signal. |
 | `src/ui.rs` | Shared pieces: chips, confidence dots, attachment thumbs, list rows. |
 | `src/screens/` | One file per screen. |
-| `src/seed.rs` | Demo content, until persistence lands. |
+| `src/db/` | The rhypedb schema, the domain↔object conversion, and the repository every store writes through. |
+| `src/seed.rs` | Demo content, behind `--seed`. Not on the startup path. |
 
 ## What is built
 
@@ -58,8 +65,8 @@ sort & group sheet (`2c`), search & filter (`1p`), first run (`1r`).
 
 Also outstanding:
 
-- **Persistence.** Everything is in memory; `src/seed.rs` stands in. The plan
-  is SQLite plus an attachments directory, with export/import as a zip of both.
+- **Backup.** Export/import as a zip of the database and the attachments
+  directory (Phase I).
 - **Accent from the system.** `AccentChoice::FromSystem` falls back to Rust
   until Rinch exposes the wallpaper colour.
 - **Drag-to-reorder and swipe-to-remove** in setlists.
@@ -124,3 +131,19 @@ seam every window-backed layout and paint site uses.
 - Statements inside `rsx!` bodies get re-emitted into those closures, so rustc
   reports plainly-used bindings as unused. `#![allow(unused_variables)]` in
   `main.rs` covers it.
+
+### And two about rhypedb
+
+- **`@on_delete` reads backwards from how it looks.** The policy is applied to
+  the relations pointing *at* the object being deleted, and it acts on their
+  *source*. `Song.attachments: [Attachment] @on_delete(cascade)` therefore means
+  "deleting a chart deletes the song" — which is how schema v1 had it. The
+  cascade that takes a chart with its song has to live on `Attachment.song`,
+  with `Song.attachments` as the `@inverse`. `Setlist.songs @on_delete(remove)`
+  happens to read correctly under the same rule.
+- **Reopening a library the same process just closed races.** rhypedb's
+  compaction worker holds a `Weak` to the tree and upgrades it while it works;
+  if the last external handle goes during that window, the tree — and the
+  directory lock with it — is released on the worker's thread. A second
+  *process* gets a clean refusal, but a test that restarts the app in-process
+  has to retry (`db::restart`). The app itself opens the library once.

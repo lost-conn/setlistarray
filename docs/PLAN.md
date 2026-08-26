@@ -74,8 +74,9 @@ Proven before committing to it:
   server with an HTTP/TCP client; embedding is undocumented but public.
 - A song stores only the fields it has, and unset ones read back absent.
 - Setlist order rides on the membership link as a `position` edge field.
-- `@on_delete(cascade)` / `@on_delete(remove)` do card J5's work in the schema:
-  deleting a song drops it from every set, unlinking leaves the song alone.
+- `@on_delete(cascade)` / `@on_delete(remove)` do card J5's work *in the
+  database*: deleting a song drops it from every set, unlinking leaves the song
+  alone. Mind the direction — see the correction under Phase B.
 
 **What we give up:** there is no substring or full-text filter — the operators
 are `Eq/Ne/Lt/Le/Gt/Ge`. That is not confined to attachments: the library's own
@@ -84,10 +85,16 @@ data already in memory (`derive::filter_songs`), which for a few hundred songs
 is the right shape anyway. Card G2 is rescoped accordingly: searching inside
 attachment bodies means our own index or a scan, not a database feature.
 
-**Gotcha found the hard way:** an edge-field block must come *before* any
-directive on the same field. `songs: [Song] { position: u32 } @on_delete(remove)`
-parses; the other order fails with `expected identifier`. Worth reporting
-upstream — the docs only ever show an edge block with no directive.
+**Gotchas found the hard way**, both worth reporting upstream:
+
+- An edge-field block must come *before* any directive on the same field.
+  `songs: [Song] { position: u32 } @on_delete(remove)` parses; the other order
+  fails with `expected identifier`. The docs only ever show an edge block with
+  no directive.
+- Closing a library and reopening it in the same process races the compaction
+  worker, which can end up the last holder of the tree and release the directory
+  lock on its own thread. Only tests restart in-process, and `db::restart`
+  retries for them.
 
 ### 3. PDF rendering
 
@@ -125,13 +132,27 @@ Nothing else is worth building on top of in-memory state.
 | # | Card | Size |
 | --- | --- | --- |
 | B1 | ~~`src/db/`: schema v1 (`Song`, `Setlist`, `Attachment` with ordered membership), `Database::open` behind a `DataDir` seam, and the domain↔object conversion.~~ Done. | ✔ |
-| B2 | Repository functions per store — load-all at startup, write-through on mutation. Keep the store API as-is so screens do not change. | M |
-| B3 | Persist `LibraryViewStore` (query, group-by, sort, density, collapsed groups) and `SettingsStore`; restore on launch. Small and singular — a settings blob rather than objects. | S |
-| B4 | Attachments directory: `<data>/attachments/<id>/` holding the file plus derived assets; delete on attachment removal. | S |
-| B5 | Replace `src/seed.rs` with a first-run empty database; keep the seed behind a `--seed` flag for screenshots and tests. | S |
+| B2 | ~~Repository functions per store — load-all at startup, write-through on mutation. Keep the store API as-is so screens do not change.~~ Done. | ✔ |
+| B3 | ~~Persist `LibraryViewStore` and `SettingsStore`; restore on launch.~~ Done — one `Preferences` row, reasoning in `src/db/prefs.rs`. | ✔ |
+| B4 | ~~Attachments directory: `<data>/attachments/<id>/`; delete on attachment removal.~~ Done. | ✔ |
+| B5 | ~~Replace `src/seed.rs` with a first-run empty database; keep the seed behind a `--seed` flag.~~ Done. | ✔ |
 
 **Done when** songs, setlists, settings and view state survive a restart, and
-`src/seed.rs` is no longer in the startup path.
+`src/seed.rs` is no longer in the startup path. ✔
+
+Two things B1 got wrong, both corrected here:
+
+- **The attachment cascade pointed the wrong way.** rhypedb applies an
+  `@on_delete` policy to the relations pointing *at* the deleted object, acting
+  on their source — so `Song.attachments @on_delete(cascade)` meant "deleting a
+  chart deletes the song". The policy now lives on `Attachment.song`, with
+  `Song.attachments` as its `@inverse`. `Setlist.songs @on_delete(remove)` was
+  right by accident.
+- **The delete policies do not do all of J5's work.** They keep the *database*
+  consistent; the in-memory setlists a screen is reading do not hear about a
+  cascade, so a song deleted mid-session lingers as an id in a setlist until the
+  next launch. Nothing renders for it, and a membership write steps over it, so
+  it is invisible — but J5 still has a job.
 
 ---
 
