@@ -32,15 +32,29 @@
 //! that needs to change, and the menu content below is unaffected either
 //! way.
 //!
-//! **That last sentence has since been overtaken.** Card C6's spike found that
-//! the Android backend does exist and never synthesises `oncontextmenu` from
-//! touch at all — every touch is a tap or a scroll, and nothing else (README,
-//! "Touch on Android is a tap and a scroll, and nothing else"). So this is not
-//! a stand-in awaiting a backend; on a phone it is a menu with no way in
-//! except song detail's ⋮ button. A library row and a setlist card each need
-//! their own explicit trigger before the app is honest on a device. Left as
-//! written rather than half-fixed here: it is a change to two screens' chrome,
-//! not to this file, and it belongs with whichever card owns that decision.
+//! **That last sentence was overtaken twice in one day, and is now true
+//! again.** Card C6's spike found that the Android backend does exist and
+//! never synthesised `oncontextmenu` from touch at all — every touch was a tap
+//! or a scroll, and nothing else. So for a while this was not a stand-in
+//! awaiting a backend: on a phone it was a menu with no way in except song
+//! detail's ⋮ button.
+//!
+//! That gap is what [joeleaver/rinch#266] closes. The Android recogniser now
+//! holds a 500ms press timer and synthesises the same right-button press a
+//! desktop right-click does, through the same dispatch — so this file did not
+//! have to change, which is the outcome the paragraph above predicted. Both
+//! menus have been opened by long press on a moto g stylus 5G running Android
+//! 13, and the press does not also fire the tap underneath.
+//!
+//! Two caveats worth carrying. The fix lives on the branch this repo pins, not
+//! on rinch `main`, so a build against upstream still has no way into these
+//! menus. And opening one on a phone is what exposed the popup-viewport fault
+//! ([#268], card K16): the menu flipped upward out of the scroll box because
+//! `ClickContext` believed the screen was 394px tall. Fixing one Android input
+//! fault revealed the next.
+//!
+//! [joeleaver/rinch#266]: https://github.com/joeleaver/rinch/pull/266
+//! [#268]: https://github.com/joeleaver/rinch/pull/268
 
 use rinch::prelude::*;
 use rinch_tabler_icons::TablerIcon;
