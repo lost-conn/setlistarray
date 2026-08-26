@@ -24,6 +24,12 @@ content, and only ever into a library that has nothing in it.
 Requires stable Rust (`rust-toolchain.toml` pins it, along with the two Android
 targets). Rinch's docs ask for nightly; current main does not need it.
 
+Also requires `mold` and `clang` on PATH: `.cargo/config.toml` links host builds
+with mold, which turns a relink of this dependency tree into well under a second.
+Package names are `mold` and `clang` on Debian/Ubuntu, Fedora and Arch alike. To
+build without them, delete `.cargo/config.toml` — it only overrides the host
+triple, so the Android build goes through the NDK's linker either way.
+
 **This will not build from a fresh clone on its own.** Both frameworks are
 local path dependencies, so `Cargo.toml` expects three checkouts side by side:
 

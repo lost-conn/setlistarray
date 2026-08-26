@@ -1,0 +1,12 @@
+# mold, via clang, for host builds only.
+#
+# rustc drives linking through the C compiler, so the linker swap has to go in
+# as a clang flag. `-fuse-ld=mold` needs clang to find `mold` on PATH; if it
+# ever isn't there the link fails loudly rather than silently falling back.
+#
+# Scoped to the host triple on purpose: the Android targets link through the
+# NDK's own lld wrapper that cargo-ndk points cargo at, and overriding the
+# linker here would break `build-apk.sh`.
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
