@@ -3,6 +3,7 @@
 use rinch::prelude::*;
 use rinch_tabler_icons::TablerIcon;
 
+use crate::menu::{MENU_SURFACE, SongMenuItems};
 use crate::model::{Attachment, Song, SongId, fmt_duration};
 use crate::store::{AttachmentsStore, NavStore, SetlistsStore, SongsStore};
 use crate::theme::{SCREEN_PAD, T_BODY, T_DETAIL_TITLE, T_META, T_META_SMALL};
@@ -14,6 +15,7 @@ pub fn SongDetail(id: Option<SongId>) -> NodeHandle {
     let songs = use_store::<SongsStore>();
     let setlists = use_store::<SetlistsStore>();
     let attachments = use_store::<AttachmentsStore>();
+    let menu_open = Signal::new(false);
 
     let id = id.unwrap_or_default();
 
@@ -54,7 +56,22 @@ pub fn SongDetail(id: Option<SongId>) -> NodeHandle {
                 IconButton { glyph: TablerIcon::ChevronLeft, size: 19, onclick: move || nav.back() }
                 div { style: "flex: 1;" }
                 IconButton { glyph: TablerIcon::Pencil, size: 17, onclick: move || {} }
-                IconButton { glyph: TablerIcon::DotsVertical, size: 17, onclick: move || {} }
+                DropdownMenu {
+                    opened_fn: move || menu_open.get(),
+                    on_close: move || menu_open.set(false),
+                    position: "bottom-end",
+                    DropdownMenuTarget {
+                        IconButton {
+                            glyph: TablerIcon::DotsVertical,
+                            size: 17,
+                            onclick: move || menu_open.update(|v| *v = !*v),
+                        }
+                    }
+                    DropdownMenuDropdown {
+                        style: {MENU_SURFACE},
+                        SongMenuItems { id: id }
+                    }
+                }
             }
 
             div { style: {format!("flex: 1; min-height: 0; overflow-y: auto; padding: 0 {SCREEN_PAD};")},

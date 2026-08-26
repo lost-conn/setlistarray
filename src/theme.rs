@@ -102,6 +102,12 @@ pub fn tokens(dark: bool, accent: Accent) -> String {
     let neutrals = if dark {
         // fill-2 is not authored for dark in the handoff — derived one step
         // below `fill` so the empty-thumb still reads as a hole, not a chip.
+        //
+        // `--sla-danger` is not authored either — the handoff never reaches a
+        // screen with a destructive action. Added for the song/setlist
+        // overflow menus' "Delete" rows (C2/C7): a true red, clearly apart
+        // from every accent hue (all warm oranges/greens/blues/purples), each
+        // variant checked against its own paper for 4.5:1.
         "--sla-paper: #181512;\
          --sla-card: #211C18;\
          --sla-fill: #241F1A;\
@@ -113,7 +119,8 @@ pub fn tokens(dark: bool, accent: Accent) -> String {
          --sla-ink: #F5EFE6;\
          --sla-skeleton: #2E2822;\
          --sla-skeleton-2: #42392F;\
-         --sla-card-shadow: 0 0 0 1px rgba(255,255,255,.05);"
+         --sla-card-shadow: 0 0 0 1px rgba(255,255,255,.05);\
+         --sla-danger: #FFB4AB;"
     } else {
         "--sla-paper: #FBF7F0;\
          --sla-card: #FFFFFF;\
@@ -126,7 +133,8 @@ pub fn tokens(dark: bool, accent: Accent) -> String {
          --sla-ink: #1C1917;\
          --sla-skeleton: #E4DACB;\
          --sla-skeleton-2: #EFE8DD;\
-         --sla-card-shadow: 0 2px 10px -4px rgba(28,25,23,.14), 0 0 0 1px rgba(28,25,23,.06);"
+         --sla-card-shadow: 0 2px 10px -4px rgba(28,25,23,.14), 0 0 0 1px rgba(28,25,23,.06);\
+         --sla-danger: #BA1B1B;"
     };
 
     let (base, tint, on_tint, on_accent, dim) = if dark {

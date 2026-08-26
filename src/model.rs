@@ -84,6 +84,40 @@ impl Day {
         ];
         NAMES[(self.month.clamp(1, 12) - 1) as usize]
     }
+
+    /// Today, read from the system clock (UTC — the calendar day, not the
+    /// wall clock, is all "mark played today" needs). No date-library
+    /// dependency, matching the rest of `Day`: just Howard Hinnant's
+    /// `civil_from_days` over seconds-since-epoch.
+    pub fn today() -> Self {
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let days = (secs / 86_400) as i64;
+        let (year, month, day) = civil_from_days(days);
+        Self {
+            year,
+            month: month as u8,
+            day: day as u8,
+        }
+    }
+}
+
+/// Days-since-the-Unix-epoch to a proleptic-Gregorian (year, month, day).
+/// <http://howardhinnant.github.io/date_algorithms.html#civil_from_days>
+fn civil_from_days(z: i64) -> (i32, u32, u32) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365; // [0, 399]
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
+    let year = if m <= 2 { y + 1 } else { y };
+    (year as i32, m, d)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -262,6 +296,29 @@ mod tests {
     fn days_order_by_calendar() {
         assert!(Day::new(2026, 8, 14) > Day::new(2026, 3, 2));
         assert!(Day::new(2026, 3, 2) > Day::new(2025, 12, 31));
+    }
+
+    #[test]
+    fn civil_from_days_matches_known_epoch_offsets() {
+        // Day 0 is the Unix epoch itself.
+        assert_eq!(civil_from_days(0), (1970, 1, 1));
+        // 10,957 days later is the well-known y2k reference point
+        // (946684800 / 86400 == 10957).
+        assert_eq!(civil_from_days(10_957), (2000, 1, 1));
+        // A date the far side of a leap day, to exercise the leap-year math.
+        assert_eq!(civil_from_days(19_782), (2024, 2, 29));
+        assert_eq!(civil_from_days(19_783), (2024, 3, 1));
+    }
+
+    #[test]
+    fn today_reads_a_plausible_calendar_day() {
+        // Not pinned to a specific date (that would just re-implement the
+        // clock) — just a sanity check that it lands in this decade and on a
+        // real day of a real month.
+        let day = Day::today();
+        assert!(day.year >= 2024 && day.year < 2100);
+        assert!((1..=12).contains(&day.month));
+        assert!((1..=31).contains(&day.day));
     }
 
     #[test]

@@ -3,6 +3,7 @@
 use rinch::prelude::*;
 use rinch_tabler_icons::TablerIcon;
 
+use crate::menu::{FULL_WIDTH_TARGET, MENU_SURFACE, SetlistMenuItems};
 use crate::model::fmt_duration;
 use crate::store::{NavStore, PlaybackStore, Route, SetlistsStore, SongsStore};
 use crate::theme::{SCREEN_PAD, T_META, T_META_SMALL, T_ROW_TITLE, T_SCREEN_TITLE};
@@ -74,28 +75,101 @@ pub fn Setlists() -> NodeHandle {
                         }
                     };
 
+                    let menu_open = Signal::new(false);
+                    // Right-click stands in for long-press — see the note in
+                    // `crate::menu`.
                     div {
                         key: id,
-                        onclick: move || nav.go(Route::SetlistDetail(id)),
-                        style: {
-                            let border = if recent { "var(--sla-muted)" } else { "var(--sla-hairline)" };
-                            format!("border: 1px solid {border}; border-radius: 14px; padding: 14px 15px; \
-                                     display: flex; align-items: flex-start; gap: 12px;")
-                        },
-                        div { style: "flex: 1; min-width: 0;",
-                            div { style: {format!("{T_ROW_TITLE}")}, {setlist.name.clone()} }
-                            div { style: {format!("{T_META} margin-top: 3px;")}, {meta.clone()} }
-                            div { style: {format!("{T_META_SMALL} margin-top: 7px;")}, {preview.clone()} }
-                        }
-                        div {
-                            onclick: move || {
-                                playback.start(id);
-                                nav.go(Route::Performance(id));
-                            },
-                            style: "width: 38px; height: 38px; border-radius: 12px; background: var(--sla-fill); \
-                                    display: flex; align-items: center; justify-content: center; \
-                                    color: var(--sla-ink-2); flex-shrink: 0;",
-                            {icon(__scope, TablerIcon::PlayerPlay, 17)}
+                        oncontextmenu: move || menu_open.set(true),
+                        DropdownMenu {
+                            opened_fn: move || menu_open.get(),
+                            on_close: move || menu_open.set(false),
+                            position: "bottom-start",
+                            style: {FULL_WIDTH_TARGET},
+                            DropdownMenuTarget {
+                                style: {FULL_WIDTH_TARGET},
+                                div {
+                                    onclick: move || nav.go(Route::SetlistDetail(id)),
+                                    style: {
+                                        let border = if recent { "var(--sla-muted)" } else { "var(--sla-hairline)" };
+                                        format!("border: 1px solid {border}; border-radius: 14px; padding: 14px 15px; \
+                                                 display: flex; align-items: flex-start; gap: 12px;")
+                                    },
+                                    div { style: "flex: 1; min-width: 0;",
+                                        if nav.renaming_setlist.get() == Some(id) {
+                                            // A shield: without a click handler
+                                            // of its own here, a click that
+                                            // misses the input/buttons below
+                                            // would walk up to the card's
+                                            // `onclick` above and navigate away
+                                            // mid-edit.
+                                            div {
+                                                onclick: move || {},
+                                                style: "display: flex; align-items: center; gap: 6px;",
+                                                TextInput {
+                                                    value_fn: move || nav.rename_draft.get(),
+                                                    oninput: move |v: String| nav.rename_draft.set(v),
+                                                    onsubmit: move || {
+                                                        let name = nav.rename_draft.get();
+                                                        if !name.trim().is_empty() {
+                                                            setlists.rename(id, name);
+                                                        }
+                                                        nav.renaming_setlist.set(None);
+                                                    },
+                                                    style: {format!(
+                                                        "{T_ROW_TITLE} flex: 1; border: 1px solid var(--sla-hairline); \
+                                                         border-radius: 8px; padding: 4px 8px; background: var(--sla-paper);"
+                                                    )},
+                                                }
+                                                div {
+                                                    onclick: move || {
+                                                        let name = nav.rename_draft.get();
+                                                        if !name.trim().is_empty() {
+                                                            setlists.rename(id, name);
+                                                        }
+                                                        nav.renaming_setlist.set(None);
+                                                    },
+                                                    style: "color: var(--sla-accent); display: flex; flex-shrink: 0;",
+                                                    {icon(__scope, TablerIcon::Check, 18)}
+                                                }
+                                                div {
+                                                    onclick: move || nav.renaming_setlist.set(None),
+                                                    style: "color: var(--sla-muted); display: flex; flex-shrink: 0;",
+                                                    {icon(__scope, TablerIcon::X, 18)}
+                                                }
+                                            }
+                                        } else {
+                                            // Recomputed rather than reusing
+                                            // the outer loop's `setlist`
+                                            // binding — a nested `if` inside
+                                            // `for` can't borrow a non-`Copy`
+                                            // value captured by the closure
+                                            // around it (see `songs_in_group`
+                                            // in `library.rs`).
+                                            div {
+                                                style: {format!("{T_ROW_TITLE}")},
+                                                {setlists.get(id).map(|s| s.name).unwrap_or_default()}
+                                            }
+                                        }
+                                        div { style: {format!("{T_META} margin-top: 3px;")}, {meta.clone()} }
+                                        div { style: {format!("{T_META_SMALL} margin-top: 7px;")}, {preview.clone()} }
+                                    }
+                                    div {
+                                        onclick: move || {
+                                            playback.start(id);
+                                            nav.go(Route::Performance(id));
+                                        },
+                                        style: "width: 38px; height: 38px; border-radius: 12px; background: var(--sla-fill); \
+                                                display: flex; align-items: center; justify-content: center; \
+                                                color: var(--sla-ink-2); flex-shrink: 0;",
+                                        {icon(__scope, TablerIcon::PlayerPlay, 17)}
+                                    }
+                                }
+                            }
+                            DropdownMenuDropdown {
+                                style: {MENU_SURFACE},
+                                SetlistMenuItems { id: id }
+                            }
                         }
                     }
                 }

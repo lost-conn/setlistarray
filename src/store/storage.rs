@@ -266,6 +266,39 @@ mod tests {
         }
     }
 
+    /// The menus' Duplicate wrote straight into the signal when it arrived, so
+    /// a copy vanished on the next launch. It goes through the repository now.
+    #[test]
+    fn a_duplicate_survives_a_restart() {
+        let dir = scratch("duplicate-survives");
+        let (song_copy, set_copy) = {
+            let session = Session::open(&dir);
+            let song = session.songs.add("Carolina", "M. Ward");
+            let set = session.setlists.add("Porch, Saturday");
+            session.setlists.add_song(set, song);
+            (
+                session.songs.duplicate(song).expect("song duplicated"),
+                session.setlists.duplicate(set).expect("setlist duplicated"),
+            )
+        };
+
+        let session = Session::open(&dir);
+        let song = session.songs.get(song_copy).expect("the song copy came back");
+        assert_eq!(song.title, "Carolina (copy)");
+        assert!(song.last_played.is_none(), "a copy has never been played");
+
+        let set = session
+            .setlists
+            .get(set_copy)
+            .expect("the setlist copy came back");
+        assert_eq!(set.name, "Porch, Saturday (copy)");
+        assert_eq!(
+            set.song_ids.len(),
+            1,
+            "the copy holds the same songs, by reference"
+        );
+    }
+
     fn chart(title: &str) -> Attachment {
         Attachment {
             id: 0,

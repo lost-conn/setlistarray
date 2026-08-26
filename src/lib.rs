@@ -22,6 +22,7 @@
 mod android;
 pub mod db;
 mod derive;
+mod menu;
 mod model;
 pub mod platform;
 mod screens;
