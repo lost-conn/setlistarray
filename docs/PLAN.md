@@ -99,17 +99,58 @@ attachment bodies means our own index or a scan, not a database feature.
   lock on its own thread. Only tests restart in-process, and `db::restart`
   retries for them.
 
-### 3. PDF rendering
+### 3. PDF rendering — settled: hayro, pure Rust
 
 Rinch has no PDF support, and PDFs are one of the three attachment kinds.
+Card D4 spiked every option and built a real signed APK for each; the numbers
+are in [PDF.md](PDF.md). **Decided 2026-08-26: `hayro`.**
 
-- **`pdfium-render`** (recommended) — bundles Google's PDFium; rasterise each
-  page to PNG on import, cache next to the attachment, display through the
-  `Image` component. Big binary, permissive licence.
-- **MuPDF** — smaller, but AGPL: it would force the whole app's licence.
-- **Pure-Rust (`pdf`, `lopdf`)** — no rasteriser worth shipping yet.
-- **Defer** — ship typed text and captured pages first; PDFs attach and open in
-  the system viewer until a renderer lands.
+| | APK (`arm64-v8a`) | Δ | Blob | Licence |
+| --- | ---: | ---: | --- | --- |
+| Today | 6,799,883 B | — | — | — |
+| **hayro** | **9,413,131 B** | **+2.49 MiB** | none | MIT / Apache-2.0 |
+| `pdfium-render` | 10,920,555 B | +3.93 MiB | 6.4 MB `libpdfium.so` | BSD-3 + 15 notices |
+| Defer | 6,799,883 B | 0 | none | — |
+
+**The bullet this list used to carry — "pure Rust: no rasteriser worth
+shipping yet" — expired.** It was true when it was written. `hayro` 0.7.1
+rasterises this app's test documents to within antialiasing noise of PDFium
+(mean absolute difference 2.0/255; 0.14 % of pixels differ by more than half a
+level), at comparable speed, in one third fewer APK bytes, with no binary blob
+and no attribution burden. Its README's "no encrypted PDF support" is also out
+of date: 0.7 ships RC4, AES-128 and AES-256.
+
+Rasterise each page on import, cache the PNG next to the attachment, display
+through the `Image` component — the shape the plan always proposed, now with
+measured costs: 6.0 ms and 104 KiB per page at 1080 px, so a 30-page chart book
+imports in 180 ms. **Encode the cache as a 16-colour palette PNG**: the same 30
+pages are 8.35 MiB as RGB8, 3.05 MiB as Luma8 and 1.30 MiB paletted. The
+encoding choice is worth more than the renderer choice.
+
+Not chosen, and why:
+
+- **`pdfium-render`** — Google's renderer, and the safer bet on correctness for
+  hostile real-world PDFs. Costs 1.5 MiB more than hayro, ships an unauditable
+  6.4 MB C++ blob that parses untrusted input in-process, and adds a BSD-3
+  attribution obligation: 16 licence texts and a notices screen this app does
+  not have.
+- **MuPDF** — AGPL. Would force the whole app's licence. Unchanged.
+- **Defer to the system viewer** — zero APK cost but not zero work, and the
+  cost lands in the wrong place: Android needs a FileProvider (no new
+  permission, so that promise survives) plus roughly 60 lines of this project's
+  first Java and a JNI `startActivity` bridge, because `rinch-android` has
+  none. Worse, PDFs would be absent from **performance mode** entirely — the
+  most common chart format, missing from the screen this app exists for.
+- **`android.graphics.pdf.PdfRenderer`** — an option decision 3 never listed:
+  zero APK bytes, no permission, and PDFium underneath. Rejected because it is
+  JNI plus a Java shim and does nothing at all for the desktop, where this app
+  is also developed and run.
+
+**The risk accepted:** hayro is young (0.7.1), and it is now on the critical
+path for one of the three attachment kinds. An escape-hatch trait with a
+swappable renderer was offered and declined — if hayro mangles a chart someone
+actually owns, that is the moment to revisit, and PDF.md keeps the pdfium
+measurements so the comparison does not have to be redone.
 
 ---
 
