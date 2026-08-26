@@ -24,6 +24,12 @@ rinch = { path = "../rinch-fixes/crates/rinch", default-features = false, featur
 # and the handoff calls for Tabler icons throughout.
 rinch-tabler-icons = { path = "../rinch-fixes/crates/rinch-tabler-icons" }
 
+# The library itself: rhypedb, in-process. `default-features = false` keeps the
+# fastembed/ONNX stack out — an embedding runtime is not something this app can
+# ship on a phone, and nothing here needs vector search.
+rhypedb-engine = { path = "../rhypedb-main/crates/rhypedb-engine", default-features = false }
+rhypedb-schema = { path = "../rhypedb-main/crates/rhypedb-schema" }
+
 [features]
 # Rinch's debug IPC server: DOM dumps, computed styles, screenshots, synthetic
 # input. It listens on a localhost port whenever it is compiled in, so it is

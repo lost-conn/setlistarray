@@ -57,20 +57,37 @@ Two more crates change earlier assumptions:
 | No wallpaper colours | Material You accent extraction, per the handoff's resolution order | `WallpaperManager.getWallpaperColors()` over JNI; until then `AccentChoice::FromSystem` falls back to Rust, which the handoff explicitly allows |
 | Status bar space is hard-coded 44px | `src/main.rs` reserves it as a fixed strip | Use `display::safe_area_insets()` / `density_dpi()` as `hello-android` does |
 
-### 2. Where the data lives — settled: SQLite
+### 2. Where the data lives — settled: rhypedb
 
-`rusqlite` with the `bundled` feature, one database file plus an attachments
-directory. The open question was whether its C would cross-compile to Android;
-card K6 proved it does:
+[rhypedb](https://github.com/joeleaver/rhypedb), in-process. Not SQLite, which
+the K6 spike had already proven viable — the call is to dogfood the stack this
+app's framework comes from, and the object/relationship model fits a library of
+songs better than tables do.
 
-- builds clean for `aarch64-linux-android` and `x86_64-linux-android` under
-  cargo-ndk with NDK r27c
-- the linked artefact carries FTS5 (291 fts5 symbols in a forced-export build),
-  so "search inside attachments" (card G2) works the same on both platforms
-- costs about 2 MB of `.so` per ABI
+Proven before committing to it:
 
-The alternative — one JSON document — would have meant loading every capture
-into memory to search it, and rewriting the file on every edit.
+- `rhypedb-engine` with `default-features = false` cross-compiles to
+  `aarch64-linux-android` (pure-Rust LSM — WAL, memtable, SST, MVCC; no C
+  toolchain). Default features pull the fastembed/ONNX stack, which this app
+  can never ship on a phone — hence the explicit opt-out.
+- `Database::open(schema, dir)` runs in-process. The documented path is a
+  server with an HTTP/TCP client; embedding is undocumented but public.
+- A song stores only the fields it has, and unset ones read back absent.
+- Setlist order rides on the membership link as a `position` edge field.
+- `@on_delete(cascade)` / `@on_delete(remove)` do card J5's work in the schema:
+  deleting a song drops it from every set, unlinking leaves the song alone.
+
+**What we give up:** there is no substring or full-text filter — the operators
+are `Eq/Ne/Lt/Le/Gt/Ge`. That is not confined to attachments: the library's own
+search field has no database-side equivalent either. Both happen in Rust over
+data already in memory (`derive::filter_songs`), which for a few hundred songs
+is the right shape anyway. Card G2 is rescoped accordingly: searching inside
+attachment bodies means our own index or a scan, not a database feature.
+
+**Gotcha found the hard way:** an edge-field block must come *before* any
+directive on the same field. `songs: [Song] { position: u32 } @on_delete(remove)`
+parses; the other order fails with `expected identifier`. Worth reporting
+upstream — the docs only ever show an edge block with no directive.
 
 ### 3. PDF rendering
 
@@ -107,9 +124,9 @@ Nothing else is worth building on top of in-memory state.
 
 | # | Card | Size |
 | --- | --- | --- |
-| B1 | `src/db/mod.rs`: open/create the database under the platform data dir, schema v1 (`songs`, `setlists`, `setlist_songs`, `attachments`, `settings`, `library_view`), `PRAGMA user_version` migrations. | M |
+| B1 | ~~`src/db/`: schema v1 (`Song`, `Setlist`, `Attachment` with ordered membership), `Database::open` behind a `DataDir` seam, and the domain↔object conversion.~~ Done. | ✔ |
 | B2 | Repository functions per store — load-all at startup, write-through on mutation. Keep the store API as-is so screens do not change. | M |
-| B3 | Persist `LibraryViewStore` (query, group-by, sort, density, collapsed groups) and `SettingsStore`; restore on launch. Each tab keeps its own state, per the handoff. | S |
+| B3 | Persist `LibraryViewStore` (query, group-by, sort, density, collapsed groups) and `SettingsStore`; restore on launch. Small and singular — a settings blob rather than objects. | S |
 | B4 | Attachments directory: `<data>/attachments/<id>/` holding the file plus derived assets; delete on attachment removal. | S |
 | B5 | Replace `src/seed.rs` with a first-run empty database; keep the seed behind a `--seed` flag for screenshots and tests. | S |
 
@@ -191,7 +208,7 @@ staying awake.
 | # | Card | Wireframe | Size |
 | --- | --- | --- | --- |
 | G1 | Search & filter screen: live results grouped into Songs · Setlists · Inside attachments, matched substring highlighted. | `1p` | M |
-| G2 | Full-text search over typed text and captured pages — SQLite FTS5 over extracted text, populated at attachment import. | M |
+| G2 | Search inside typed text and captured pages. rhypedb has no full-text or substring filter, so this is our own inverted index over extracted text, built at attachment import — or a scan, if the library stays small. Lower priority than the rest of Phase G. | M |
 | G3 | Filter chips beyond sorting: confidence, tag, tuning, has-chart. | S |
 
 ---

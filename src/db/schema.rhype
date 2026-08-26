@@ -1,0 +1,57 @@
+// SetListArray, schema v1.
+//
+// Everything except a song's title, artist and created_at is optional — the
+// handoff is explicit that unfilled metadata is absent, never a placeholder.
+// rhypedb lets a field simply not be set, which is exactly that.
+//
+// Note for anyone editing: an edge-field block must come BEFORE any directive
+// on the same field. `songs: [Song] { position: u32 } @on_delete(remove)`
+// parses; putting the block after the directive does not.
+
+type Attachment {
+    // Pdf | CapturedPage | Text
+    kind: String
+    title: String
+    bytes_on_disk: u64
+    page_count: u32
+    source_url: String
+    captured_at: DateTime
+    // Extracted text, for typed attachments and for searching captures.
+    body: String
+}
+
+type Song {
+    title: String
+    artist: String
+    // `key` on its own reads as a reserved word in too many places; the UI
+    // still calls it the key.
+    song_key: String
+    tempo: u32
+    tuning: String
+    capo: u32
+    // Seconds.
+    duration: u32
+    // Comma-separated; there are only ever a handful per song and no query
+    // needs to filter on them server-side.
+    tags: String
+    // Solid | Rusty | Learning. Absent means unrated.
+    confidence: String
+    notes: String
+    last_played: DateTime
+    created_at: DateTime
+    // The first attachment added becomes the primary one.
+    primary_attachment: u64
+    attachments: [Attachment] @on_delete(cascade)
+    setlists: [Setlist] @inverse(Setlist.songs)
+}
+
+type Setlist {
+    name: String
+    last_played: DateTime
+    created_at: DateTime
+    // Membership is by reference and ordered: `position` is the running order,
+    // and removing a song from a set never touches the song.
+    songs: [Song] {
+        position: u32
+    } @on_delete(remove)
+}

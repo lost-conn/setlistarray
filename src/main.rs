@@ -14,6 +14,7 @@
 // The store API is complete ahead of the wireframe screens that will call it.
 #![allow(dead_code)]
 
+mod db;
 mod derive;
 mod model;
 mod screens;
