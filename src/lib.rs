@@ -40,8 +40,8 @@ use rinch_tabler_icons::TablerIcon;
 use db::DataDir;
 use platform::SafeArea;
 use screens::{
-    AddToSetlistSheet, Library, SetlistDetail, Setlists, SongDetail, SongForm, SortGroupSheet,
-    Stub,
+    AddToSetlistSheet, Library, SetlistDetail, SetlistPicker, Setlists, SongDetail, SongForm,
+    SortGroupSheet, Stub,
 };
 use store::{
     AttachmentsStore, LibraryViewStore, NavStore, PlaybackStore, Route, SettingsStore,
@@ -143,11 +143,12 @@ pub fn app() -> NodeHandle {
 
             {bottom_nav(__scope, safe.bottom.max(NAV_MIN_GAP))}
 
-            // The two bottom sheets. Both stay mounted for the life of the app,
-            // parked below the fold, so that opening one has something to slide.
-            // They sit last so they paint over the screen and the nav.
+            // The three bottom sheets. All stay mounted for the life of the
+            // app, parked below the fold, so that opening one has something to
+            // slide. They sit last so they paint over the screen and the nav.
             SortGroupSheet {}
             AddToSetlistSheet {}
+            SetlistPicker {}
         }
     }
 }

@@ -34,6 +34,10 @@ pub struct NavStore {
     pub add_to_setlist_for: Signal<Option<SongId>>,
     /// The sort & group bottom sheet.
     pub sort_sheet_open: Signal<bool>,
+    /// The setlist song picker (`1i`), when open over a setlist. The setlist
+    /// detail screen stays mounted and visible behind it — that is the whole
+    /// reason `1i` was chosen over the two-step wizard.
+    pub picking_songs_for: Signal<Option<SetlistId>>,
     /// The setlist card currently in inline rename mode on the Setlists tab
     /// (opened from its long-press/right-click menu), and the text field's
     /// live draft. Screen-transient UI state, same as the two fields above —
@@ -49,6 +53,7 @@ impl NavStore {
             tab: Signal::new(Tab::Songs),
             add_to_setlist_for: Signal::new(None),
             sort_sheet_open: Signal::new(false),
+            picking_songs_for: Signal::new(None),
             renaming_setlist: Signal::new(None),
             rename_draft: Signal::new(String::new()),
         }

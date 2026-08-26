@@ -84,6 +84,31 @@ impl SetlistsStore {
         self.commit_order("adding a song to a setlist", setlist, order);
     }
 
+    /// Several songs onto the end of a setlist, in the order given, in one
+    /// write.
+    ///
+    /// The picker (`1i`) hands over everything the user ticked at once, and
+    /// membership is one statement — so this is one `set_members` rather than
+    /// N of them. Existing positions are untouched: the new songs land after
+    /// the last one already there, in tick order. Anything already in the set
+    /// is skipped rather than moved, because a set holds a song once and
+    /// "add" is not a reorder.
+    pub fn add_songs(self, setlist: SetlistId, songs: &[SongId]) {
+        let Some(current) = self.get(setlist) else {
+            return;
+        };
+        let mut order = current.song_ids.clone();
+        for song in songs {
+            if !order.contains(song) {
+                order.push(*song);
+            }
+        }
+        if order.len() == current.song_ids.len() {
+            return;
+        }
+        self.commit_order("adding songs to a setlist", setlist, order);
+    }
+
     /// Removing here never deletes the song itself — `@on_delete(remove)` on the
     /// membership makes that the schema's promise, not ours to keep by hand.
     pub fn remove_song(self, setlist: SetlistId, song: SongId) {
@@ -211,6 +236,39 @@ mod tests {
         let sl = setlists.get(id).unwrap();
         assert_eq!(sl.name, "Saturday set");
         assert_eq!(sl.song_ids, vec![1, 2]);
+    }
+
+    #[test]
+    fn added_songs_land_after_the_existing_ones_in_the_order_they_were_picked() {
+        let setlists = store();
+        let id = setlists.setlists.get()[0].id;
+        setlists.add_songs(id, &[7, 5, 9]);
+        assert_eq!(setlists.get(id).unwrap().song_ids, vec![1, 2, 7, 5, 9]);
+    }
+
+    #[test]
+    fn adding_a_song_the_set_already_holds_does_not_move_it() {
+        let setlists = store();
+        let id = setlists.setlists.get()[0].id;
+        setlists.add_songs(id, &[1, 3]);
+        // 1 keeps its position; only 3 joins, at the end.
+        assert_eq!(setlists.get(id).unwrap().song_ids, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn adding_nothing_new_leaves_the_running_order_alone() {
+        let setlists = store();
+        let id = setlists.setlists.get()[0].id;
+        setlists.add_songs(id, &[2, 1]);
+        setlists.add_songs(id, &[]);
+        assert_eq!(setlists.get(id).unwrap().song_ids, vec![1, 2]);
+    }
+
+    #[test]
+    fn adding_songs_to_a_missing_setlist_is_a_no_op() {
+        let setlists = store();
+        setlists.add_songs(999, &[1, 2]);
+        assert_eq!(setlists.setlists.get().len(), 1);
     }
 
     #[test]

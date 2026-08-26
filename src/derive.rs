@@ -5,7 +5,7 @@
 //! plain functions — no signals, no stores — means the rules the screens are
 //! thin over can be tested without a window.
 
-use crate::model::{Confidence, Setlist, Song, fmt_duration};
+use crate::model::{Confidence, Day, Setlist, Song, fmt_duration};
 use crate::store::{Group, GroupBy, SortDir, SortField};
 
 /// How many rows a group shows before "Show N more".
@@ -244,6 +244,181 @@ pub fn setlist_summary(setlist: &Setlist, songs: &[Song]) -> String {
         0 => "empty".to_string(),
         1 => format!("1 song · {}", fmt_duration(total_runtime(&members))),
         n => format!("{n} songs · {}", fmt_duration(total_runtime(&members))),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Setlist song picker (`1i`)
+// ---------------------------------------------------------------------------
+
+/// How far back "Recent" reaches, in days.
+///
+/// The wireframe names the chip and stops there, so the meaning is decided
+/// here. A season is the unit a hobbyist's repertoire actually turns over in:
+/// short enough that ninety days genuinely narrows a three-hundred-song book,
+/// long enough that somebody who plays once a month still recognises the list
+/// as theirs. A rank ("the twenty most recent") was the alternative and was
+/// rejected — it can never say "you have not played anything lately", which is
+/// the one honest answer this chip sometimes has to give.
+pub const RECENT_DAYS: i64 = 90;
+
+/// The picker's filter chips: All · Solid · Recent · Tag.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SongFilter {
+    All,
+    /// Confidence `Solid` — the same word the library's first group header
+    /// uses, and the same word the Songs screen counts in accent.
+    Solid,
+    /// Played *or* added inside [`RECENT_DAYS`].
+    ///
+    /// Both halves, because both are "fresh": a song played last week is still
+    /// in the fingers, and a song typed in this morning is the reason the
+    /// picker is probably open at all. Either one alone leaves out a case the
+    /// user would call recent.
+    Recent,
+    /// Carries a tag. Which tag is a second choice — see
+    /// [`chosen_tag_matches`] and the tag row the sheet reveals.
+    Tag,
+}
+
+impl SongFilter {
+    pub fn label(self) -> &'static str {
+        match self {
+            SongFilter::All => "All",
+            SongFilter::Solid => "Solid",
+            SongFilter::Recent => "Recent",
+            SongFilter::Tag => "Tag",
+        }
+    }
+
+    pub const ALL: [SongFilter; 4] = [
+        SongFilter::All,
+        SongFilter::Solid,
+        SongFilter::Recent,
+        SongFilter::Tag,
+    ];
+}
+
+/// Whether a song carries `tag`, or — with no tag chosen — any tag at all.
+///
+/// Tags are compared the way [`parse_tags`] dedupes them: case-insensitively,
+/// because `Campfire` and `campfire` are one tag to everyone but a byte
+/// comparison.
+fn chosen_tag_matches(song: &Song, tag: Option<&str>) -> bool {
+    match tag {
+        Some(tag) => song.tags.iter().any(|t| t.eq_ignore_ascii_case(tag)),
+        None => !song.tags.is_empty(),
+    }
+}
+
+/// Played or added within [`RECENT_DAYS`] of `today`.
+///
+/// `today` is a parameter rather than a call to [`Day::today`] so the rule can
+/// be tested without the system clock deciding the answer.
+fn is_recent(song: &Song, today: Day) -> bool {
+    let cutoff = today.days_since_epoch() - RECENT_DAYS;
+    let played = song
+        .last_played
+        .is_some_and(|d| d.days_since_epoch() >= cutoff);
+    // `created_at` is epoch milliseconds; the whole days in it are what the
+    // cutoff is expressed in.
+    let added = (song.created_at / 1000 / 86_400) as i64 >= cutoff;
+    played || added
+}
+
+/// Whether one song survives the active filter chip.
+pub fn matches_filter(song: &Song, filter: SongFilter, tag: Option<&str>, today: Day) -> bool {
+    match filter {
+        SongFilter::All => true,
+        SongFilter::Solid => song.confidence == Some(Confidence::Solid),
+        SongFilter::Recent => is_recent(song, today),
+        SongFilter::Tag => chosen_tag_matches(song, tag),
+    }
+}
+
+/// The picker's list: the library, searched, filtered, and sorted A–Z by title.
+///
+/// Title order rather than the library's own sort because this list is flat —
+/// the grouping the library sort is paired with is not here — and because a
+/// picker is used with a song already in mind. It is fixed rather than
+/// tracking the ticks: a list that reordered itself as rows were ticked would
+/// move the next row out from under a finger already on its way down.
+pub fn picker_songs(
+    songs: Vec<Song>,
+    query: &str,
+    filter: SongFilter,
+    tag: Option<&str>,
+    today: Day,
+) -> Vec<Song> {
+    let mut songs: Vec<Song> = filter_songs(songs, query)
+        .into_iter()
+        .filter(|song| matches_filter(song, filter, tag, today))
+        .collect();
+    sort_songs(&mut songs, SortField::Title, SortDir::Asc);
+    songs
+}
+
+/// Every tag in the book, once each, A–Z.
+///
+/// Deduped case-insensitively and keeping the spelling that was typed first,
+/// which is the rule [`parse_tags`] already applies inside one song — applied
+/// across the whole book so the tag row does not offer `campfire` twice.
+pub fn library_tags(songs: &[Song]) -> Vec<String> {
+    let mut tags: Vec<String> = Vec::new();
+    for song in songs {
+        for tag in &song.tags {
+            if !tags.iter().any(|t| t.eq_ignore_ascii_case(tag)) {
+                tags.push(tag.clone());
+            }
+        }
+    }
+    tags.sort_by_key(|t| t.to_lowercase());
+    tags
+}
+
+/// The running count beside the picker's title: `2 picked`.
+///
+/// Nothing at zero. An empty slot is not this app's house style, and a count
+/// that appears with the first tick is the feedback the tick is asking for.
+pub fn picked_note(picked: usize) -> String {
+    match picked {
+        0 => String::new(),
+        1 => "1 picked".to_string(),
+        n => format!("{n} picked"),
+    }
+}
+
+/// The picker's footer button: `Add 2 songs`.
+///
+/// Zero reads `Add songs` rather than `Add 0 songs`; the button is disabled
+/// there anyway, and the plural is what the row it sits under promises.
+pub fn add_songs_label(picked: usize) -> String {
+    match picked {
+        0 => "Add songs".to_string(),
+        1 => "Add 1 song".to_string(),
+        n => format!("Add {n} songs"),
+    }
+}
+
+/// What the picker says when nothing survives the search and the chip.
+///
+/// The search text wins when there is any, because a typed query is the thing
+/// the user just did; otherwise the chip explains itself in its own terms.
+pub fn picker_empty_note(filter: SongFilter, tag: Option<&str>, query: &str) -> String {
+    let query = query.trim();
+    if !query.is_empty() {
+        return format!("Nothing in your book matches \u{201c}{query}\u{201d}.");
+    }
+    match filter {
+        SongFilter::All => "Your book has no songs in it yet.".to_string(),
+        SongFilter::Solid => "No song is marked solid yet.".to_string(),
+        SongFilter::Recent => {
+            format!("Nothing played or added in the last {RECENT_DAYS} days.")
+        }
+        SongFilter::Tag => match tag {
+            Some(tag) => format!("Nothing is tagged \u{201c}{tag}\u{201d}."),
+            None => "No song carries a tag yet.".to_string(),
+        },
     }
 }
 
@@ -987,6 +1162,206 @@ mod tests {
         // screen; the first one typed is the one kept.
         assert_eq!(parse_tags("Campfire, campfire"), ["Campfire"]);
         assert_eq!(parse_tags("campfire, Campfire"), ["campfire"]);
+    }
+
+    // ── setlist song picker (`1i`) ──────────────────────────────────────
+
+    /// A fixed "today" so the window under test is the rule's, not the
+    /// clock's.
+    const TODAY: Day = Day::new(2026, 8, 26);
+
+    /// A song last played `days` before `TODAY`, and added at the epoch — so
+    /// only last-played can make it recent.
+    fn played_days_ago(id: u32, days: i64) -> Song {
+        let mut s = song(id, &format!("Song {id}"), "A");
+        s.last_played = Some(Day::from_days_since_epoch(TODAY.days_since_epoch() - days));
+        s.created_at = 0;
+        s
+    }
+
+    fn tagged(id: u32, tags: &[&str]) -> Song {
+        let mut s = song(id, &format!("Song {id}"), "A");
+        s.tags = tags.iter().map(|t| (*t).to_string()).collect();
+        s
+    }
+
+    #[test]
+    fn the_all_chip_keeps_every_song() {
+        let songs = vec![song(1, "One", "A"), rated(2, "Two", "B", Confidence::Rusty)];
+        let kept = picker_songs(songs, "", SongFilter::All, None, TODAY);
+        assert_eq!(kept.len(), 2);
+    }
+
+    #[test]
+    fn the_solid_chip_keeps_only_songs_marked_solid() {
+        let songs = vec![
+            rated(1, "Solid one", "A", Confidence::Solid),
+            rated(2, "Rusty one", "B", Confidence::Rusty),
+            rated(3, "Learning one", "C", Confidence::Learning),
+            song(4, "Unrated one", "D"),
+        ];
+        assert_eq!(
+            titles(&picker_songs(songs, "", SongFilter::Solid, None, TODAY)),
+            ["Solid one"]
+        );
+    }
+
+    #[test]
+    fn the_recent_chip_reaches_exactly_ninety_days_back() {
+        // The boundary is inclusive: a song played on the ninetieth day back
+        // is still recent, the ninety-first is not.
+        assert!(matches_filter(
+            &played_days_ago(1, RECENT_DAYS),
+            SongFilter::Recent,
+            None,
+            TODAY
+        ));
+        assert!(!matches_filter(
+            &played_days_ago(2, RECENT_DAYS + 1),
+            SongFilter::Recent,
+            None,
+            TODAY
+        ));
+        assert!(matches_filter(
+            &played_days_ago(3, 0),
+            SongFilter::Recent,
+            None,
+            TODAY
+        ));
+    }
+
+    #[test]
+    fn a_song_added_recently_is_recent_even_if_it_has_never_been_played() {
+        let mut fresh = song(1, "Typed in this morning", "A");
+        fresh.last_played = None;
+        fresh.created_at = (TODAY.days_since_epoch() as u64) * 86_400 * 1000;
+        assert!(matches_filter(&fresh, SongFilter::Recent, None, TODAY));
+
+        // ...and an old song nobody has played is not.
+        let stale = song(2, "Filed years ago", "A");
+        assert_eq!(stale.created_at, 2); // `Song::new` seeds it from the id
+        assert!(!matches_filter(&stale, SongFilter::Recent, None, TODAY));
+    }
+
+    #[test]
+    fn a_never_played_song_is_not_recent_by_default() {
+        let songs = vec![song(1, "Never played", "A")];
+        assert!(picker_songs(songs, "", SongFilter::Recent, None, TODAY).is_empty());
+    }
+
+    #[test]
+    fn the_tag_chip_with_no_tag_chosen_keeps_every_tagged_song() {
+        let songs = vec![
+            tagged(1, &["campfire"]),
+            tagged(2, &["fingerstyle", "crowd"]),
+            song(3, "Untagged", "A"),
+        ];
+        assert_eq!(
+            titles(&picker_songs(songs, "", SongFilter::Tag, None, TODAY)),
+            ["Song 1", "Song 2"]
+        );
+    }
+
+    #[test]
+    fn a_chosen_tag_narrows_to_it_whatever_its_case() {
+        let songs = vec![tagged(1, &["Campfire"]), tagged(2, &["crowd"])];
+        assert_eq!(
+            titles(&picker_songs(
+                songs.clone(),
+                "",
+                SongFilter::Tag,
+                Some("campfire"),
+                TODAY
+            )),
+            ["Song 1"]
+        );
+        assert!(
+            picker_songs(songs, "", SongFilter::Tag, Some("wedding"), TODAY).is_empty()
+        );
+    }
+
+    #[test]
+    fn the_search_field_and_the_chip_both_apply() {
+        let mut solid = rated(1, "Blackbird", "The Beatles", Confidence::Solid);
+        solid.tags = vec!["campfire".into()];
+        let songs = vec![
+            solid,
+            rated(2, "Blowin' In The Wind", "Bob Dylan", Confidence::Solid),
+            rated(3, "Blackwater", "Doobie Brothers", Confidence::Rusty),
+        ];
+        assert_eq!(
+            titles(&picker_songs(songs, "black", SongFilter::Solid, None, TODAY)),
+            ["Blackbird"]
+        );
+    }
+
+    #[test]
+    fn the_picker_list_is_alphabetical_whatever_order_the_book_is_in() {
+        let songs = vec![
+            song(1, "Cortez The Killer", "Neil Young"),
+            song(2, "Atlantic City", "Springsteen"),
+            song(3, "big yellow taxi", "Joni Mitchell"),
+        ];
+        assert_eq!(
+            titles(&picker_songs(songs, "", SongFilter::All, None, TODAY)),
+            ["Atlantic City", "big yellow taxi", "Cortez The Killer"]
+        );
+    }
+
+    #[test]
+    fn the_tag_row_lists_every_tag_once_in_the_spelling_that_came_first() {
+        let songs = vec![
+            tagged(1, &["Campfire", "wedding"]),
+            tagged(2, &["campfire"]),
+            tagged(3, &["crowd"]),
+        ];
+        assert_eq!(library_tags(&songs), ["Campfire", "crowd", "wedding"]);
+    }
+
+    #[test]
+    fn a_book_with_no_tags_offers_no_tag_row() {
+        assert!(library_tags(&[song(1, "One", "A")]).is_empty());
+    }
+
+    #[test]
+    fn the_running_count_says_nothing_until_something_is_picked() {
+        assert_eq!(picked_note(0), "");
+        assert_eq!(picked_note(1), "1 picked");
+        assert_eq!(picked_note(2), "2 picked");
+        assert_eq!(picked_note(11), "11 picked");
+    }
+
+    #[test]
+    fn the_add_button_counts_and_pluralises_what_it_will_add() {
+        assert_eq!(add_songs_label(0), "Add songs");
+        assert_eq!(add_songs_label(1), "Add 1 song");
+        assert_eq!(add_songs_label(2), "Add 2 songs");
+        assert_eq!(add_songs_label(12), "Add 12 songs");
+    }
+
+    #[test]
+    fn an_empty_list_explains_itself_in_the_terms_the_user_just_used() {
+        // A typed query wins over the chip: it is the thing just done.
+        assert_eq!(
+            picker_empty_note(SongFilter::Solid, None, "  blackbird "),
+            "Nothing in your book matches \u{201c}blackbird\u{201d}."
+        );
+        assert_eq!(
+            picker_empty_note(SongFilter::Recent, None, ""),
+            format!("Nothing played or added in the last {RECENT_DAYS} days.")
+        );
+        assert_eq!(
+            picker_empty_note(SongFilter::Tag, Some("wedding"), ""),
+            "Nothing is tagged \u{201c}wedding\u{201d}."
+        );
+        assert_eq!(
+            picker_empty_note(SongFilter::Tag, None, ""),
+            "No song carries a tag yet."
+        );
+        assert_eq!(
+            picker_empty_note(SongFilter::All, None, ""),
+            "Your book has no songs in it yet."
+        );
     }
 
     // ── helpers ─────────────────────────────────────────────────────────

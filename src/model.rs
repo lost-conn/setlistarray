@@ -102,6 +102,46 @@ impl Day {
             day: day as u8,
         }
     }
+
+    /// The calendar day `n` days after 1970-01-01 — the inverse of
+    /// [`days_since_epoch`](Self::days_since_epoch).
+    pub fn from_days_since_epoch(n: i64) -> Self {
+        let (year, month, day) = civil_from_days(n);
+        Self {
+            year,
+            month: month as u8,
+            day: day as u8,
+        }
+    }
+
+    /// Days since 1970-01-01, so that two `Day`s can be subtracted.
+    ///
+    /// `Day` deliberately has no time zone and no dependency, and ordering was
+    /// all it needed until something wanted a *window* — the picker's "Recent"
+    /// chip asks "within the last 90 days", which ordering alone cannot
+    /// answer. This is the inverse of [`civil_from_days`], from the same
+    /// source, so the two round-trip.
+    pub fn days_since_epoch(self) -> i64 {
+        days_from_civil(
+            self.year,
+            self.month.clamp(1, 12) as u32,
+            self.day.max(1) as u32,
+        )
+    }
+}
+
+/// A proleptic-Gregorian (year, month, day) to days-since-the-Unix-epoch.
+/// <http://howardhinnant.github.io/date_algorithms.html#days_from_civil>
+fn days_from_civil(y: i32, m: u32, d: u32) -> i64 {
+    // The algorithm counts years from March, so January and February belong to
+    // the year before.
+    let y = y as i64 - i64::from(m <= 2);
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = (y - era * 400) as u64; // [0, 399]
+    let mp = u64::from(if m > 2 { m - 3 } else { m + 9 }); // [0, 11]
+    let doy = (153 * mp + 2) / 5 + u64::from(d) - 1; // [0, 365]
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
+    era * 146_097 + doe as i64 - 719_468
 }
 
 /// Days-since-the-Unix-epoch to a proleptic-Gregorian (year, month, day).
@@ -308,6 +348,41 @@ mod tests {
         // A date the far side of a leap day, to exercise the leap-year math.
         assert_eq!(civil_from_days(19_782), (2024, 2, 29));
         assert_eq!(civil_from_days(19_783), (2024, 3, 1));
+    }
+
+    #[test]
+    fn days_from_civil_inverts_civil_from_days() {
+        // The two halves of Hinnant's pair have to agree, or a date window
+        // silently measures the wrong number of days.
+        for days in [-25_000i64, -1, 0, 1, 10_957, 19_782, 19_783, 20_693, 60_000] {
+            let (y, m, d) = civil_from_days(days);
+            assert_eq!(
+                days_from_civil(y, m, d),
+                days,
+                "round trip failed for {y}-{m:02}-{d:02}"
+            );
+        }
+    }
+
+    #[test]
+    fn two_days_subtract_to_the_gap_between_them() {
+        let june = Day::new(2026, 6, 2).days_since_epoch();
+        let august = Day::new(2026, 8, 26).days_since_epoch();
+        assert_eq!(august - june, 85);
+        // Across a leap day, and across a year boundary.
+        assert_eq!(
+            Day::new(2024, 3, 1).days_since_epoch() - Day::new(2024, 2, 28).days_since_epoch(),
+            2
+        );
+        assert_eq!(
+            Day::new(2026, 1, 1).days_since_epoch() - Day::new(2025, 1, 1).days_since_epoch(),
+            365
+        );
+    }
+
+    #[test]
+    fn the_epoch_is_day_zero() {
+        assert_eq!(Day::new(1970, 1, 1).days_since_epoch(), 0);
     }
 
     #[test]

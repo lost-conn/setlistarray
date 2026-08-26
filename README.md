@@ -169,10 +169,17 @@ nothing in the UI code assumes either platform. See "Android" below.
   primary attachment card, collapsed other attachments, footer actions.
 - **Setlist detail** — hi-fi. Position numbers, the cumulative start-time
   column, the no-chart warning pill, the derived "Before you start" panel,
-  Play set.
+  Play set. Every value on it is derived inside a reactive closure, because the
+  song picker adds to the set while the screen is still underneath it.
 - **Setlists tab** — wireframe `1m`, styled with the hi-fi tokens.
 - **Add to setlist sheet** — wireframe `2e`. Bottom sheet over the song,
   multi-select, `already in this set` on the sets that hold it, create inline.
+- **Setlist song picker** — wireframe `1i`. Slides over setlist detail so the
+  set stays readable behind it; search, `All / Solid / Recent / Tag` chips
+  (`Tag` reveals a second row of the tags in your book), a checkbox list with
+  `already in this set` on the songs the set holds, a running `2 picked` count
+  and **Add 2 songs**. Picked songs join the end of the set in the order they
+  were ticked, in one write.
 - **Sort & group sheet** — wireframe `2c`. Group-by chips, every metadata field
   as a sort row, tap the active row to reverse, sparse fields greyed with a
   count but still selectable.
