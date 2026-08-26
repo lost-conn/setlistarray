@@ -52,13 +52,26 @@ scripts/screenshot.sh --update   # re-record baselines from this run instead
 ```
 
 Builds release, launches the app under X11 (`-u WAYLAND_DISPLAY`; window
-capture needs a real X window), grabs its window with ImageMagick's `import`,
-and samples five known-good regions of the library screen against
+capture needs a real X window) against a **throwaway seeded library**, grabs
+its window with ImageMagick's `import`, and samples five known-good regions
+of the library screen against
 `scripts/screenshot-baseline.json`: the first row's attachment thumb (grey
 mean — this is the exact check that caught "The paint regression" below),
 the FAB and the first group header and the active bottom-nav item (all
 sampled for the accent colour, `#B54724`), and the screen background
 (`#FBF7F0`). Exits non-zero if any check fails, so it can gate a commit.
+
+The library it samples is its own: a fresh `$XDG_DATA_HOME` under `$TMPDIR`,
+filled by `--seed` and deleted on the way out. Never
+`~/.local/share/setlistarray`. Two of the five checks — the first row's thumb
+and the first group header — sample *content*, so pointing them at whatever
+happens to be in your own book makes the baseline a measurement of your songs
+rather than of this repository, and a gate that can go red for a reason
+`git diff` cannot show you is not a gate. It has already happened once: an
+emptied library drew bare paper where the first thumb should be, and the two
+content checks failed in a way that reads exactly like a fresh paint
+regression. It also means the check runs fine while you have the real app
+open — rhypedb takes a directory lock, and previously the two collided.
 
 The window is found by matching its title *and* its `_NET_WM_PID` X property
 against the PID this script just launched — not by title alone, because this
@@ -98,6 +111,7 @@ nothing in the UI code assumes either platform. See "Android" below.
 | `src/ui.rs` | Shared pieces: chips, confidence dots, attachment thumbs, list rows. |
 | `src/screens/` | One file per screen. |
 | `src/db/` | The rhypedb schema, the domain↔object conversion, and the repository every store writes through. |
+| `src/capture/` | Offline webpage capture: fetch, sanitise, rewrite images, judge what came back. No Signals, like `src/db/`. See [docs/CAPTURE.md](docs/CAPTURE.md). |
 | `src/seed.rs` | Demo content, behind `--seed`. Not on the startup path. |
 | `src/platform.rs` | Safe-area insets: real ones on Android, the phone stand-in on desktop. |
 | `android/` | `AndroidManifest.xml`. No permissions, and a test asserts it stays that way. |
@@ -126,8 +140,11 @@ See [docs/PLAN.md](docs/PLAN.md) for the phased plan to finish the rest.
 
 Each of these has a `Stub` screen naming its wireframe: Settings (`1q`),
 Add/edit song (`1j`), Performance view (`1o`). Not yet started: attachment
-viewer (`1k`), offline webpage capture (`1l`), search & filter (`1p`),
-first run (`1r`).
+viewer (`1k`), search & filter (`1p`), first run (`1r`).
+
+Offline webpage capture (`1l`) has its **engine** — `src/capture/`, tested and
+proven against eight real chord sites — and none of its UI. It also cannot run
+on Android as things stand; see below and [docs/CAPTURE.md](docs/CAPTURE.md).
 
 Also outstanding:
 
@@ -190,11 +207,25 @@ all of it `libsetlistarray.so`.
 ### No permissions, on purpose
 
 `android/AndroidManifest.xml` declares none, and
-`the_android_manifest_asks_for_no_permissions` fails the build if one appears.
-This app is offline-first: app-private storage needs no permission, and
-attachment import (card K4) goes through the system file picker, which grants
-access per file without one either. `android:allowBackup="false"` for the same
-reason — "nothing uploaded" includes Google's cloud backup.
+`the_android_manifest_asks_for_no_permissions` (in `src/lib.rs`) fails the
+build if one appears. This app is offline-first: app-private storage needs no
+permission, and attachment import (card K4) goes through the system file
+picker, which grants access per file without one either.
+`android:allowBackup="false"` for the same reason — "nothing uploaded"
+includes Google's cloud backup.
+
+That test did not exist until card E1, despite this section having claimed it
+for some time. It does now.
+
+**And E1 found the one feature that cannot live inside the promise.**
+`android.permission.INTERNET` is required to open a socket on Android — a
+normal permission, granted at install, never prompted for, but a
+`<uses-permission>` line all the same. So offline webpage capture works on the
+desktop and cannot run on a phone without the manifest gaining exactly the line
+this app says it never will. The engine is written and the manifest is
+untouched; the choice between keeping the promise, rewriting it, or capturing
+through the system share sheet instead is set out in
+[docs/CAPTURE.md](docs/CAPTURE.md) and has not been made.
 
 ### Known unknowns
 
@@ -317,6 +348,12 @@ seam every window-backed layout and paint site uses.
   and take visual measurements from a build without the feature.
 - `pgrep -f setlistarray` matches your own shell's command line. Kill the app by
   the PID you started, never by pattern.
+- **`markup5ever_rcdom` empties nodes you are still holding.** Its hand-written
+  `Drop` walks descendants iteratively and takes the `children` vector out of
+  every node it reaches, whether or not something else still has a strong `Rc`
+  to one. Detach an ancestor of a node you mean to keep and the node survives
+  with its tag, its attributes and an empty subtree. `src/capture/reader.rs`
+  moves the keeper before it sweeps, for that reason.
 
 ### And two about rhypedb
 

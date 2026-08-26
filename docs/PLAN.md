@@ -199,14 +199,39 @@ The distinguishing feature, and the least certain. Spike before estimating the
 rest. This flow is full of failure states — worth modelling as an explicit
 state machine (`/smdp`) before writing it.
 
+Sizes below are **revised after the E1 spike**, which is done. Its write-up —
+the site table, the design, and the reasoning behind every number here — is
+[docs/CAPTURE.md](CAPTURE.md). Read it before starting E2.
+
 | # | Card | Wireframe | Size |
 | --- | --- | --- | --- |
-| E1 | **Spike:** fetch a URL with `ureq`, strip scripts/ads, rewrite image URLs to local paths, write HTML + assets into the attachment directory. Prove it on five real chord sites. | ? |
+| E1 | ~~**Spike:** fetch a URL, strip scripts/ads, rewrite image URLs to local paths, write HTML + assets into the attachment directory. Prove it on five real chord sites.~~ **Done.** `src/capture/`, proven against eight. | ✓ |
 | E2 | Capture UI: URL field, the progress checklist (fetched · stripped · downloading images N of M), determinate accent progress bar, `1.2 MB so far · will work with no signal`. | M |
-| E3 | `Save as: Reader text ▾` — reader extraction vs full-page fidelity, with a preview of what gets kept. | M |
-| E4 | Failure states the handoff calls out: fetch failed, partial capture, paywalled/JS-only page. Each needs a real screen, not a toast. | M |
-| E5 | Render a captured page inside the attachment card and the viewer. | M |
+| E3 | `Save as: Reader text ▾` — reader extraction vs full-page fidelity, with a preview of what gets kept. | ~~M~~ **S** |
+| E4 | Failure states the handoff calls out: fetch failed, partial capture, paywalled/JS-only page. Each needs a real screen, not a toast. | ~~M~~ **S–M** |
+| E5 | Render a captured page inside the attachment card and the viewer. | ~~M~~ **L** |
 | E6 | Settings → "Re-check saved pages": re-fetch and diff, off by default. | S |
+| E7 | *New.* Ultimate Guitar's chart is in a 134 KB JSON `data-content` attribute on the page we already fetch. A site-specific extractor brings the largest chord site on the internet from "impossible" to "works". | S–M |
+
+**Phase E total: roughly 6–9 days.** E5 grew because a captured page is a
+stranger's HTML and CSS and nothing in this app has yet asked Stylo and Parley
+to lay that out. E3 and E4 shrank because the engine already implements both
+capture modes and distinguishes five failure states, each carrying its own
+user-facing sentence.
+
+**Two things settled before E2 that were not on the card.**
+
+*Reader mode is in.* It is a readability-style heuristic in pure Rust, and it
+needed a chord-specific override to be worth having: generic readability
+rewards commas and long sentences and so deletes chord charts. Before that
+override, reader mode dropped the chart on three of the four capturable sites.
+
+*Capture cannot run on Android.* `android.permission.INTERNET` is required to
+open a socket, and this app promises a manifest with no permissions — a promise
+that now has a test behind it. The engine is desktop-only until somebody
+chooses between keeping the promise, rewriting it, and capturing through the
+system share sheet. All three options are laid out in `docs/CAPTURE.md`. **This
+is a decision, not a task, and it blocks E2 on Android only.**
 
 **Done when** a URL pasted on wifi still opens with the network off.
 

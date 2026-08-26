@@ -1,5 +1,5 @@
 {
-  "_comment": "Baselines for scripts/screenshot.sh. Numbers here are measurements from a real run, not hand-picked targets. Regenerate with `scripts/screenshot.sh --update` after a deliberate visual change, then read the printed diff before committing — a diff that isn't explained by your change means something regressed.",
+  "_comment": "Baselines for scripts/screenshot.sh. Numbers here are measurements from a real run, not hand-picked targets. Regenerate with `scripts/screenshot.sh --update` after a deliberate visual change, then read the printed diff before committing — a diff that isn't explained by your change means something regressed. The app is run against a throwaway seeded library, so every number below is a measurement of src/seed.rs rendered by this repository and of nothing else; it used to be read out of whoever's real library happened to be on the machine, which made the net go red for reasons no diff could show. Keep this file formatted exactly as `jq .` emits it: --update rewrites it through jq, so matching jq's formatting is what keeps an --update diff down to the numbers that actually changed.",
   "window_title": "SetListArray",
   "reference_capture": {
     "width": 491,
@@ -11,7 +11,12 @@
       "name": "thumb_painted",
       "description": "The library's first row 38x38 attachment thumb is actually painted, not just laid out. Caught the display:contents paint regression (README: 'The paint regression') where boxes were sized correctly but never drawn.",
       "type": "gray_mean",
-      "crop": { "w": 40, "h": 50, "x": 30, "y": 330 },
+      "crop": {
+        "w": 40,
+        "h": 50,
+        "x": 30,
+        "y": 330
+      },
       "expected": 0.913,
       "tolerance": 0.02,
       "note": "Reference: ~0.913 painted (grey fill), ~0.970 unpainted (bare paper) — a delta far outside tolerance."
@@ -20,7 +25,12 @@
       "name": "fab_solid_accent",
       "description": "The library FAB (bottom-right, add song) is filled solid with the accent colour.",
       "type": "solid_color",
-      "crop": { "w": 15, "h": 15, "x": 400, "y": 885 },
+      "crop": {
+        "w": 15,
+        "h": 15,
+        "x": 400,
+        "y": 885
+      },
       "color": "#B54724",
       "fuzz_percent": 5,
       "min_match_fraction": 0.97
@@ -29,7 +39,12 @@
       "name": "group_header_accent",
       "description": "The first library group header's label (e.g. 'SOLID') is painted in the accent colour, not the muted grey later headers use.",
       "type": "accent_presence",
-      "crop": { "w": 55, "h": 20, "x": 20, "y": 290 },
+      "crop": {
+        "w": 55,
+        "h": 20,
+        "x": 20,
+        "y": 290
+      },
       "color": "#B54724",
       "fuzz_percent": 20,
       "min_matched": 40
@@ -38,7 +53,12 @@
       "name": "bottom_nav_accent",
       "description": "The active bottom-nav item (Songs, selected by default) has its icon and label painted in the accent colour.",
       "type": "accent_presence",
-      "crop": { "w": 50, "h": 55, "x": 95, "y": 985 },
+      "crop": {
+        "w": 50,
+        "h": 55,
+        "x": 95,
+        "y": 985
+      },
       "color": "#B54724",
       "fuzz_percent": 20,
       "min_matched": 100
@@ -47,7 +67,12 @@
       "name": "screen_background",
       "description": "The screen background is the light-mode paper colour, sampled from the empty status-bar strip at the very top.",
       "type": "solid_color",
-      "crop": { "w": 40, "h": 30, "x": 0, "y": 0 },
+      "crop": {
+        "w": 40,
+        "h": 30,
+        "x": 0,
+        "y": 0
+      },
       "color": "#FBF7F0",
       "fuzz_percent": 5,
       "min_match_fraction": 0.97

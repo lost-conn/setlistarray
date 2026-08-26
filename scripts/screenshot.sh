@@ -8,6 +8,10 @@
 # are what this script checks, sampled the same way the fix was verified by
 # hand: `import` grabs the live X11 window, `convert`/`compare` sample it.
 #
+# The app is launched against a throwaway seeded library, never the real one
+# in ~/.local/share/setlistarray, so the pixels it samples depend on nothing
+# but the code in this repository. See the long note above the launch below.
+#
 # Usage:
 #   scripts/screenshot.sh              # build, run, capture, check against
 #                                       # scripts/screenshot-baseline.json
@@ -49,7 +53,7 @@ for arg in "$@"; do
       MODE="update"
       ;;
     -h|--help)
-      sed -n '2,20p' "${BASH_SOURCE[0]}"
+      sed -n '2,25p' "${BASH_SOURCE[0]}"
       exit 0
       ;;
     *)
@@ -97,10 +101,37 @@ info "building (cargo build --release)…"
 # has both running. Killed strictly by PID — never `pkill -f setlistarray`,
 # which also matches this script's own command line in `ps` and has taken
 # down the wrong process before.
+#
+# The run gets a library of its own — a throwaway $XDG_DATA_HOME, seeded with
+# the demo content by `--seed` — and never touches the real book in
+# ~/.local/share/setlistarray. Three separate reasons, all of them learned the
+# hard way:
+#
+#   1. Two of the five checks sample *content*: the first row's attachment
+#      thumb and the first group header. Reading those out of whatever the
+#      developer happens to have in their own library means the baseline is a
+#      measurement of one particular person's songs on one particular day.
+#      Empty that library — or add a song that sorts above Landslide — and the
+#      net goes red with nothing whatsoever wrong with the app. That is exactly
+#      how it went red before this comment existed, and the failure reads
+#      convincingly like a paint regression: an empty library draws bare paper
+#      where the thumb should be, whose grey mean (~0.954) sits right next to
+#      the ~0.970 this file records for "laid out but never painted".
+#   2. A gate that can fail for a reason outside the repository is not a gate.
+#      Every input to a red run should be something `git diff` can show you.
+#   3. rhypedb takes a directory lock. Pointing this at the real library means
+#      the check cannot run while you have the app open to look at the very
+#      thing you are checking.
+#
+# `--seed` only ever fills a library that has nothing in it, so a fresh
+# directory each run gives the same fourteen songs in the same order every
+# time, and there is no state carried between runs to drift.
 # ---------------------------------------------------------------------------
 
+LIBRARY_DIR="$(mktemp -d "${TMPDIR:-/tmp}/setlistarray-screenshot-XXXXXX")"
+
 APP_PID=""
-cleanup() {
+kill_app() {
   if [[ -n "$APP_PID" ]] && kill -0 "$APP_PID" 2>/dev/null; then
     kill "$APP_PID" 2>/dev/null || true
     for _ in 1 2 3 4 5; do
@@ -110,10 +141,19 @@ cleanup() {
     kill -0 "$APP_PID" 2>/dev/null && kill -9 "$APP_PID" 2>/dev/null || true
   fi
 }
+# The throwaway library goes with it. Unlike the captures, there is nothing to
+# learn from it after the fact — the seed content is in src/seed.rs.
+cleanup() {
+  kill_app
+  # Trailing `|| true` because this is the last command of an EXIT trap under
+  # `set -e`: a false test here must not become the script's exit status and
+  # turn a failing run into a passing one.
+  { [[ -n "${LIBRARY_DIR:-}" ]] && rm -rf "$LIBRARY_DIR"; } || true
+}
 trap cleanup EXIT
 
-info "launching under X11 (window title \"$WINDOW_TITLE\")…"
-env -u WAYLAND_DISPLAY "$BIN" >"$APP_LOG" 2>&1 &
+info "launching under X11 (window title \"$WINDOW_TITLE\", seeded library in $LIBRARY_DIR)…"
+env -u WAYLAND_DISPLAY XDG_DATA_HOME="$LIBRARY_DIR" "$BIN" --seed >"$APP_LOG" 2>&1 &
 APP_PID=$!
 
 sleep "$LAUNCH_WAIT_SECONDS"
@@ -164,7 +204,53 @@ fi
 # wrapped in a timeout defensively — `import` on a window that vanishes
 # mid-capture (e.g. this app crashing right after mapping) doesn't always
 # fail promptly.
-timeout "${CAPTURE_TIMEOUT_SECONDS}s" import -window "$WINDOW_ID" "$SHOT_PATH" 2>>"$APP_LOG" || true
+grab() {
+  timeout "${CAPTURE_TIMEOUT_SECONDS}s" import -window "$WINDOW_ID" "$1" 2>>"$APP_LOG" || true
+}
+
+# Keep grabbing until two consecutive grabs are pixel-identical, then sample
+# that one.
+#
+# A window being mapped is not the same thing as a window that has stopped
+# moving. The window manager places and animates the new window, and `import`
+# on an unredirected X11 window reads the screen, so a grab taken during that
+# animation comes back the right *size* — the geometry is settled long before
+# the pixels are — with the app's own frame drawn inset by a dozen pixels and
+# clipped at the far edge. Every check then samples coordinates that are off
+# by that inset, and the run fails with an assortment of red that looks for
+# all the world like a paint bug. That is a spurious red on a commit gate,
+# which is the one failure mode a gate cannot afford: it teaches whoever hits
+# it to re-run until green, and after that the gate is decoration.
+#
+# The library screen is completely static once it has settled — no animation,
+# no caret, no clock — so "two grabs in a row that agree" is a cheap and
+# content-agnostic proof that nothing is still moving. Refusing to sample an
+# unsettled frame is deliberate: a run that says "the window never stopped
+# changing" is worth far more than one that guesses.
+STABLE_ATTEMPTS=5
+STABLE_SETTLE_DELAY=1
+PREV_GRAB="$CAPTURE_DIR/.tmp-previous-grab.png"
+
+grab "$PREV_GRAB"
+CAPTURE_SETTLED=""
+for attempt in $(seq 1 "$STABLE_ATTEMPTS"); do
+  sleep "$STABLE_SETTLE_DELAY"
+  grab "$SHOT_PATH"
+  if [[ -s "$PREV_GRAB" && -s "$SHOT_PATH" ]]; then
+    # `compare` exits non-zero whenever the images differ at all, and prints
+    # a parse error rather than a count if they are not even the same size,
+    # so neither its status nor a non-numeric result means anything here
+    # beyond "not settled yet".
+    differing="$(compare -metric AE "$PREV_GRAB" "$SHOT_PATH" null: 2>&1 | awk '{print $1}' || true)"
+    if [[ "$differing" == "0" ]]; then
+      CAPTURE_SETTLED="yes"
+      break
+    fi
+    warn "attempt $attempt/$STABLE_ATTEMPTS: the window is still changing (${differing} px differ), waiting for it to settle…"
+  fi
+  cp -f "$SHOT_PATH" "$PREV_GRAB" 2>/dev/null || true
+done
+rm -f "$PREV_GRAB"
 
 if [[ ! -s "$SHOT_PATH" ]]; then
   info "--- app log ($APP_LOG) ---"
@@ -172,11 +258,18 @@ if [[ ! -s "$SHOT_PATH" ]]; then
   die "found window $WINDOW_ID but \`import\` produced no image — see the log above"
 fi
 
+if [[ -z "$CAPTURE_SETTLED" ]]; then
+  cp "$SHOT_PATH" "$LATEST_PATH"
+  die "window $WINDOW_ID never stopped changing across $STABLE_ATTEMPTS grabs ${STABLE_SETTLE_DELAY}s apart — the last one is at $SHOT_PATH. Sampling a moving window would fail the checks for the wrong reason, so this run asserts nothing."
+fi
+
 cp "$SHOT_PATH" "$LATEST_PATH"
 
 # The app is captured; no reason to keep it running while we sample pixels.
-cleanup
-trap - EXIT
+# Only the process goes — the EXIT trap stays armed so the throwaway library
+# is still removed however this script ends, including down the `die` paths
+# that every failing check takes.
+kill_app
 APP_PID=""
 
 CAPTURE_DIMS="$(identify -format '%w %h' "$SHOT_PATH")"

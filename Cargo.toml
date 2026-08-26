@@ -15,6 +15,27 @@ crate-type = ["cdylib", "rlib"]
 # and the handoff calls for Tabler icons throughout.
 rinch-tabler-icons = { path = "../rinch-fixes/crates/rinch-tabler-icons" }
 
+# Offline webpage capture (src/capture/). One HTTP API over ureq natively and
+# `fetch` on wasm, so the capture engine never names a transport — the plan's
+# call, and the reason there is no direct `ureq` line in this file even though
+# ureq is what runs underneath on both the platforms this app ships to.
+rinch-http = { path = "../rinch-fixes/crates/rinch-http" }
+
+# The HTML parser the capture sanitiser walks. html5ever is the parser Servo
+# uses, so it is spec-correct on the malformed markup chord sites actually
+# serve, it is pure Rust with no C toolchain, and it is already half-present in
+# the tree — Stylo brings `string_cache`, `phf` and `precomputed-hash` with it.
+# `markup5ever_rcdom` is the html5ever project's own minimal DOM, versioned in
+# lockstep; its crates.io blurb calls it unsupported test scaffolding, which is
+# a real risk and is written up in docs/CAPTURE.md along with the way out.
+html5ever = "0.39"
+markup5ever_rcdom = "0.39"
+
+# Resolving a page's relative `<img src>` against the URL it came from, and
+# deciding whether a stylesheet is same-host. Already in the tree via Rinch;
+# named here because the capture module reaches for it directly.
+url = "2"
+
 # The library itself: rhypedb, in-process. `default-features = false` keeps the
 # fastembed/ONNX stack out — an embedding runtime is not something this app can
 # ship on a phone, and nothing here needs vector search.

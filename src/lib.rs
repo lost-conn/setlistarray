@@ -20,6 +20,7 @@
 
 #[cfg(target_os = "android")]
 mod android;
+pub mod capture;
 pub mod db;
 mod derive;
 mod menu;
@@ -226,4 +227,32 @@ pub fn run_desktop() {
 #[cfg(target_os = "android")]
 pub fn start_android(dir: DataDir) {
     start(dir, false);
+}
+
+#[cfg(test)]
+mod tests {
+    /// "No permissions" is a promise this app makes in its README and in the
+    /// comment at the top of the manifest, and a promise with nothing behind
+    /// it is a comment. The README has claimed a test by this name for some
+    /// time; card E1 found there was not one, and needed there to be — offline
+    /// webpage capture is the first feature that has a reason to want a
+    /// permission.
+    ///
+    /// It is also the reason that feature stops at the desktop for now:
+    /// `android.permission.INTERNET` is required to open a socket on Android,
+    /// so `src/capture` cannot run on a phone without breaking this test. See
+    /// `docs/CAPTURE.md`. Deleting this test is not the way to pass it.
+    #[test]
+    fn the_android_manifest_asks_for_no_permissions() {
+        let manifest = include_str!("../android/AndroidManifest.xml");
+        let asked: Vec<&str> = manifest
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with("<uses-permission"))
+            .collect();
+        assert!(
+            asked.is_empty(),
+            "the manifest asks for a permission, and this app promises it never will: {asked:?}"
+        );
+    }
 }
