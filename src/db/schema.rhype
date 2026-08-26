@@ -4,9 +4,20 @@
 // handoff is explicit that unfilled metadata is absent, never a placeholder.
 // rhypedb lets a field simply not be set, which is exactly that.
 //
-// Note for anyone editing: an edge-field block must come BEFORE any directive
-// on the same field. `songs: [Song] { position: u32 } @on_delete(remove)`
-// parses; putting the block after the directive does not.
+// Two notes for anyone editing:
+//
+// 1. An edge-field block must come BEFORE any directive on the same field.
+//    `songs: [Song] { position: u32 } @on_delete(remove)` parses; putting the
+//    block after the directive does not.
+//
+// 2. An @on_delete policy is applied to the relations pointing AT the object
+//    being deleted, and it acts on the SOURCE of those relations. So the
+//    policy that takes an attachment with its song has to live on the
+//    attachment's own `song` field, not on the song's `attachments` list —
+//    written the other way round it means "deleting a chart deletes the song",
+//    which is how schema v1 had it. `Setlist.songs @on_delete(remove)` reads
+//    correctly under the same rule: deleting a Song is what removes it from
+//    every set.
 
 type Attachment {
     // Pdf | CapturedPage | Text
@@ -18,6 +29,9 @@ type Attachment {
     captured_at: DateTime
     // Extracted text, for typed attachments and for searching captures.
     body: String
+    // The song this chart belongs to. See note 2 above for why the cascade
+    // lives here rather than on `Song.attachments`.
+    song: Song @on_delete(cascade)
 }
 
 type Song {
@@ -41,7 +55,7 @@ type Song {
     created_at: DateTime
     // The first attachment added becomes the primary one.
     primary_attachment: u64
-    attachments: [Attachment] @on_delete(cascade)
+    attachments: [Attachment] @inverse(Attachment.song)
     setlists: [Setlist] @inverse(Setlist.songs)
 }
 
