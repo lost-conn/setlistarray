@@ -2,12 +2,34 @@
 <!--
   SetListArray is offline-first: no account, no sync, nothing uploaded.
 
-  There are therefore NO <uses-permission> elements here, and there should
-  never be one for camera, location or network. Everything the app stores goes
-  into app-private storage (`AndroidApp::internal_data_path()`), which needs no
-  permission; attachments are imported through the system file picker, which
-  grants access per file without one either. Asking for a permission this app
-  does not need would be a bug, not an oversight.
+  There is exactly ONE <uses-permission> element here, and it is INTERNET. It
+  exists for a single feature — offline webpage capture (`src/capture/`), which
+  fetches a page the user has explicitly pasted so that it can be read later
+  with no signal. Android refuses the socket outright without it: a package is
+  put in the `inet` group by the installer only when the manifest asks. There
+  is one call site behind it, `src/capture/fetch.rs`, and nothing else in the
+  app opens a socket.
+
+  INTERNET is a **normal** permission: granted at install, never prompted for,
+  not listed on the app's permission screen, and not revocable. It buys the app
+  no access to anything of the user's — no contacts, no files, no location, no
+  identifiers. It is the weakest thing in the permission system, but it is a
+  <uses-permission> line all the same, so it is written down here rather than
+  slipped in.
+
+  Everything else still needs nothing. App storage goes to app-private storage
+  (`AndroidApp::internal_data_path()`), which needs no permission and is
+  removed with the app; attachment import (card K4) goes through the system
+  file picker, which grants access per file without one either. Camera,
+  location and external storage are not asked for and should never be. Adding
+  a second permission here is a decision, not an oversight —
+  `the_android_manifest_asks_only_for_internet` in `src/lib.rs` fails the build
+  if one appears.
+
+  `android:allowBackup="false"` is unchanged and unaffected. The permission
+  lets the app reach out; allowBackup would let Google's cloud backup reach in
+  and copy the library off the device. Those are opposite directions, and only
+  one of them is a feature the user asked for.
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="dev.lostconnection.setlistarray"
@@ -15,6 +37,8 @@
     android:versionName="0.1.0">
 
     <uses-sdk android:minSdkVersion="28" android:targetSdkVersion="35" />
+
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <application
         android:label="SetListArray"

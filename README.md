@@ -2,7 +2,9 @@
 
 An offline-first book of the songs you know how to play. Attach charts to
 them — PDFs, webpages captured for offline use, or typed text — and arrange
-them into setlists. No account, no sync, nothing uploaded.
+them into setlists. No account, no sync, nothing uploaded. One outbound
+network call exists in the whole app — fetching a webpage you have pasted in
+yourself, so that it still opens with no signal.
 
 Built with [Rinch](https://github.com/joeleaver/rinch). The design handoff in
 `design_handoff_setlistarray/` is the authority: the hi-fi file for visuals,
@@ -114,7 +116,7 @@ nothing in the UI code assumes either platform. See "Android" below.
 | `src/capture/` | Offline webpage capture: fetch, sanitise, rewrite images, judge what came back. No Signals, like `src/db/`. See [docs/CAPTURE.md](docs/CAPTURE.md). |
 | `src/seed.rs` | Demo content, behind `--seed`. Not on the startup path. |
 | `src/platform.rs` | Safe-area insets: real ones on Android, the phone stand-in on desktop. |
-| `android/` | `AndroidManifest.xml`. No permissions, and a test asserts it stays that way. |
+| `android/` | `AndroidManifest.xml`. One permission — INTERNET, for capture — and a test asserts nothing joins it. |
 | `build-apk.sh` | cargo-ndk → javac → d8 → aapt2 → zipalign → apksigner → adb. |
 
 ## What is built
@@ -143,8 +145,11 @@ Add/edit song (`1j`), Performance view (`1o`). Not yet started: attachment
 viewer (`1k`), search & filter (`1p`), first run (`1r`).
 
 Offline webpage capture (`1l`) has its **engine** — `src/capture/`, tested and
-proven against eight real chord sites — and none of its UI. It also cannot run
-on Android as things stand; see below and [docs/CAPTURE.md](docs/CAPTURE.md).
+proven against eight real chord sites — and none of its UI. It runs on both
+targets: the manifest declares `android.permission.INTERNET` for it, which is
+the decision written up in [docs/CAPTURE.md](docs/CAPTURE.md). What it captures
+is narrower than "any chord site", and the site table there says which kinds of
+page survive.
 
 Also outstanding:
 
@@ -201,31 +206,47 @@ export ANDROID_NDK_HOME=$HOME/android/android-ndk-r27c
 ```
 
 Defaults to `arm64-v8a` and the release profile. It builds `--lib` only: the
-desktop binary and the probe are not part of the APK. Roughly 5.8 MiB, almost
-all of it `libsetlistarray.so`.
+desktop binary and the probe are not part of the APK. Roughly 6.5 MiB, almost
+all of it `libsetlistarray.so` — it was 5.8 MiB before the capture engine
+brought html5ever and its friends in.
 
-### No permissions, on purpose
+### One permission, on purpose
 
-`android/AndroidManifest.xml` declares none, and
-`the_android_manifest_asks_for_no_permissions` (in `src/lib.rs`) fails the
-build if one appears. This app is offline-first: app-private storage needs no
-permission, and attachment import (card K4) goes through the system file
-picker, which grants access per file without one either.
-`android:allowBackup="false"` for the same reason — "nothing uploaded"
-includes Google's cloud backup.
+`android/AndroidManifest.xml` declares exactly one:
+`android.permission.INTERNET`. `the_android_manifest_asks_only_for_internet`
+(in `src/lib.rs`) fails the build if a second one appears, whatever it is.
 
-That test did not exist until card E1, despite this section having claimed it
-for some time. It does now.
+It is there for one feature. Offline webpage capture fetches a page you pasted
+in yourself, and Android refuses the socket without it — the installer puts a
+package in the `inet` group only when the manifest asks, and there is no way
+round that from app code. INTERNET is a *normal* permission: granted at
+install, never prompted for, absent from the app's permission screen, not
+revocable. It gives the app no reach into anything of yours — no files, no
+contacts, no location, no identifiers.
 
-**And E1 found the one feature that cannot live inside the promise.**
-`android.permission.INTERNET` is required to open a socket on Android — a
-normal permission, granted at install, never prompted for, but a
-`<uses-permission>` line all the same. So offline webpage capture works on the
-desktop and cannot run on a phone without the manifest gaining exactly the line
-this app says it never will. The engine is written and the manifest is
-untouched; the choice between keeping the promise, rewriting it, or capturing
-through the system share sheet instead is set out in
-[docs/CAPTURE.md](docs/CAPTURE.md) and has not been made.
+So the promise is no longer "no permissions". It is narrower and it is
+checkable: **one permission, one call site, nothing else reaches the network.**
+The call site is `src/capture/fetch.rs`, and
+`the_http_client_is_named_in_exactly_one_file` holds it to being the only file
+under `src/` that names the HTTP client at all. That is a floor rather than a
+proof — card X2 is the real assertion — but it is what stands between one call
+and a few.
+
+Everything else still needs nothing. App-private storage needs no permission,
+and attachment import (card K4) goes through the system file picker, which
+grants access per file without one either. Camera, location and external
+storage are not asked for and should not be.
+`android:allowBackup="false"` is unchanged and is not in tension with any of
+this: the permission lets the app reach out, while cloud backup would let
+Google's servers reach in and copy the library off the device. Opposite
+directions, and only one of them is a feature you asked for.
+
+This section used to read "No permissions, on purpose", and until card E1 that
+was both true and untested. E1 wrote the test and, on the way, found the one
+feature that could not live inside it. Adding the line was chosen over dropping
+capture from Android and over routing it through the system share sheet; the
+reasoning, and the two options not taken, are in
+[docs/CAPTURE.md](docs/CAPTURE.md).
 
 ### Known unknowns
 

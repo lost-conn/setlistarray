@@ -9,7 +9,7 @@ yet.
 
 ---
 
-## Stop here first: this cannot ship on Android
+## The Android permission: decided, 2026-08-26
 
 **`android.permission.INTERNET` is required to open a socket on Android.** It
 is not optional, it is not a runtime prompt, and there is no way around it from
@@ -24,31 +24,70 @@ application, your manifest must include the following permissions:
 install, never prompted for, not shown in the app's permission screen, and not
 revocable — but it is still a `<uses-permission>` line in the manifest.
 
-That line is precisely what this app promises never to have. `android/
-AndroidManifest.xml` says so in a comment, the README says so in a section
-heading, and — as of this card — a test says so too:
-`the_android_manifest_asks_for_no_permissions` in `src/lib.rs`. (It did not
-previously exist. The README claimed it did.)
+That line was precisely what this app promised never to have. It said so in a
+comment at the top of `android/AndroidManifest.xml`, in a README section
+heading, and — as of card E1 — in a test:
+`the_android_manifest_asks_for_no_permissions` in `src/lib.rs`. (The test did
+not previously exist. The README had claimed it did.)
 
-So there is a decision to make before E2, and it is not a technical one:
+E1 stopped there and put the choice to the owner rather than making it. **The
+choice has been made: the permission goes in, and the promise is rewritten.**
 
-1. **Keep the promise, and Phase E is desktop-only.** The capture engine works
-   and is tested; on Android the URL field is not offered. The app's headline
-   feature is missing from the platform the design targets.
-2. **Add `INTERNET` and rewrite the promise.** "No permissions" becomes "no
-   permissions that can reach your data" — INTERNET is normal-level and
-   invisible to the user, and everything else stays true. The manifest test
-   becomes an allowlist of exactly one.
-3. **Capture through the system browser instead.** Android's share sheet and
-   `ACTION_SEND` can hand a page's HTML to the app without the app ever
-   opening a socket. This keeps the promise literally intact and moves the
-   fetch to a component that already has the permission. It is a bigger piece
-   of work, it needs a `rinch-android` intent-filter API that does not exist,
-   and it changes E2 from "paste a URL" to "share to SetListArray".
+### What changed
 
-I have not chosen. Nothing in the manifest has been touched.
+* `android/AndroidManifest.xml` declares
+  `<uses-permission android:name="android.permission.INTERNET" />`, and its
+  header comment now says what it is for instead of saying there is none.
+* The test is now `the_android_manifest_asks_only_for_internet`. It is an
+  allowlist of exactly one: two permissions fail, and one that is not INTERNET
+  fails. It was rewritten rather than deleted, because the promise narrowed
+  rather than disappeared.
+* A second test, `the_http_client_is_named_in_exactly_one_file`, asserts that
+  `src/capture/fetch.rs` is the only file under `src/` that names the HTTP
+  client. It is a floor under the "one call site" half of the claim, not card
+  X2.
+* `android:allowBackup="false"` is untouched. The permission lets the app reach
+  out; cloud backup would let Google reach in. Only one of those is a feature
+  anyone asked for.
 
-Everything below is measured on the desktop, where it all works.
+The promise the app now makes, in the README and in the manifest, is: **one
+permission, one call site, nothing else reaches the network.**
+
+### Why, and what was not chosen
+
+The reasoning is that "no permissions" was never the point — *no reach into the
+user's device or data* was. INTERNET is the one permission that grants none of
+that: it does not read files, contacts, location, or any identifier, it is
+invisible to the user, and it cannot be revoked because there is nothing to
+revoke. Meanwhile the feature it unlocks is the app's distinguishing one, and
+Android is the platform the design handoff targets. Trading the headline
+feature on the primary platform for the absolutist version of a sentence in a
+README is a bad trade, and the honest narrower sentence is more convincing than
+the absolutist one anyway, because it can be checked.
+
+Two options were considered and **not** taken:
+
+1. ~~**Keep the promise, and Phase E is desktop-only.**~~ Rejected. The capture
+   engine works and is tested; offering it only on the desktop leaves the app's
+   headline feature missing from the platform the design targets, in exchange
+   for a claim no user is checking.
+2. ~~**Capture through the system share sheet instead.**~~ Not taken *now*, and
+   not because it is a bad idea. Android's `ACTION_SEND` can hand a page's HTML
+   to the app without the app ever opening a socket, which would keep the
+   literal promise intact and move the fetch to a component that already has
+   the permission. It needs a `rinch-android` intent-filter API that does not
+   exist, it is a bigger piece of work, and it changes E2 from "paste a URL"
+   to "share to SetListArray". It also does not replace the URL field on the
+   desktop, so it is an addition rather than a substitute. Worth revisiting as
+   its own card once `rinch-android` can receive an intent.
+
+### What this does not claim
+
+The APK builds with the permission declared and `aapt2` is happy with it. That
+is the whole of what has been observed. **The app has never run on a phone or
+an emulator**, so no capture has ever completed on Android, and "the socket now
+opens" is a reading of the documentation, not a measurement. Everything in the
+site table below was measured on the desktop.
 
 ---
 
@@ -366,8 +405,9 @@ Four added, all pure Rust, all permissive, all cross-compiling to
 looks, because Stylo already brings `string_cache`, `phf` and
 `precomputed-hash`, and `rinch-tabler-icons` already brings `ureq` and its TLS
 stack. `xml5ever` is dead weight pulled in by `markup5ever_rcdom`'s serialiser.
-Release build of the crate is unchanged in wall-clock terms; the APK was not
-re-measured because capture cannot ship on Android yet.
+Release build of the crate is unchanged in wall-clock terms. The APK is 6.5
+MiB with the capture engine in it, against 5.8 MiB before — about 0.7 MiB of
+`libsetlistarray.so`, nearly all of it html5ever and its parser tables.
 
 **Considered and rejected:**
 
@@ -408,8 +448,9 @@ both branches implemented and tested.
 | E5 | Render a captured page in the attachment card and the viewer | M | **L** | **This is the one that got bigger.** A captured page is arbitrary third-party HTML and CSS, and Rinch's renderer is Stylo and Parley — capable, but nothing in this app has yet asked it to lay out a stranger's markup. Loading local `assets/` files as image sources is also untried. Expect a spike inside this card. |
 | E6 | Settings → "Re-check saved pages", off by default | S | **S** | Unchanged and now cheaper: `capture_probe` is most of it, and `data-captured-from` records what to re-fetch. |
 
-**Phase E total: roughly 6–9 days**, against the 5 M's the plan implied — and
-that is contingent on the Android decision above. E5 is the risk; E2 is the
+**Phase E total: roughly 6–9 days**, against the 5 M's the plan implied. The
+Android question above is settled, so none of it is contingent any more —
+though E2's UI now has to exist on both platforms rather than one. E5 is the risk; E2 is the
 work; E3, E4 and E6 are largely done in the engine.
 
 Two things Phase E should probably grow, neither of them in E2–E6 as written:

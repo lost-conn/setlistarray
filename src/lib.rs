@@ -231,28 +231,130 @@ pub fn start_android(dir: DataDir) {
 
 #[cfg(test)]
 mod tests {
-    /// "No permissions" is a promise this app makes in its README and in the
-    /// comment at the top of the manifest, and a promise with nothing behind
-    /// it is a comment. The README has claimed a test by this name for some
-    /// time; card E1 found there was not one, and needed there to be — offline
-    /// webpage capture is the first feature that has a reason to want a
-    /// permission.
+    /// The permission promise, in the shape it now has.
     ///
-    /// It is also the reason that feature stops at the desktop for now:
-    /// `android.permission.INTERNET` is required to open a socket on Android,
-    /// so `src/capture` cannot run on a phone without breaking this test. See
-    /// `docs/CAPTURE.md`. Deleting this test is not the way to pass it.
+    /// This test used to be `the_android_manifest_asks_for_no_permissions`,
+    /// and it asserted that `android/AndroidManifest.xml` contained no
+    /// `<uses-permission>` element at all. That was the promise the README
+    /// made, the manifest's own header comment made, and — from card E1 — this
+    /// test made. It is not the promise any more, and the narrowing was
+    /// deliberate rather than accidental, so it is written down here.
+    ///
+    /// **What happened.** Card E1 built the offline webpage capture engine
+    /// (`src/capture/`) and ran into the one thing that cannot live inside an
+    /// empty manifest: `android.permission.INTERNET` is required to open a
+    /// socket on Android. It is not a runtime prompt and there is no way round
+    /// it from app code — the installer puts a package in the `inet` group
+    /// only when the manifest asks, and without that the kernel refuses the
+    /// socket. So the app could have capture, or it could have a manifest with
+    /// nothing in it, and not both. The owner chose capture, on 2026-08-26,
+    /// with the reasoning recorded in `docs/CAPTURE.md`.
+    ///
+    /// **Read this as narrowing, not as erosion.** The promise did not become
+    /// "we ask for what we need"; it became a specific, checkable claim: *one
+    /// permission, one call site, nothing else reaches the network.* INTERNET
+    /// is a normal permission — granted at install, never prompted for, absent
+    /// from the app's permission screen — and it grants access to none of the
+    /// user's data. Everything that would (camera, location, external storage,
+    /// contacts) is still refused here, and this test is what refuses it: the
+    /// allowlist is exactly one entry long and adding a second fails the
+    /// build. The floor under the other half of the claim — the single call
+    /// site — is `the_http_client_is_named_in_exactly_one_file` below.
+    ///
+    /// Deleting this test is still not the way to pass it.
     #[test]
-    fn the_android_manifest_asks_for_no_permissions() {
+    fn the_android_manifest_asks_only_for_internet() {
         let manifest = include_str!("../android/AndroidManifest.xml");
-        let asked: Vec<&str> = manifest
+        // The header comment discusses `<uses-permission>` at length, so scan
+        // the markup rather than the prose about it.
+        let markup = strip_xml_comments(manifest);
+        let asked: Vec<&str> = markup
             .lines()
             .map(str::trim)
             .filter(|line| line.starts_with("<uses-permission"))
             .collect();
-        assert!(
-            asked.is_empty(),
-            "the manifest asks for a permission, and this app promises it never will: {asked:?}"
+
+        assert_eq!(
+            asked.len(),
+            1,
+            "the manifest asks for {} permissions; this app promises exactly one: {asked:?}",
+            asked.len()
         );
+        assert!(
+            asked[0].contains("android.permission.INTERNET"),
+            "the one permission this app asks for is INTERNET, and this is not it: {asked:?}"
+        );
+    }
+
+    /// The floor under "one network call exists in the entire app".
+    ///
+    /// `docs/PLAN.md` makes that claim in its cross-cutting section and card
+    /// X2 is on the backlog to assert it properly — walk the code, or watch a
+    /// running app, and prove nothing else dials out. This is not X2. It is
+    /// the cheap half that can be written today: rinch-http is the only HTTP
+    /// client in the dependency tree this crate names, and `src/capture/
+    /// fetch.rs` is the only file allowed to name it.
+    ///
+    /// What that catches is somebody adding a second fetch site — an update
+    /// check, a font download, a crash reporter — because they would have to
+    /// name the client to do it, and this fails when they do. What it does not
+    /// catch is a transitive dependency opening its own socket, or this crate
+    /// growing a *different* HTTP client. Those are X2's job. Treat a failure
+    /// here as a question about the permission in `AndroidManifest.xml`: it is
+    /// declared for one call site, and this is the test that counts them.
+    #[test]
+    fn the_http_client_is_named_in_exactly_one_file() {
+        // Spelled in two halves so that this file, which is one of the files
+        // being searched, is not itself a hit.
+        let needle = concat!("rinch", "_http");
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut naming: Vec<String> = Vec::new();
+        collect_rust_files(&src, &mut |path| {
+            let text = std::fs::read_to_string(path).expect("a source file this crate compiles");
+            if text.contains(needle) {
+                naming.push(
+                    path.strip_prefix(src.parent().unwrap())
+                        .unwrap_or(path)
+                        .display()
+                        .to_string(),
+                );
+            }
+        });
+        naming.sort();
+
+        assert_eq!(
+            naming,
+            vec!["src/capture/fetch.rs".to_string()],
+            "the HTTP client is named outside the one file that is allowed to open a socket"
+        );
+    }
+
+    /// Remove `<!-- ... -->` regions, so a test can read markup without
+    /// reading the commentary around it. Good enough for a file this crate
+    /// owns; not an XML parser.
+    fn strip_xml_comments(xml: &str) -> String {
+        let mut out = String::with_capacity(xml.len());
+        let mut rest = xml;
+        while let Some(open) = rest.find("<!--") {
+            out.push_str(&rest[..open]);
+            match rest[open..].find("-->") {
+                Some(close) => rest = &rest[open + close + 3..],
+                None => return out,
+            }
+        }
+        out.push_str(rest);
+        out
+    }
+
+    /// Every `.rs` file under `dir`, depth first.
+    fn collect_rust_files(dir: &std::path::Path, visit: &mut impl FnMut(&std::path::Path)) {
+        for entry in std::fs::read_dir(dir).expect("the crate's own source directory") {
+            let path = entry.expect("a readable directory entry").path();
+            if path.is_dir() {
+                collect_rust_files(&path, visit);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                visit(&path);
+            }
+        }
     }
 }

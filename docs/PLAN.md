@@ -226,12 +226,16 @@ needed a chord-specific override to be worth having: generic readability
 rewards commas and long sentences and so deletes chord charts. Before that
 override, reader mode dropped the chart on three of the four capturable sites.
 
-*Capture cannot run on Android.* `android.permission.INTERNET` is required to
-open a socket, and this app promises a manifest with no permissions — a promise
-that now has a test behind it. The engine is desktop-only until somebody
-chooses between keeping the promise, rewriting it, and capturing through the
-system share sheet. All three options are laid out in `docs/CAPTURE.md`. **This
-is a decision, not a task, and it blocks E2 on Android only.**
+*Capture runs on Android — decided 2026-08-26.* `android.permission.INTERNET`
+is required to open a socket, and this app promised a manifest with no
+permissions at all. The permission is now declared and the promise is
+rewritten: **one permission, one call site, nothing else reaches the network.**
+The manifest test narrowed from "no permissions" to an allowlist of exactly
+one (`the_android_manifest_asks_only_for_internet`), and the two options not
+taken — desktop-only capture, and capturing through the system share sheet —
+are recorded with the reasoning in `docs/CAPTURE.md`. **E2 is no longer blocked
+on either platform**, though its UI now has to exist on both. Nothing about
+this has been observed on a device; only that the APK still builds.
 
 **Done when** a URL pasted on wifi still opens with the network off.
 
@@ -303,7 +307,7 @@ sit alongside Phase C.
 
 | # | Card | Size |
 | --- | --- | --- |
-| K1 | ~~Second crate target: `cdylib` + `android_main`, an `AndroidManifest.xml` (no permissions), a `build-apk.sh`.~~ Builds a signed APK; **not yet run on a device** — no hardware available. | ✔ |
+| K1 | ~~Second crate target: `cdylib` + `android_main`, an `AndroidManifest.xml`, a `build-apk.sh`.~~ Builds a signed APK; **not yet run on a device** — no hardware available. The manifest declares one permission, INTERNET, for capture (Phase E). | ✔ |
 | K2 | ~~Replace the hard-coded 44px status strip with `safe_area_insets()` and `density_dpi()`.~~ Done, behind `platform::safe_area()`. Unverified against a real notch. | ✔ |
 | K3 | ~~Storage path from `AndroidApp::internal_data_path()` through a platform seam.~~ Done: `DataDir::install()` at the entry point, published as a context by `app()`. | ✔ |
 | K4 | Attachment import through `rinch_android::file_picker::pick_file` + `read_content_uri`; backup export through `save_file`. Same trait the desktop `rfd` path implements. | M |
@@ -331,7 +335,14 @@ to render a row.
 
 **Offline promise.** One network call exists in the entire app: fetching a page
 the user explicitly pasted. Anything else that reaches the network is a bug —
-worth a test that asserts it.
+worth a test that asserts it. That is card X2, and it is still open. There is
+now a floor under it: `the_http_client_is_named_in_exactly_one_file` (in
+`src/lib.rs`) fails if any file under `src/` other than `src/capture/fetch.rs`
+names the HTTP client. It catches a second call site being written by hand,
+which is the likely way this breaks; it does not catch a dependency dialling
+out on its own, or this crate growing a different client. X2 is what would.
+The promise is also what `android.permission.INTERNET` in the manifest is
+justified by — see Phase E — so it is now load-bearing rather than decorative.
 
 **Rinch upstream.** Two faults are open (README). Others will surface; the
 pattern that works is a headless repro in `rinch-dom`'s test style plus a
