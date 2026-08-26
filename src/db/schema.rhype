@@ -1,4 +1,4 @@
-// SetListArray, schema v1.
+// SetListArray, schema v2 — v1 plus the Preferences row (card B3).
 //
 // Everything except a song's title, artist and created_at is optional — the
 // handoff is explicit that unfilled metadata is absent, never a placeholder.
@@ -68,4 +68,25 @@ type Setlist {
     songs: [Song] {
         position: u32
     } @on_delete(remove)
+}
+
+// One row, holding the library view and the settings. Singular values, not a
+// library of objects — see the reasoning in `src/db/prefs.rs`. Added after v1;
+// rhypedb reconciles a new type on open, so an existing library gains it
+// without a migration.
+type Preferences {
+    query: String
+    group_by: String
+    sort_field: String
+    sort_dir: String
+    density: String
+    // Newline-joined group labels: a label may contain a comma, never a newline.
+    collapsed: String
+    expanded: String
+    dark_mode: Bool
+    // "system", or an index into theme::ACCENTS.
+    accent: String
+    performance_theme: String
+    keep_awake: Bool
+    recheck_saved_pages: Bool
 }

@@ -14,6 +14,7 @@ mod playback;
 mod settings;
 mod setlists;
 mod songs;
+mod storage;
 
 pub use attachments::AttachmentsStore;
 pub use library_view::{Density, Group, GroupBy, LibraryViewStore, SortDir, SortField};
@@ -21,4 +22,5 @@ pub use nav::{NavStore, Route, Tab};
 pub use playback::PlaybackStore;
 pub use settings::{AccentChoice, PerformanceTheme, SettingsStore};
 pub use setlists::SetlistsStore;
-pub use songs::SongsStore;
+pub use songs::{SongsStore, now_millis};
+pub use storage::{Fault, Storage};

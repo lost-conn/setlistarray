@@ -1,8 +1,20 @@
-//! Demo content so the screens have something honest to render. Replace with
-//! the on-device store (SQLite + an attachments directory) when persistence
-//! lands.
+//! Demo content, for screenshots and tests.
+//!
+//! Not on the startup path any more: a fresh install opens an empty library.
+//! `--seed` writes this into the library, but only into an empty one, so
+//! running it twice does not give you two of everything.
+//!
+//! The ids here are the demo's own. [`install`] does not keep them — the
+//! database mints ids, and object ids are the domain ids, so the demo is
+//! remapped on the way in exactly as any real content would be.
 
-use crate::model::{Attachment, AttachmentKind, Confidence, Day, Setlist, Song};
+use std::collections::HashMap;
+
+use crate::db::DbResult;
+use crate::db::repo::Repo;
+use crate::model::{
+    Attachment, AttachmentId, AttachmentKind, Confidence, Day, Setlist, Song, SongId,
+};
 
 fn song(
     id: u32,
@@ -164,4 +176,64 @@ pub fn setlists() -> Vec<Setlist> {
             last_played: None,
         },
     ]
+}
+
+/// Write the demo library through the repository, remapping every id.
+///
+/// Songs first, because an attachment is created against the song that owns it;
+/// then the primary-attachment pointer, which cannot be known until the
+/// attachment has an id; then the setlists, whose membership is remapped the
+/// same way.
+pub fn install(repo: &Repo) -> DbResult<()> {
+    let demo_songs = songs();
+    let demo_attachments: HashMap<AttachmentId, Attachment> =
+        attachments().into_iter().map(|a| (a.id, a)).collect();
+
+    let mut song_ids: HashMap<SongId, SongId> = HashMap::new();
+    for song in &demo_songs {
+        let mut stored = song.clone();
+        stored.attachments.clear();
+        stored.primary_attachment = None;
+        let id = repo.create_song(&stored)? as SongId;
+        song_ids.insert(song.id, id);
+    }
+
+    for song in &demo_songs {
+        let owner = song_ids[&song.id];
+        let mut attached: Vec<AttachmentId> = Vec::new();
+        let mut primary = None;
+        for old in &song.attachments {
+            let Some(attachment) = demo_attachments.get(old) else {
+                continue;
+            };
+            let id = repo.create_attachment(owner, attachment)? as AttachmentId;
+            attached.push(id);
+            if song.primary_attachment == Some(*old) {
+                primary = Some(id);
+            }
+        }
+        if attached.is_empty() {
+            continue;
+        }
+        let mut stored = song.clone();
+        stored.id = owner;
+        stored.attachments = attached;
+        stored.primary_attachment = primary;
+        repo.save_song(&stored)?;
+    }
+
+    for setlist in setlists() {
+        let mut stored = setlist.clone();
+        stored.id = 0;
+        stored.song_ids.clear();
+        let id = repo.create_setlist(&stored)? as crate::model::SetlistId;
+        let members: Vec<SongId> = setlist
+            .song_ids
+            .iter()
+            .filter_map(|old| song_ids.get(old).copied())
+            .collect();
+        repo.set_members(id, &members)?;
+    }
+
+    Ok(())
 }

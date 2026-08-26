@@ -16,6 +16,8 @@ use std::sync::Arc;
 use rhypedb_engine::database::Database;
 
 pub mod convert;
+pub mod prefs;
+pub mod repo;
 
 /// Schema v1. Kept as its own file so it reads as a schema rather than as a
 /// Rust string literal.
@@ -107,15 +109,40 @@ pub fn open(dir: &DataDir) -> DbResult<Arc<Database>> {
     Database::open(schema, dir.database()).map_err(|e| DbError::Engine(e.to_string()))
 }
 
+/// Open a library this same process only just let go of.
+///
+/// rhypedb runs a compaction worker holding a `Weak` to the tree, which it
+/// upgrades while it works. If the last external handle is dropped inside that
+/// window, the worker's own handle becomes the last one and the tree — and with
+/// it the directory lock — is released on the worker's thread rather than on
+/// ours. So a restart *within one process* races, where a genuine second
+/// process gets a clean refusal.
+///
+/// Only tests restart in-process; the app opens the library once and holds it.
+/// Worth reporting upstream all the same.
+#[cfg(test)]
+pub fn restart<T>(mut open: impl FnMut() -> Option<T>) -> T {
+    for _ in 0..300 {
+        if let Some(opened) = open() {
+            return opened;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    panic!("the library never came back after three seconds");
+}
+
+/// A throwaway library directory, wiped first so a test starts from nothing.
+/// Shared with `repo` and `store::storage`, which both need one.
+#[cfg(test)]
+pub fn scratch(name: &str) -> DataDir {
+    let dir = std::env::temp_dir().join(format!("sla-db-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    DataDir::new(dir)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn scratch(name: &str) -> DataDir {
-        let dir = std::env::temp_dir().join(format!("sla-db-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        DataDir::new(dir)
-    }
 
     #[test]
     fn the_schema_parses() {

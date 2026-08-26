@@ -184,6 +184,34 @@ pub fn song_fields(song: &Song) -> FieldMap {
     fields
 }
 
+/// Every optional song field, by the name it has in the schema. `song_fields`
+/// writes only the ones a song has; an update has to say something about the
+/// rest, or clearing a key on screen leaves the old key on disk.
+const OPTIONAL_SONG_FIELDS: [&str; 10] = [
+    "song_key",
+    "tempo",
+    "tuning",
+    "capo",
+    "duration",
+    "tags",
+    "confidence",
+    "notes",
+    "last_played",
+    "primary_attachment",
+];
+
+/// The field map for a *rewrite*: what the song has, plus an explicit `Null`
+/// for everything it no longer has. `update` merges, so an absent key would
+/// preserve the old value rather than clear it — the one place where "unset is
+/// absent" needs saying out loud.
+pub fn song_updates(song: &Song) -> FieldMap {
+    let mut fields = song_fields(song);
+    for name in OPTIONAL_SONG_FIELDS {
+        fields.entry(name.to_string()).or_insert(Value::Null);
+    }
+    fields
+}
+
 /// Rebuild a song. `attachments` comes from the relationship, which the caller
 /// reads separately — an object carries its scalars, not its links.
 pub fn song_from(object: &Object, attachments: Vec<AttachmentId>) -> Song {
@@ -268,6 +296,16 @@ pub fn setlist_fields(setlist: &Setlist) -> FieldMap {
             .last_played
             .map(|d| Value::DateTime(millis_from_day(d))),
     );
+    fields
+}
+
+/// The setlist counterpart to [`song_updates`]: a rewrite says what the setlist
+/// no longer has, so clearing a played date clears it on disk.
+pub fn setlist_updates(setlist: &Setlist) -> FieldMap {
+    let mut fields = setlist_fields(setlist);
+    fields
+        .entry("last_played".to_string())
+        .or_insert(Value::Null);
     fields
 }
 
@@ -399,6 +437,30 @@ mod tests {
         ] {
             assert_eq!(kind_from(kind_name(kind)), kind);
         }
+    }
+
+    #[test]
+    fn an_update_clears_the_fields_a_song_no_longer_has() {
+        let mut song = Song::new(7, "Landslide", "Fleetwood Mac");
+        song.key = Some("Eb".into());
+        let updates = song_updates(&song);
+
+        assert_eq!(updates.get("song_key"), Some(&Value::String("Eb".into())));
+        for cleared in ["tempo", "tuning", "capo", "duration", "tags", "confidence",
+                        "notes", "last_played", "primary_attachment"] {
+            assert_eq!(updates.get(cleared), Some(&Value::Null), "{cleared}");
+        }
+    }
+
+    #[test]
+    fn a_cleared_field_reads_back_as_absent_not_as_a_blank() {
+        let song = Song::new(7, "Landslide", "Fleetwood Mac");
+        let object = object_of("Song", 7, song_updates(&song));
+        let back = song_from(&object, Vec::new());
+        assert_eq!(back.key, None);
+        assert_eq!(back.tempo, None);
+        assert_eq!(back.confidence, None);
+        assert!(back.tags.is_empty());
     }
 
     #[test]

@@ -1,6 +1,7 @@
 use rinch::prelude::*;
 
 use crate::model::Song;
+use crate::store::Storage;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GroupBy {
@@ -22,6 +23,23 @@ impl GroupBy {
             GroupBy::Tuning => "Tuning",
             GroupBy::None => "None",
         }
+    }
+
+    /// The name it is stored under. Deliberately not [`label`](Self::label):
+    /// a label is UI copy and may be reworded, a stored name may not.
+    pub fn name(self) -> &'static str {
+        match self {
+            GroupBy::Confidence => "Confidence",
+            GroupBy::FirstLetter => "FirstLetter",
+            GroupBy::Artist => "Artist",
+            GroupBy::Tag => "Tag",
+            GroupBy::Tuning => "Tuning",
+            GroupBy::None => "None",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|g| g.name() == name)
     }
 
     pub const ALL: [GroupBy; 6] = [
@@ -112,6 +130,26 @@ impl SortField {
         }
     }
 
+    /// The name it is stored under — see [`GroupBy::name`].
+    pub fn name(self) -> &'static str {
+        match self {
+            SortField::Artist => "Artist",
+            SortField::Title => "Title",
+            SortField::Confidence => "Confidence",
+            SortField::LastPlayed => "LastPlayed",
+            SortField::DateAdded => "DateAdded",
+            SortField::Key => "Key",
+            SortField::Tempo => "Tempo",
+            SortField::Duration => "Duration",
+            SortField::Capo => "Capo",
+            SortField::Tuning => "Tuning",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|f| f.name() == name)
+    }
+
     pub const ALL: [SortField; 10] = [
         SortField::Artist,
         SortField::Title,
@@ -146,12 +184,44 @@ impl SortDir {
             SortDir::Desc => SortDir::Asc,
         }
     }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            SortDir::Asc => "Asc",
+            SortDir::Desc => "Desc",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "Asc" => Some(SortDir::Asc),
+            "Desc" => Some(SortDir::Desc),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Density {
     Comfortable,
     Compact,
+}
+
+impl Density {
+    pub fn name(self) -> &'static str {
+        match self {
+            Density::Comfortable => "Comfortable",
+            Density::Compact => "Compact",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "Comfortable" => Some(Density::Comfortable),
+            "Compact" => Some(Density::Compact),
+            _ => None,
+        }
+    }
 }
 
 /// One rendered group: its header label and the songs under it.
@@ -162,7 +232,7 @@ pub struct Group {
 }
 
 /// Search query, grouping, sort, filters, density and collapse state. All of
-/// it persisted; each tab keeps its own.
+/// it persisted, in the one Preferences row — see `src/db/prefs.rs`.
 #[derive(Clone, Copy)]
 pub struct LibraryViewStore {
     pub query: Signal<String>,
@@ -174,20 +244,38 @@ pub struct LibraryViewStore {
     pub collapsed: Signal<Vec<String>>,
     /// Groups the user has expanded past the truncation limit.
     pub expanded: Signal<Vec<String>>,
+    storage: Storage,
 }
 
 impl LibraryViewStore {
+    /// The defaults, remembering nothing.
     pub fn new() -> Self {
+        Self::restored(Storage::in_memory())
+    }
+
+    /// The view as it was left. Every default here also lives in
+    /// [`Preferences::default`](crate::db::prefs::Preferences), which is where a
+    /// first run gets them — Confidence grouping, not A–Z.
+    pub fn restored(storage: Storage) -> Self {
+        let preferences = storage.preferences();
         Self {
-            query: Signal::new(String::new()),
-            // Confidence grouping is the default library view, not A–Z.
-            group_by: Signal::new(GroupBy::Confidence),
-            sort_field: Signal::new(SortField::Artist),
-            sort_dir: Signal::new(SortDir::Asc),
-            density: Signal::new(Density::Comfortable),
-            collapsed: Signal::new(Vec::new()),
-            expanded: Signal::new(Vec::new()),
+            query: Signal::new(preferences.query),
+            group_by: Signal::new(preferences.group_by),
+            sort_field: Signal::new(preferences.sort_field),
+            sort_dir: Signal::new(preferences.sort_dir),
+            density: Signal::new(preferences.density),
+            collapsed: Signal::new(preferences.collapsed),
+            expanded: Signal::new(preferences.expanded),
+            storage,
         }
+    }
+
+    /// The query is remembered like everything else, but it changes on every
+    /// keystroke — so it is set through here rather than written to directly.
+    pub fn set_query(self, query: impl Into<String>) {
+        let query = query.into();
+        self.query.set(query.clone());
+        self.storage.remember(|p| p.query = query);
     }
 
     pub fn is_collapsed(self, label: &str) -> bool {
@@ -201,6 +289,8 @@ impl LibraryViewStore {
             }
             None => list.push(label),
         });
+        let collapsed = self.collapsed.get();
+        self.storage.remember(|p| p.collapsed = collapsed);
     }
 
     pub fn is_expanded(self, label: &str) -> bool {
@@ -213,6 +303,8 @@ impl LibraryViewStore {
                 list.push(label);
             }
         });
+        let expanded = self.expanded.get();
+        self.storage.remember(|p| p.expanded = expanded);
     }
 
     /// Tapping the active sort row reverses it; tapping another selects it.
@@ -223,13 +315,25 @@ impl LibraryViewStore {
             self.sort_field.set(field);
             self.sort_dir.set(SortDir::Asc);
         }
+        let (field, dir) = (self.sort_field.get(), self.sort_dir.get());
+        self.storage.remember(|p| {
+            p.sort_field = field;
+            p.sort_dir = dir;
+        });
+    }
+
+    pub fn choose_group(self, group_by: GroupBy) {
+        self.group_by.set(group_by);
+        self.storage.remember(|p| p.group_by = group_by);
     }
 
     pub fn toggle_density(self) {
-        self.density.set(match self.density.get() {
+        let density = match self.density.get() {
             Density::Comfortable => Density::Compact,
             Density::Compact => Density::Comfortable,
-        });
+        };
+        self.density.set(density);
+        self.storage.remember(|p| p.density = density);
     }
 
     /// The library list, grouped and sorted. Derived on read — the rules live

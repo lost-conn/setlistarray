@@ -23,13 +23,16 @@ mod store;
 mod theme;
 mod ui;
 
+use std::sync::OnceLock;
+
 use rinch::prelude::*;
 use rinch_tabler_icons::TablerIcon;
 
+use db::DataDir;
 use screens::{Library, SetlistDetail, Setlists, SongDetail, Stub};
 use store::{
     AttachmentsStore, LibraryViewStore, NavStore, PlaybackStore, Route, SettingsStore,
-    SetlistsStore, SongsStore, Tab,
+    SetlistsStore, SongsStore, Storage, Tab,
 };
 use theme::{T_NAV_LABEL, tokens};
 use ui::icon;
@@ -38,13 +41,42 @@ use ui::icon;
 const WIDTH: u32 = 393;
 const HEIGHT: u32 = 852;
 
+/// What `main` worked out before the window existed. `app` is a component and
+/// takes no arguments, so the directory arrives this way rather than as props.
+struct Startup {
+    dir: DataDir,
+}
+
+static STARTUP: OnceLock<Startup> = OnceLock::new();
+
 #[component]
 fn app() -> NodeHandle {
-    let settings = create_store(SettingsStore::new());
-    create_store(SongsStore::new(seed::songs()));
-    create_store(SetlistsStore::new(seed::setlists()));
-    create_store(AttachmentsStore::new(seed::attachments()));
-    create_store(LibraryViewStore::new());
+    let startup = STARTUP.get().expect("main sets this before the window opens");
+
+    let storage = create_store(Storage::open(&startup.dir));
+    let mut loaded = storage.load();
+
+    // The demo content, until card B5 puts it behind a flag. Only into an
+    // empty library: it must never land on top of real songs.
+    if loaded.songs.is_empty() && loaded.setlists.is_empty() {
+        if storage.is_persistent() {
+            if storage.write("writing the demo library", seed::install) {
+                loaded = storage.load();
+            }
+        } else {
+            // No database to write it to; the demo lives in memory for as long
+            // as the window is open.
+            loaded.songs = seed::songs();
+            loaded.setlists = seed::setlists();
+            loaded.attachments = seed::attachments();
+        }
+    }
+
+    let settings = create_store(SettingsStore::restored(storage));
+    create_store(SongsStore::restored(storage, loaded.songs));
+    create_store(SetlistsStore::restored(storage, loaded.setlists));
+    create_store(AttachmentsStore::restored(storage, loaded.attachments));
+    create_store(LibraryViewStore::restored(storage));
     create_store(PlaybackStore::new());
     let nav = create_store(NavStore::new());
 
@@ -114,6 +146,10 @@ fn nav_item(tab: Tab, label: &str, glyph: TablerIcon) -> NodeHandle {
 }
 
 fn main() {
+    let _ = STARTUP.set(Startup {
+        dir: DataDir::desktop_default(),
+    });
+
     // Newsreader and Karla are picked up from the system font list. Run
     // `scripts/install-fonts.sh` once if the app falls back to Georgia and a
     // default sans.
