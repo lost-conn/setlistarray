@@ -56,7 +56,9 @@ pub fn Library() -> NodeHandle {
                             font-family: var(--sla-font-ui); font-size: 15px; color: var(--sla-ink);",
                     placeholder: "Search title, artist, tag…",
                     value: {|| view.query.get()},
-                    oninput: move |value: String| view.query.set(value),
+                    // Through the store, not straight at the signal: the query
+                    // is remembered between launches like the rest of the view.
+                    oninput: move |value: String| view.set_query(value),
                 }
             }
 
