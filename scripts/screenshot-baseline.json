@@ -1,0 +1,56 @@
+{
+  "_comment": "Baselines for scripts/screenshot.sh. Numbers here are measurements from a real run, not hand-picked targets. Regenerate with `scripts/screenshot.sh --update` after a deliberate visual change, then read the printed diff before committing — a diff that isn't explained by your change means something regressed.",
+  "window_title": "SetListArray",
+  "reference_capture": {
+    "width": 491,
+    "height": 1065,
+    "note": "393x852 logical window (WIDTH/HEIGHT in src/main.rs) captured on a 1.25x-scale display. Every crop below is defined in these physical pixels and scaled proportionally at run time to whatever size the window is actually captured at, so a different display scale factor doesn't require re-authoring the geometry."
+  },
+  "checks": [
+    {
+      "name": "thumb_painted",
+      "description": "The library's first row 38x38 attachment thumb is actually painted, not just laid out. Caught the display:contents paint regression (README: 'The paint regression') where boxes were sized correctly but never drawn.",
+      "type": "gray_mean",
+      "crop": { "w": 40, "h": 50, "x": 30, "y": 330 },
+      "expected": 0.913,
+      "tolerance": 0.02,
+      "note": "Reference: ~0.913 painted (grey fill), ~0.970 unpainted (bare paper) — a delta far outside tolerance."
+    },
+    {
+      "name": "fab_solid_accent",
+      "description": "The library FAB (bottom-right, add song) is filled solid with the accent colour.",
+      "type": "solid_color",
+      "crop": { "w": 15, "h": 15, "x": 400, "y": 885 },
+      "color": "#B54724",
+      "fuzz_percent": 5,
+      "min_match_fraction": 0.97
+    },
+    {
+      "name": "group_header_accent",
+      "description": "The first library group header's label (e.g. 'SOLID') is painted in the accent colour, not the muted grey later headers use.",
+      "type": "accent_presence",
+      "crop": { "w": 55, "h": 20, "x": 20, "y": 290 },
+      "color": "#B54724",
+      "fuzz_percent": 20,
+      "min_matched": 40
+    },
+    {
+      "name": "bottom_nav_accent",
+      "description": "The active bottom-nav item (Songs, selected by default) has its icon and label painted in the accent colour.",
+      "type": "accent_presence",
+      "crop": { "w": 50, "h": 55, "x": 95, "y": 985 },
+      "color": "#B54724",
+      "fuzz_percent": 20,
+      "min_matched": 100
+    },
+    {
+      "name": "screen_background",
+      "description": "The screen background is the light-mode paper colour, sampled from the empty status-bar strip at the very top.",
+      "type": "solid_color",
+      "crop": { "w": 40, "h": 30, "x": 0, "y": 0 },
+      "color": "#FBF7F0",
+      "fuzz_percent": 5,
+      "min_match_fraction": 0.97
+    }
+  ]
+}
