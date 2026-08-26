@@ -38,13 +38,13 @@ local path dependencies, so `Cargo.toml` expects three checkouts side by side:
 ```
 projects/personal/
 ├── setlistarray/     ← this
-├── rinch-fixes/      ← github.com/joeleaver/rinch, on a branch carrying #245 + #246
+├── rinch-fixes/      ← github.com/joeleaver/rinch, branch carrying #245 + #246 + #266
 └── rhypedb-main/     ← github.com/joeleaver/rhypedb, main
 ```
 
-Both pins are deliberate and temporary — see "The two Rinch faults" below, and
-card A1. When those PRs land, `rinch` goes back to a git revision; rhypedb stays
-a path dep while this app is its early in-process consumer.
+Both pins are deliberate and temporary — see "The three Rinch contributions"
+below, and card A1. When those PRs land, `rinch` goes back to a git revision;
+rhypedb stays a path dep while this app is its early in-process consumer.
 
 ### Visual regression check
 
@@ -136,8 +136,9 @@ needed updating.
 
 **The pin is deliberately not on `main`.** See "The flex regression" below.
 
-The handoff targets Android, and Rinch has an Android backend, so the app
-builds for both. On the desktop it runs in a 393×852 phone-shaped window;
+The handoff targets Android, and Rinch has an Android backend, so the app runs
+on both — it has been on a phone since. On the desktop it runs in a 393×852
+phone-shaped window;
 nothing in the UI code assumes either platform. See "Android" below.
 
 ## Layout
@@ -215,19 +216,29 @@ Also outstanding:
   directory (Phase I).
 - **Accent from the system.** `AccentChoice::FromSystem` falls back to Rust
   until Rinch exposes the wallpaper colour.
-- **Every gesture in the handoff.** Drag-to-reorder, swipe-to-remove, swipe
-  between songs in performance mode and long-press anywhere: none of them can
-  be built on this framework's Android backend today, and each has an explicit
-  tap-driven stand-in instead. The finding is below; the affected cards are
-  C6 (done, with buttons), F2 and the long-press note in `src/menu.rs`.
+- **Most of the gestures in the handoff.** Drag-to-reorder, swipe-to-remove and
+  swipe between songs in performance mode cannot be built on this framework's
+  Android backend today, and each has an explicit tap-driven stand-in instead.
+  Long-press was the fourth of them until rinch#266, which the local branch now
+  carries: it opens a context menu on a phone, and that has been watched
+  happening. The finding is below; the affected cards are C6 (done, with
+  buttons), F2, K15, and the long-press note in `src/menu.rs`, which the fix
+  has left out of date in the app's favour.
 
 ## Android
 
-> **Unverified on hardware.** There is no device and no emulator on the machine
-> this was built on. `./build-apk.sh --build-only` produces a signed,
-> `apksigner`-verified APK and that is the whole of what has been checked. The
-> app has never been launched on a phone. Every claim below about how it
-> *behaves* on device is a reading of the code, not an observation.
+> **Run on two Android 13 targets, and only those.** A moto g stylus 5G (2022)
+> — arm64-v8a, 1080×2460 at density 400, so a 2.5× scale and a logical 432×984
+> — and Waydroid on x86_64, where the app gets a freeform 609×1059 window at
+> density 225 (1.41×, logical 432×752). Both report SDK 33. It launches, it
+> renders, it takes taps and text, and what follows names the target whenever
+> the target is the point.
+>
+> That is one handset and one container on one Android version. No Android 14
+> and no Android 15 — and 15 is where the inset question below actually lives —
+> no tablet, no fold, no low-density screen, no second manufacturer's skin.
+> Every gesture below was driven through `adb`; none of it has been under a
+> human finger.
 
 One crate, two targets. `src/main.rs` is the desktop binary; the same crate also
 builds as a `cdylib` whose `android_main` (`src/android.rs`) starts Rinch's
@@ -263,14 +274,16 @@ needed only to install.
 ```bash
 export ANDROID_NDK_HOME=$HOME/android/android-ndk-r27c
 ./build-apk.sh --build-only          # signed APK at ./setlistarray.apk
-./build-apk.sh --target x86_64       # for an emulator instead of a phone
+./build-apk.sh --target x86_64       # for an emulator or Waydroid, not a phone
 ./build-apk.sh                       # the above, then adb install and launch
 ```
 
 Defaults to `arm64-v8a` and the release profile. It builds `--lib` only: the
-desktop binary and the probe are not part of the APK. Roughly 6.5 MiB, almost
-all of it `libsetlistarray.so` — it was 5.8 MiB before the capture engine
-brought html5ever and its friends in.
+desktop binary and the probe are not part of the APK. Roughly 6.6 MiB on either
+target — 6,935,051 bytes for arm64-v8a, 6,976,008 for x86_64 — almost all of it
+`libsetlistarray.so`, a stripped 21 MiB shared object that the zip squeezes to
+about a third. It was 5.8 MiB before the capture engine brought html5ever and
+its friends in.
 
 ### One permission, on purpose
 
@@ -283,7 +296,10 @@ in yourself, and Android refuses the socket without it — the installer puts a
 package in the `inet` group only when the manifest asks, and there is no way
 round that from app code. INTERNET is a *normal* permission: granted at
 install, never prompted for, absent from the app's permission screen, not
-revocable. It gives the app no reach into anything of yours — no files, no
+revocable. The phone bears that out: `dumpsys package` lists
+`android.permission.INTERNET: granted=true` under *install permissions* and no
+runtime permissions whatever, which is exactly why the permission screen has
+nothing to show. It gives the app no reach into anything of yours — no files, no
 contacts, no location, no identifiers.
 
 So the promise is no longer "no permissions". It is narrower and it is
@@ -310,26 +326,61 @@ capture from Android and over routing it through the system share sheet; the
 reasoning, and the two options not taken, are in
 [docs/CAPTURE.md](docs/CAPTURE.md).
 
-### Known unknowns
+### What the phone settled
 
-Things that cannot be settled without a device:
+- **Insets do not double up on Android 13.** This section used to predict that
+  they would below Android 15, reasoning that `RinchActivity` never opts into
+  edge-to-edge and the system would therefore inset the window itself. It does
+  not. The shell logs `InitWindow: 1080x2460 physical` — the whole display,
+  status bar and cutout included — so the window is never inset and
+  `safe_area()` applies the strip exactly once. The phone has a real punch-hole
+  cutout (`DisplayCutout{insets=Rect(0, 115 - 0, 0)}`) and the title lands 140
+  physical pixels down: 115 for the cutout, the header's own 6 CSS px, and the
+  serif's leading. Doubled, it would have started past 245. Card K2's
+  "unverified against a real notch" can go with it. **Android 15 is still
+  untested**, and it is the version that enforces edge-to-edge for an SDK 35
+  target, so the question is open there and nowhere else.
+- **The icon set renders. Some Unicode does not.** Every Tabler icon draws
+  correctly — the gear, the FAB's plus, both nav glyphs, the search magnifier,
+  the trash in the overflow menu, the chevron on **More details**. The tofu is
+  in the two places a *text* glyph stands in for an icon: the sort chip's
+  `↑`/`↓` (U+2191/2193, `SortDir::arrow`) and the density chip's `≣` (U+2263).
+  `·` and `…` come through fine, so this is not "no Unicode" — it is two
+  characters the fallback font does not carry. Card K13.
+- **Touch, focus and the IME work.** Taps land where they are aimed, the search
+  field focuses and raises the soft keyboard, and typed characters reach the
+  store. Card K7 is narrower than "untried" now — but see the repaint fault
+  below.
+- **INTERNET really is invisible.** `dumpsys package` lists it under *install
+  permissions*, `granted=true`, with no runtime permissions at all — which is
+  why there is nothing for the app's permission screen to show. The claim under
+  "One permission, on purpose" holds on the device.
 
-- **Insets may double up below Android 15.** `RinchActivity` never opts into
-  edge-to-edge. Android 15 enforces it for anything targeting SDK 35, so there
-  the insets are ours to apply and `safe_area()` is right. On Android 14 and
-  below the system already insets the window, and the strip this app reserves
-  would be added on top of that. The fix is upstream (`setDecorFitsSystemWindows`
-  in `RinchActivity`), not here.
+### Still open
+
+- **Typed text does not repaint.** The characters reach the store — type into
+  the search field, force-stop the app, launch it again, and the string is
+  there — but the field's drawn value goes blank the moment it takes focus and
+  never comes back while that process lives. Not on the keystroke, and not
+  after a background-and-resume either; only a fresh process shows it.
+  Everything around it repaints: the "N in your book" count updates when a song
+  is saved, the route switch is instant, the add-song screen's empty-title
+  error appears on the tap that earns it. So it is the input's own value, not
+  the paint loop. Card K11, and unexplained.
+- **The status bar icons are drawn white on the app's cream paper** and are
+  close to illegible — the clock especially. The app never tells Android that
+  its bars sit over a light background, so the system keeps the light-content
+  icons it starts with. Card K12.
 - **The fonts do not ship.** Newsreader and Karla are picked up from the system
-  font list, which on Android does not have them; the app will fall back to
-  Noto Serif and Roboto. Rinch can register font bytes
-  (`RinchApp::register_font_data`) but neither `run_android` nor
-  `ThemeProviderProps` exposes a way to reach it, so `assets/fonts/` cannot get
-  into the APK yet. Small upstream fix; the app is already carrying the files.
-- **Touch, IME and the soft keyboard** are all untried. Card K7.
+  font list, which on Android does not have them, and the APK settles it: seven
+  entries, none of them a font. The app falls back to the system serif and
+  Roboto. Rinch can register font bytes (`RinchApp::register_font_data`) but
+  neither `run_android` nor `ThemeProviderProps` exposes a way to reach it, so
+  `assets/fonts/` cannot get in yet. Small upstream fix; the app is already
+  carrying the files.
 - **Keep-awake** does not exist in Rinch's Android backend at all. Card K5.
-- **`ClickContext`'s viewport is wrong by one scale factor on Android** — see
-  below. Popup placement, not tap targets.
+- **`ClickContext`'s viewport is wrong by one scale factor on Android** — and
+  it is no longer harmless. See below.
 
 ### A third Rinch fault, found by reading
 
@@ -345,13 +396,25 @@ let vp_w = window_size.0 as f32 / scale_factor as f32;
 So on Android the viewport handed to every `ClickContext` is
 `physical / scale²` — 143×310 where it should read 393×852 on a 2.75× phone.
 
-It is narrower than it sounds. Pointer coordinates are *separately* divided by
-the scale factor in `collect_input_events`, and the layout tree is resolved at
-the logical size, so hit-testing agrees with itself and **taps land where they
-should**. What is wrong is `ClickContext::viewport_width` / `viewport_height`,
-which is what decides whether a `<select>` popup or a dropdown flips up or down
-and how it is clamped to the screen edge. This app has no such control yet, so
-nothing visible is broken today.
+It is narrower than it sounds, and it is no longer invisible. Pointer
+coordinates are *separately* divided by the scale factor in
+`collect_input_events`, and the layout tree is resolved at the logical size, so
+hit-testing agrees with itself and **taps land where they should**. What is
+wrong is `ClickContext::viewport_width` / `viewport_height`, which is what
+decides whether a `<select>` popup or a dropdown flips up or down and how it is
+clamped to the screen edge.
+
+`src/menu.rs` is exactly such a control — `DropdownMenu` from `rinch-components`
+does the viewport-edge flipping this app declined to reimplement — and now that
+a long press can reach it on a phone (below), the misplacement is on screen.
+Long-press a library row on the moto and the overflow menu opens **upward**:
+everything but its last item lands outside the list's scroll box, painted under
+the chip row. The arithmetic accounts for it exactly. The row sits about 300 CSS
+pixels down a screen that is really 984 tall, which leaves room for the menu
+below it — but the menu believes the screen is 393 tall, and 300 down a 393-tall
+screen is a row with nothing under it, so it flips. On the desktop the same menu
+opens downward. That is the first user-visible symptom of this fault, and it
+moves it from a note to a thing to fix.
 
 Found while fixing the desktop equivalent
 ([joeleaver/rinch#246](https://github.com/joeleaver/rinch/pull/246)), which left
@@ -360,13 +423,17 @@ PR upstream, not a change here.
 
 ### Touch on Android is a tap and a scroll, and nothing else
 
-**No gesture in the handoff can be built on the Android backend as it stands.**
+**No gesture in the handoff could be built on the Android backend as it stood.**
 Not drag-to-reorder, not swipe-to-remove, not swipe-between-songs in
 performance mode, not long-press. This was found by card C6's spike before any
-of it was built on, which is the only reason it did not cost a phase.
+of it was built on, which is the only reason it did not cost a phase; card K15
+carries it upstream. One of the four has since been fixed; that is the end of
+this section, and the heading has been left alone because three other places —
+"What is built" above, `docs/PLAN.md` and `src/menu.rs` — point at it by name.
 
-Every touch on Android goes through one recogniser —
-`TouchGesture::process` in `rinch/src/shell/android_runtime.rs` — and it emits:
+Every touch on Android goes through one recogniser — `TouchGesture::process` in
+`rinch/src/shell/android_runtime.rs` — and on `main`, which is still what a
+build against upstream gets, it emits:
 
 | MotionEvent | What the app gets |
 | --- | --- |
@@ -389,11 +456,12 @@ Three consequences, each of which kills a feature:
   all — `event_dispatch.rs` scrolls `scroll_offset.0` and dispatches nothing.
   So there is no signal to hang "swipe left to remove" on, and no event when
   the finger lifts to commit it either.
-- **There is no press-and-hold.** Already written up in `src/menu.rs` for a
+- **There was no press-and-hold.** Already written up in `src/menu.rs` for a
   different reason (`onclick` fires synchronously inside the `MouseDown`
-  handler, so no timer can get between a tap and its navigation); this is the
+  handler, so no timer can get between a tap and its navigation); this was the
   second, independent reason, and `oncontextmenu` — the desktop stand-in that
-  file uses — is never synthesised from touch at all.
+  file uses — was never synthesised from touch at all. This is the one that has
+  been fixed.
 
 All of it works on the desktop backend, which is what makes it dangerous: a
 gesture written and tested in the phone-shaped window here is dead on the
@@ -406,20 +474,41 @@ empirically — press, eight moves, release, driven through the debug IPC's
 usable coordinates, taps still work on `draggable` elements, and a horizontal
 drag on a row reports its delta — none of which transfers.
 
-The fix is upstream and is a real piece of work, not a one-liner: the
+The whole fix is upstream and is a real piece of work, not a one-liner: the
 recogniser has to emit a genuine down/move/up stream and let the DOM decide
 what claims it, rather than deciding "this is a scroll" on the app's behalf
-8 pixels in. Until it exists, every affordance in this app is a tap.
+8 pixels in.
 
-## The two Rinch faults (fixed upstream, awaiting review)
+**One of the four is done.**
+[joeleaver/rinch#266](https://github.com/joeleaver/rinch/pull/266) makes a press
+held still past `ViewConfiguration.getLongPressTimeout()` — 500ms, the deadline
+Android's own widgets use — synthesise a right-button press, which `RinchApp`
+already routes through `dispatch_oncontextmenu`, the same and only dispatch a
+desktop right-click takes. Crossing the 8px slop still makes it a scroll and
+lifting early still makes it a tap; once the context event has fired, the lift
+emits only the matching right-button release, so a long press cannot also
+activate what it was held over. Watched on the moto: holding a library row for
+900ms opens the overflow menu, and the app does not navigate to the song
+underneath. Where the menu *lands* is a different fault — see "A third Rinch
+fault" above.
+
+It is stage 1 of three. Stage 2 is pointer-cancel semantics; stage 3 is real
+pointer events with capture, where the scroll decision is finally deferred to
+the DOM. Drag and swipe wait on stage 3, so until then every affordance in this
+app except the long-press menu is a tap.
+
+## The three Rinch contributions (upstream, awaiting review)
 
 The app is pinned to Rinch `d25f646` (2026-03-17). Two faults on `main` kept it
 there; both now have PRs, each with a regression test that fails before and
-passes after:
+passes after. A third PR adds something that was never there at all:
 
 - [joeleaver/rinch#245](https://github.com/joeleaver/rinch/pull/245) — the paint regression
 - [joeleaver/rinch#246](https://github.com/joeleaver/rinch/pull/246) — the viewport scale fault
+- [joeleaver/rinch#266](https://github.com/joeleaver/rinch/pull/266) — a long press on Android is a context menu, stage 1 of three
 
+The `../rinch-fixes` integration branch carries all three, which is why the long
+press works in an APK built here and would not in one built against `main`.
 Move the pin once they land.
 
 ### The paint regression

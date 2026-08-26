@@ -56,9 +56,9 @@ Two more crates change earlier assumptions:
 | ~~No writable-storage accessor~~ | Done (K3): `internal_data_path()` is threaded in at `android_main` | — |
 | No wallpaper colours | Material You accent extraction, per the handoff's resolution order | `WallpaperManager.getWallpaperColors()` over JNI; until then `AccentChoice::FromSystem` falls back to Rust, which the handoff explicitly allows |
 | ~~Status bar space is hard-coded 44px~~ | Done (K2): `src/platform.rs` | — |
-| No way to register an app-bundled font | Newsreader and Karla are not on Android; the app falls back to Noto Serif and Roboto | `RinchApp::register_font_data` exists but neither `run_android` nor `ThemeProviderProps` reaches it — add a font-data field to `ThemeProviderProps`, or a `run_android_with_fonts` |
-| `RinchActivity` never opts into edge-to-edge | Below Android 15 the system insets the window *and* the app reserves the same strip | `setDecorFitsSystemWindows(false)` (or the pre-30 flags) in `RinchActivity.onCreate` |
-| `android_runtime.rs` passes `logical_size` as `handle_event`'s `window_size` | `ClickContext`'s viewport reads `physical / scale²`; popup placement, not tap targets | Pass `physical_size`. Desktop equivalent was joeleaver/rinch#246; this is a follow-up PR |
+| No way to register an app-bundled font | Newsreader and Karla are not on Android, and the APK carries no font files; on the phone the app falls back to the system serif and Roboto | `RinchApp::register_font_data` exists but neither `run_android` nor `ThemeProviderProps` reaches it — add a font-data field to `ThemeProviderProps`, or a `run_android_with_fonts` |
+| `RinchActivity` never opts into edge-to-edge | Predicted double insets below Android 15; **disproved on Android 13** — the window spans the whole display and `safe_area()` applies the strip once. Still untested on 15, which enforces edge-to-edge for an SDK 35 target | `setDecorFitsSystemWindows(false)` (or the pre-30 flags) in `RinchActivity.onCreate`, if 15 turns out to need it |
+| `android_runtime.rs` passes `logical_size` as `handle_event`'s `window_size` | `ClickContext`'s viewport reads `physical / scale²`; popup placement, not tap targets. No longer theoretical — the long-press overflow menu flips up and lands outside the list on the phone | Pass `physical_size`. Desktop equivalent was joeleaver/rinch#246; this is a follow-up PR |
 
 ### 2. Where the data lives — settled: rhypedb
 
@@ -250,10 +250,13 @@ So C6 ships tap-driven controls, which work identically on both platforms:
   made tappable) or an upstream fix first.
 - **`src/menu.rs`'s long-press** already stands in `oncontextmenu` for
   press-and-hold, on the grounds that the app "only runs in a desktop window
-  today". That is now wrong in a second way: `oncontextmenu` is never
-  synthesised from touch at all, so every long-press menu in the app is
-  unreachable on a phone. The ⋮ button on song detail still opens it; a library
-  row and a setlist card have no other way in.
+  today". That was wrong in a second way — `oncontextmenu` was never synthesised
+  from touch at all — and has since been fixed upstream by joeleaver/rinch#266,
+  which turns a 500ms still press into the same right-button dispatch a desktop
+  right-click takes. A long press on a library row opens the menu on the phone
+  and does not also navigate. The file's own note has not caught up. What is
+  still wrong is where the menu *lands*: it flips upward and off the list,
+  because `ClickContext`'s viewport on Android is short by one scale factor.
 
 ---
 
@@ -313,8 +316,9 @@ The manifest test narrowed from "no permissions" to an allowlist of exactly
 one (`the_android_manifest_asks_only_for_internet`), and the two options not
 taken — desktop-only capture, and capturing through the system share sheet —
 are recorded with the reasoning in `docs/CAPTURE.md`. **E2 is no longer blocked
-on either platform**, though its UI now has to exist on both. Nothing about
-this has been observed on a device; only that the APK still builds.
+on either platform**, though its UI now has to exist on both. On the phone,
+`dumpsys package` shows INTERNET granted at install with no runtime permissions
+beside it; the capture path itself has still never been exercised on a device.
 
 **Done when** a URL pasted on wifi still opens with the network off.
 
@@ -386,8 +390,8 @@ sit alongside Phase C.
 
 | # | Card | Size |
 | --- | --- | --- |
-| K1 | ~~Second crate target: `cdylib` + `android_main`, an `AndroidManifest.xml`, a `build-apk.sh`.~~ Builds a signed APK; **not yet run on a device** — no hardware available. The manifest declares one permission, INTERNET, for capture (Phase E). | ✔ |
-| K2 | ~~Replace the hard-coded 44px status strip with `safe_area_insets()` and `density_dpi()`.~~ Done, behind `platform::safe_area()`. Unverified against a real notch. | ✔ |
+| K1 | ~~Second crate target: `cdylib` + `android_main`, an `AndroidManifest.xml`, a `build-apk.sh`.~~ Builds a signed APK, and it runs: a moto g stylus 5G (2022) and Waydroid, both Android 13 / SDK 33. No other version, and nothing bigger than a handset. The manifest declares one permission, INTERNET, for capture (Phase E). | ✔ |
+| K2 | ~~Replace the hard-coded 44px status strip with `safe_area_insets()` and `density_dpi()`.~~ Done, behind `platform::safe_area()`. Verified against a real punch-hole cutout on Android 13; the insets are applied once, not twice. | ✔ |
 | K3 | ~~Storage path from `AndroidApp::internal_data_path()` through a platform seam.~~ Done: `DataDir::install()` at the entry point, published as a context by `app()`. | ✔ |
 | K4 | Attachment import through `rinch_android::file_picker::pick_file` + `read_content_uri`; backup export through `save_file`. Same trait the desktop `rfd` path implements. | M |
 | K5 | Keep-awake: contribute `FLAG_KEEP_SCREEN_ON` to `rinch-android`, then wire F4 to it. | M |
