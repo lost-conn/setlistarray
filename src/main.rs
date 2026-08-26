@@ -42,9 +42,11 @@ const WIDTH: u32 = 393;
 const HEIGHT: u32 = 852;
 
 /// What `main` worked out before the window existed. `app` is a component and
-/// takes no arguments, so the directory arrives this way rather than as props.
+/// takes no arguments, so the command line arrives this way rather than as
+/// props.
 struct Startup {
     dir: DataDir,
+    seed: bool,
 }
 
 static STARTUP: OnceLock<Startup> = OnceLock::new();
@@ -56,9 +58,9 @@ fn app() -> NodeHandle {
     let storage = create_store(Storage::open(&startup.dir));
     let mut loaded = storage.load();
 
-    // The demo content, until card B5 puts it behind a flag. Only into an
-    // empty library: it must never land on top of real songs.
-    if loaded.songs.is_empty() && loaded.setlists.is_empty() {
+    // `--seed`, and only into an empty library: running it twice must not give
+    // you two of everything, and it must never land on top of real songs.
+    if startup.seed && loaded.songs.is_empty() && loaded.setlists.is_empty() {
         if storage.is_persistent() {
             if storage.write("writing the demo library", seed::install) {
                 loaded = storage.load();
@@ -146,8 +148,13 @@ fn nav_item(tab: Tab, label: &str, glyph: TablerIcon) -> NodeHandle {
 }
 
 fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
     let _ = STARTUP.set(Startup {
         dir: DataDir::desktop_default(),
+        // A fresh install opens an empty library. The demo content is behind
+        // this flag, for screenshots and for anyone who wants something to look
+        // at before they have typed a song in.
+        seed: args.iter().any(|a| a == "--seed"),
     });
 
     // Newsreader and Karla are picked up from the system font list. Run
