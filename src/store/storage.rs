@@ -383,6 +383,43 @@ mod tests {
         assert_eq!(s.songs.count(), 4, "removing from a set kept every song");
     }
 
+    /// C6's undo, end to end. The interesting part is not that the song comes
+    /// back — it never left the library — but that it comes back *where it
+    /// was*, and that the restored order is what the next launch reads.
+    #[test]
+    fn undoing_a_removal_persists_the_song_back_into_its_old_position() {
+        let dir = scratch("store-undo-removal");
+        let expected = {
+            let s = Session::open(&dir);
+            let ids: Vec<_> = ["Carolina", "Blackbird", "Ripple", "Landslide"]
+                .iter()
+                .map(|t| s.songs.add(*t, "someone"))
+                .collect();
+            let set = s.setlists.add("Thursday open mic");
+            s.setlists.add_songs(set, &ids);
+
+            s.setlists.remove_song(set, ids[1]);
+            assert_eq!(
+                s.setlists.get(set).unwrap().song_ids,
+                vec![ids[0], ids[2], ids[3]]
+            );
+
+            assert!(s.setlists.undo_removal());
+            let order = s.setlists.get(set).unwrap().song_ids;
+            assert_eq!(order, ids, "second again, not fourth");
+            order
+        };
+
+        let s = Session::open(&dir);
+        assert_eq!(s.setlists.setlists.get()[0].song_ids, expected);
+        assert_eq!(s.songs.count(), 4);
+        assert_eq!(
+            s.setlists.last_removal.get(),
+            None,
+            "an undo does not survive the process that offered it"
+        );
+    }
+
     #[test]
     fn a_deleted_setlist_does_not_take_its_songs_with_it() {
         let dir = scratch("store-setlist-delete");

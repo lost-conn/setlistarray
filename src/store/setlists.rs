@@ -3,6 +3,22 @@ use rinch::prelude::*;
 use crate::model::{Setlist, SetlistId, SongId};
 use crate::store::Storage;
 
+/// A membership that was just taken out of a set, kept only long enough to
+/// offer it back.
+///
+/// The song itself is never at risk — that is `@on_delete(remove)`'s promise
+/// and J5's rule — so what a removal actually destroys is the *place in the
+/// running order*, and that is the part re-adding cannot give back: the picker
+/// puts songs on the end. In a twenty-song set, "put it back where it was" is
+/// otherwise a dozen taps of Move up. Hence the index rides along.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Removal {
+    pub setlist: SetlistId,
+    pub song: SongId,
+    /// Where in the running order it sat, before it was taken out.
+    pub index: usize,
+}
+
 /// Setlists, in memory, written through on every change.
 ///
 /// Membership is one statement — "this is the running order now" — because add,
@@ -12,6 +28,9 @@ use crate::store::Storage;
 #[derive(Clone, Copy)]
 pub struct SetlistsStore {
     pub setlists: Signal<Vec<Setlist>>,
+    /// The one removal that can still be undone, or `None`. Any other write to
+    /// any running order clears it — see `commit_order`.
+    pub last_removal: Signal<Option<Removal>>,
     next_id: Signal<SetlistId>,
     storage: Storage,
 }
@@ -25,6 +44,7 @@ impl SetlistsStore {
         let next = setlists.iter().map(|s| s.id).max().unwrap_or(0) + 1;
         Self {
             setlists: Signal::new(setlists),
+            last_removal: Signal::new(None),
             next_id: Signal::new(next),
             storage,
         }
@@ -111,27 +131,75 @@ impl SetlistsStore {
 
     /// Removing here never deletes the song itself — `@on_delete(remove)` on the
     /// membership makes that the schema's promise, not ours to keep by hand.
+    ///
+    /// The place it came out of is remembered so `undo_removal` can put it
+    /// back there rather than on the end.
     pub fn remove_song(self, setlist: SetlistId, song: SongId) {
         let Some(current) = self.get(setlist) else {
             return;
         };
-        if !current.song_ids.contains(&song) {
+        let Some(index) = current.song_ids.iter().position(|id| *id == song) else {
             return;
-        }
-        let order = current
-            .song_ids
-            .iter()
-            .copied()
-            .filter(|id| *id != song)
-            .collect();
+        };
+        let mut order = current.song_ids.clone();
+        order.remove(index);
         self.commit_order("removing a song from a setlist", setlist, order);
+        // After the commit, not before: `commit_order` clears the pending undo
+        // (any write invalidates it), and a failed write must leave nothing to
+        // undo at all.
+        if !self.get(setlist).is_some_and(|s| s.song_ids.contains(&song)) {
+            self.last_removal.set(Some(Removal {
+                setlist,
+                song,
+                index,
+            }));
+        }
     }
 
+    /// Put the last removed song back where it was. Returns whether it went.
+    ///
+    /// Refuses if the set is gone, or if the song has since found its own way
+    /// back in — an undo that duplicated a membership would be worse than one
+    /// that quietly declines.
+    pub fn undo_removal(self) -> bool {
+        let Some(removal) = self.last_removal.get() else {
+            return false;
+        };
+        let Some(current) = self.get(removal.setlist) else {
+            self.last_removal.set(None);
+            return false;
+        };
+        if current.song_ids.contains(&removal.song) {
+            self.last_removal.set(None);
+            return false;
+        }
+        let mut order = current.song_ids.clone();
+        // The set may have been shortened since; clamp rather than panic.
+        let at = removal.index.min(order.len());
+        order.insert(at, removal.song);
+        self.commit_order("putting a removed song back", removal.setlist, order);
+        self.get(removal.setlist)
+            .is_some_and(|s| s.song_ids.contains(&removal.song))
+    }
+
+    /// Move the song at `from` so that it ends up at index `to`, the rest
+    /// closing up behind it.
+    ///
+    /// Take-then-insert, not swap: the two differ the moment a move spans more
+    /// than one place, and "put this song third" is the statement the screen
+    /// makes. Positions stay dense and unique for free — they are the indices
+    /// of this vector, renumbered 0..n by `Repo::set_members` on the way to
+    /// disk.
     pub fn reorder(self, setlist: SetlistId, from: usize, to: usize) {
         let Some(current) = self.get(setlist) else {
             return;
         };
         if from >= current.song_ids.len() || to >= current.song_ids.len() {
+            return;
+        }
+        // A move to where it already is is not a change, and must not cost a
+        // write — or throw away a pending undo.
+        if from == to {
             return;
         }
         let mut order = current.song_ids.clone();
@@ -201,6 +269,10 @@ impl SetlistsStore {
         {
             return;
         }
+        // One undo, and only for the most recent removal. Any other write to
+        // any running order moves the ground the remembered index stood on, so
+        // it stops being an offer this store can honour.
+        self.last_removal.set(None);
         self.setlists.update(|list| {
             if let Some(slot) = list.iter_mut().find(|s| s.id == setlist) {
                 slot.song_ids = order;
@@ -308,6 +380,206 @@ mod tests {
         let setlists = store();
         assert_eq!(setlists.duplicate(999), None);
         assert_eq!(setlists.setlists.get().len(), 1);
+    }
+
+    // ── reorder (C6) ────────────────────────────────────────────────────
+    //
+    // The running order *is* the position column: `Repo::set_members` writes
+    // the `position` edge field as 0..n over this vector, so a vector that
+    // stays a permutation of itself is a position column that stays dense and
+    // unique. Every test below therefore checks the whole vector, not just the
+    // one song that moved.
+
+    /// A five-song set, so a move can span more than one place in either
+    /// direction and still have somewhere to go.
+    fn five() -> (SetlistsStore, SetlistId) {
+        let setlists = SetlistsStore::new(Vec::new());
+        let id = setlists.add("Porch, Saturday");
+        setlists.add_songs(id, &[10, 20, 30, 40, 50]);
+        (setlists, id)
+    }
+
+    fn order(setlists: SetlistsStore, id: SetlistId) -> Vec<SongId> {
+        setlists.get(id).unwrap().song_ids
+    }
+
+    /// What the `position` edge field will be written as: dense 0..n, unique,
+    /// and a permutation of what went in.
+    fn positions_are_dense_and_unique(before: &[SongId], after: &[SongId]) {
+        assert_eq!(
+            after.len(),
+            before.len(),
+            "a reorder must not add or drop a member"
+        );
+        let mut sorted = after.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), after.len(), "a song appears twice");
+        let mut expected = before.to_vec();
+        expected.sort_unstable();
+        assert_eq!(sorted, expected, "the membership changed, not just the order");
+    }
+
+    #[test]
+    fn moving_a_song_up_one_place_swaps_it_with_the_one_above() {
+        let (setlists, id) = five();
+        setlists.reorder(id, 2, 1);
+        assert_eq!(order(setlists, id), vec![10, 30, 20, 40, 50]);
+        positions_are_dense_and_unique(&[10, 20, 30, 40, 50], &order(setlists, id));
+    }
+
+    #[test]
+    fn moving_a_song_down_one_place_swaps_it_with_the_one_below() {
+        let (setlists, id) = five();
+        setlists.reorder(id, 2, 3);
+        assert_eq!(order(setlists, id), vec![10, 20, 40, 30, 50]);
+        positions_are_dense_and_unique(&[10, 20, 30, 40, 50], &order(setlists, id));
+    }
+
+    #[test]
+    fn moving_a_song_to_the_top_closes_the_gap_behind_it() {
+        let (setlists, id) = five();
+        setlists.reorder(id, 3, 0);
+        // Take-then-insert, not swap: everything it passed shuffles down one.
+        assert_eq!(order(setlists, id), vec![40, 10, 20, 30, 50]);
+        positions_are_dense_and_unique(&[10, 20, 30, 40, 50], &order(setlists, id));
+    }
+
+    #[test]
+    fn moving_a_song_to_the_bottom_closes_the_gap_ahead_of_it() {
+        let (setlists, id) = five();
+        setlists.reorder(id, 1, 4);
+        assert_eq!(order(setlists, id), vec![10, 30, 40, 50, 20]);
+        positions_are_dense_and_unique(&[10, 20, 30, 40, 50], &order(setlists, id));
+    }
+
+    #[test]
+    fn moving_a_song_to_where_it_already_is_changes_nothing() {
+        let (setlists, id) = five();
+        setlists.reorder(id, 2, 2);
+        assert_eq!(order(setlists, id), vec![10, 20, 30, 40, 50]);
+    }
+
+    #[test]
+    fn a_move_off_either_end_of_the_set_is_refused_rather_than_clamped() {
+        // The screen never asks for one — the up arrow is dead on the first row
+        // and the down arrow on the last — but a clamp would silently turn a
+        // bug into a move, and a move is a persisted write.
+        let (setlists, id) = five();
+        setlists.reorder(id, 5, 0);
+        setlists.reorder(id, 0, 5);
+        setlists.reorder(id, 99, 99);
+        assert_eq!(order(setlists, id), vec![10, 20, 30, 40, 50]);
+    }
+
+    #[test]
+    fn reordering_a_missing_setlist_is_a_no_op() {
+        let (setlists, id) = five();
+        setlists.reorder(999, 0, 1);
+        assert_eq!(order(setlists, id), vec![10, 20, 30, 40, 50]);
+    }
+
+    #[test]
+    fn walking_a_song_from_the_bottom_to_the_top_one_tap_at_a_time_arrives() {
+        // What Move up actually does when it is held down: four separate
+        // writes, each of which has to leave a valid order behind it.
+        let (setlists, id) = five();
+        for from in (1..5).rev() {
+            setlists.reorder(id, from, from - 1);
+            positions_are_dense_and_unique(&[10, 20, 30, 40, 50], &order(setlists, id));
+        }
+        assert_eq!(order(setlists, id), vec![50, 10, 20, 30, 40]);
+    }
+
+    // ── removal and its undo (C6) ───────────────────────────────────────
+
+    #[test]
+    fn removing_a_song_remembers_where_it_was() {
+        let (setlists, id) = five();
+        setlists.remove_song(id, 30);
+        assert_eq!(order(setlists, id), vec![10, 20, 40, 50]);
+        assert_eq!(
+            setlists.last_removal.get(),
+            Some(Removal {
+                setlist: id,
+                song: 30,
+                index: 2
+            })
+        );
+    }
+
+    #[test]
+    fn undo_puts_the_song_back_in_its_old_place_not_on_the_end() {
+        let (setlists, id) = five();
+        setlists.remove_song(id, 20);
+        assert!(setlists.undo_removal());
+        assert_eq!(order(setlists, id), vec![10, 20, 30, 40, 50]);
+        assert_eq!(setlists.last_removal.get(), None, "the offer is spent");
+    }
+
+    #[test]
+    fn undo_restores_the_first_and_the_last_song_too() {
+        let (setlists, id) = five();
+        setlists.remove_song(id, 10);
+        assert!(setlists.undo_removal());
+        assert_eq!(order(setlists, id), vec![10, 20, 30, 40, 50]);
+
+        setlists.remove_song(id, 50);
+        assert!(setlists.undo_removal());
+        assert_eq!(order(setlists, id), vec![10, 20, 30, 40, 50]);
+    }
+
+    #[test]
+    fn any_other_write_to_a_running_order_spends_the_undo() {
+        // The remembered index describes an order that no longer exists once
+        // something else has moved, so the offer has to go with it.
+        let (setlists, id) = five();
+        setlists.remove_song(id, 30);
+        setlists.reorder(id, 0, 3);
+        assert_eq!(setlists.last_removal.get(), None);
+        assert!(!setlists.undo_removal());
+        assert_eq!(order(setlists, id), vec![20, 40, 50, 10]);
+    }
+
+    #[test]
+    fn undo_declines_when_the_song_has_already_come_back_by_itself() {
+        let (setlists, id) = five();
+        setlists.remove_song(id, 30);
+        // Re-added through the picker, which puts it on the end — and which
+        // also clears the offer. Both belts: assert the store refuses even if
+        // the removal is put back by hand.
+        let removal = setlists.last_removal.get().unwrap();
+        setlists.add_songs(id, &[30]);
+        setlists.last_removal.set(Some(removal));
+        assert!(!setlists.undo_removal());
+        assert_eq!(
+            order(setlists, id),
+            vec![10, 20, 40, 50, 30],
+            "no duplicate membership"
+        );
+    }
+
+    #[test]
+    fn undo_declines_when_the_setlist_has_since_been_deleted() {
+        let (setlists, id) = five();
+        setlists.remove_song(id, 30);
+        setlists.delete(id);
+        assert!(!setlists.undo_removal());
+        assert_eq!(setlists.last_removal.get(), None);
+    }
+
+    #[test]
+    fn there_is_nothing_to_undo_before_anything_has_been_removed() {
+        let (setlists, _) = five();
+        assert!(!setlists.undo_removal());
+    }
+
+    #[test]
+    fn removing_a_song_that_is_not_in_the_set_leaves_no_undo_behind() {
+        let (setlists, id) = five();
+        setlists.remove_song(id, 999);
+        assert_eq!(order(setlists, id), vec![10, 20, 30, 40, 50]);
+        assert_eq!(setlists.last_removal.get(), None);
     }
 
     #[test]

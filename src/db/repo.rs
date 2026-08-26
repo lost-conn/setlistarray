@@ -468,6 +468,41 @@ mod tests {
         assert_eq!(repo.songs().unwrap().len(), 3, "nobody was deleted");
     }
 
+    /// The store's reorder tests assert the running-order *vector* stays a
+    /// permutation of itself. This is the other half: that the vector reaches
+    /// the `position` edge field as a dense, unique 0..n — which is what the
+    /// column actually is on disk, and the only thing `setlists()` can sort by
+    /// when the library is reopened.
+    #[test]
+    fn a_reorder_renumbers_positions_densely_from_zero() {
+        let dir = scratch("repo-positions-dense");
+        let repo = Repo::open(&dir).unwrap();
+        let ids: Vec<SongId> = ["a", "b", "c", "d", "e"]
+            .iter()
+            .map(|t| repo.create_song(&song(t, "x")).unwrap() as SongId)
+            .collect();
+        let setlist = repo.create_setlist(&named("set")).unwrap() as SetlistId;
+        repo.set_members(setlist, &ids).unwrap();
+        // Move the fourth song to the top, the way Move-up-repeatedly would.
+        repo.set_members(setlist, &[ids[3], ids[0], ids[1], ids[2], ids[4]])
+            .unwrap();
+
+        let mut positions: Vec<u32> = repo
+            .db
+            .get_links(SETLIST, setlist as u64, "songs")
+            .unwrap()
+            .iter()
+            .map(|(_, fields)| position_of(fields))
+            .collect();
+        positions.sort_unstable();
+        assert_eq!(
+            positions,
+            vec![0, 1, 2, 3, 4],
+            "positions must be dense and unique, not sparse or repeated"
+        );
+    }
+
+
     #[test]
     fn taking_a_song_out_of_a_set_leaves_the_song_alone() {
         let dir = scratch("repo-remove-member");

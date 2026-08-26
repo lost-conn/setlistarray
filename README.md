@@ -171,6 +171,10 @@ nothing in the UI code assumes either platform. See "Android" below.
   column, the no-chart warning pill, the derived "Before you start" panel,
   Play set. Every value on it is derived inside a reactive closure, because the
   song picker adds to the set while the screen is still underneath it.
+  **Reorder** turns the row list into an edit mode: Move up / Move down /
+  Remove per song, with an Undo strip that puts a removed song back in the
+  place it came out of. Not the drag handle and swipe-left the handoff asks
+  for — see "Touch on Android is a tap and a scroll, and nothing else" below.
 - **Setlists tab** — wireframe `1m`, styled with the hi-fi tokens.
 - **Add to setlist sheet** — wireframe `2e`. Bottom sheet over the song,
   multi-select, `already in this set` on the sets that hold it, create inline.
@@ -211,7 +215,11 @@ Also outstanding:
   directory (Phase I).
 - **Accent from the system.** `AccentChoice::FromSystem` falls back to Rust
   until Rinch exposes the wallpaper colour.
-- **Drag-to-reorder and swipe-to-remove** in setlists.
+- **Every gesture in the handoff.** Drag-to-reorder, swipe-to-remove, swipe
+  between songs in performance mode and long-press anywhere: none of them can
+  be built on this framework's Android backend today, and each has an explicit
+  tap-driven stand-in instead. The finding is below; the affected cards are
+  C6 (done, with buttons), F2 and the long-press note in `src/menu.rs`.
 
 ## Android
 
@@ -350,6 +358,59 @@ Found while fixing the desktop equivalent
 it out of scope. The fix is one line — pass `physical_size` — and a follow-up
 PR upstream, not a change here.
 
+### Touch on Android is a tap and a scroll, and nothing else
+
+**No gesture in the handoff can be built on the Android backend as it stands.**
+Not drag-to-reorder, not swipe-to-remove, not swipe-between-songs in
+performance mode, not long-press. This was found by card C6's spike before any
+of it was built on, which is the only reason it did not cost a phase.
+
+Every touch on Android goes through one recogniser —
+`TouchGesture::process` in `rinch/src/shell/android_runtime.rs` — and it emits:
+
+| MotionEvent | What the app gets |
+| --- | --- |
+| `Down` | `MouseMove` at the touch point. **No `MouseDown`.** |
+| `Move`, under 8px | nothing |
+| `Move`, past 8px | `MouseWheel { x, y }` at the **touch-down origin**, carrying the frame's delta. No `MouseMove`. |
+| `Up` after a still finger | `MouseDown` **immediately followed by** `MouseUp`, at the down position |
+| `Up` after a moving finger | **nothing at all** |
+
+Three consequences, each of which kills a feature:
+
+- **`ondragstart` can never fire.** Rinch's DOM drag arms a *pending* drag on
+  `MouseDown` and promotes it on the first `MouseMove` more than 5px away
+  (`app/event_dispatch.rs`). On Android the only `MouseDown` ever emitted is
+  the one paired with the `MouseUp` beside it, so the pending drag is created
+  and consumed in the same event batch and dispatches an ordinary click.
+- **A swipe is invisible to the app.** A moving finger produces wheel deltas
+  and nothing else. The vertical half at least fires `data-onscroll` when a
+  scroll container actually moves; the *horizontal* half fires no handler at
+  all — `event_dispatch.rs` scrolls `scroll_offset.0` and dispatches nothing.
+  So there is no signal to hang "swipe left to remove" on, and no event when
+  the finger lifts to commit it either.
+- **There is no press-and-hold.** Already written up in `src/menu.rs` for a
+  different reason (`onclick` fires synchronously inside the `MouseDown`
+  handler, so no timer can get between a tap and its navigation); this is the
+  second, independent reason, and `oncontextmenu` — the desktop stand-in that
+  file uses — is never synthesised from touch at all.
+
+All of it works on the desktop backend, which is what makes it dangerous: a
+gesture written and tested in the phone-shaped window here is dead on the
+device and nothing says so. `src/bin/gesture_probe.rs` plus
+`scripts/gesture-probe.py` are the harness that established the desktop half
+empirically — press, eight moves, release, driven through the debug IPC's
+`mouse_down`/`mouse_move`/`mouse_up`, which go through the same
+`RinchApp::handle_event` a real mouse does. On the desktop a handle drag fires
+`dragstart → dragenter/dragover per row → drop on the target → dragend` with
+usable coordinates, taps still work on `draggable` elements, and a horizontal
+drag on a row reports its delta — none of which transfers.
+
+The fix is upstream and is a real piece of work, not a one-liner: the
+recogniser has to emit a genuine down/move/up stream and let the DOM decide
+what claims it, rather than deciding "this is a scroll" on the app's behalf
+8 pixels in. Until it exists, every affordance in this app is a tap.
+
 ## The two Rinch faults (fixed upstream, awaiting review)
 
 The app is pinned to Rinch `d25f646` (2026-03-17). Two faults on `main` kept it
@@ -407,6 +468,20 @@ seam every window-backed layout and paint site uses.
   one cannot use a non-`Copy` value from the closure around it, which is why
   the screens pass `Copy` stores plus an index and recompute (see
   `songs_in_group` in `src/screens/library.rs`).
+- **Spike a gesture before you design around it.** Everything the desktop
+  backend does with a pointer, the Android backend does not — see "Touch on
+  Android is a tap and a scroll, and nothing else" above. `--features devtools`
+  can press, move and release (`mouse_down`, `mouse_move`, `mouse_up`, `scroll`
+  — all routed through the same `handle_event` a real mouse is), so a gesture
+  can be proven without a hand. `src/bin/gesture_probe.rs` is the pattern:
+  write every handler's name and coordinates into one text node and read it
+  back with `query_selector` + `text_content`, rather than trying to see what
+  happened in a picture.
+- **A flex item that grows taller drags the row's baseline with it.** Setlist
+  detail's rows are `align-items: baseline`, and putting the reorder controls
+  inside the title column slid the position number and the whole cumulative
+  clock down to the bottom of the row. The controls are a sibling *underneath*
+  the baseline row for that reason.
 - Statements inside `rsx!` bodies get re-emitted into those closures, so rustc
   reports plainly-used bindings as unused. `#![allow(unused_variables)]` in
   `main.rs` covers it.

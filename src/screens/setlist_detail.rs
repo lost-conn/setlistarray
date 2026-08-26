@@ -7,16 +7,56 @@
 //! is showing, so a version of this file that read the store once would send
 //! the user back to a set that still claimed five songs after they had added
 //! two. See `songs_in_group` in `library.rs` for the same shape — a plain `fn`
-//! over `Copy` stores, called from inside the closure that needs it.
+//! over `Copy` stores, called from inside the closure that needs it. Reorder
+//! mode leans on the same property: a move renumbers the positions and shifts
+//! the running clock beneath your finger, because both are read from the store
+//! every render rather than baked in at mount.
+//!
+//! ## Why there is no drag handle and no swipe (card C6)
+//!
+//! The handoff asks for drag-by-handle and swipe-left-to-remove. Both were
+//! spiked first — `src/bin/gesture_probe.rs` and `scripts/gesture-probe.py` —
+//! and both are **unreachable on Android**, which is the platform the handoff
+//! is written for. Rinch's Android shell turns touch into mouse events through
+//! one recogniser (`rinch/src/shell/android_runtime.rs`, `TouchGesture`) that
+//! emits `MouseDown` only at *finger-up*, immediately followed by `MouseUp` at
+//! the same coordinates, and only when the finger never travelled 8px. A
+//! finger that moves becomes `MouseWheel` deltas addressed to the scroll
+//! container and nothing else — no `MouseMove`, no button state, and no event
+//! at all when it lifts.
+//!
+//! So a drag can never reach its 5px activation threshold (`ondragstart`
+//! cannot fire), and a swipe produces no app-visible signal whatsoever:
+//! horizontal wheel deltas move a scroll box without dispatching any handler.
+//! Both gestures work on the desktop backend and neither works on a phone,
+//! which is the worst possible place to leave a feature — so this screen uses
+//! explicit controls instead, which are plain taps and work identically on
+//! both. The evidence is in the probe's doc comment.
+//!
+//! Nothing here is `position: absolute`, deliberately: a lifted row is exactly
+//! the shape that K10 kills (a positioned element over an `overflow: auto`
+//! sibling paints on top but hit-tests underneath), and with no drag there is
+//! nothing to lift.
 
 use rinch::prelude::*;
 use rinch_tabler_icons::TablerIcon;
 
 use crate::derive::{cumulative_starts, prep_facts, total_runtime};
-use crate::model::{SetlistId, Song, fmt_duration};
+use crate::model::{SetlistId, Song, SongId, fmt_duration};
 use crate::store::{NavStore, PlaybackStore, Route, SetlistsStore, SongsStore};
 use crate::theme::{SCREEN_PAD, T_META, T_META_SMALL, T_SECTION_CAPS, T_SETLIST_TITLE};
 use crate::ui::{IconButton, icon};
+
+/// A 40×40 tap target for Move up / Move down. Nothing below 44 in the
+/// handoff's own words, and the 40 box sits inside a padded row.
+const MOVE_BUTTON: &str = "width: 40px; height: 40px; border-radius: 999px; \
+    display: flex; align-items: center; justify-content: center; flex-shrink: 0;";
+/// The dead state at either end of the set. Drawn, not hidden: a button that
+/// disappears on the first row makes the two that remain change places, and a
+/// control that moves while you are aiming at it is worse than one that is
+/// visibly unavailable.
+const MOVE_DEAD: &str = "background: transparent; color: var(--sla-hairline);";
+const MOVE_LIVE: &str = "background: var(--sla-fill); color: var(--sla-ink-2);";
 
 #[component]
 pub fn SetlistDetail(id: Option<SetlistId>) -> NodeHandle {
@@ -26,6 +66,12 @@ pub fn SetlistDetail(id: Option<SetlistId>) -> NodeHandle {
     let playback = use_store::<PlaybackStore>();
 
     let id = id.unwrap_or_default();
+
+    // Reorder mode: the arrows and the Remove button only exist while it is
+    // on. A screen-transient bool, so it lives here rather than in `NavStore` —
+    // leaving the setlist ends it, which is what unmounting this component
+    // already does.
+    let reordering = Signal::new(false);
 
     // Checked once, at mount: nothing on this screen can delete the set it is
     // showing, so a set that existed when the route changed still does.
@@ -60,38 +106,105 @@ pub fn SetlistDetail(id: Option<SetlistId>) -> NodeHandle {
                         // owned copies of everything it draws.
                         let song_id = row.id;
                         let has_chart = row.has_chart;
+                        // Everything the reorder strip needs, as `Copy` scalars:
+                        // the strip is a nested `if` closure and can capture
+                        // nothing else from out here.
+                        let index = row.index;
+                        let is_first = row.is_first;
+                        let is_last = row.is_last;
+                        // Two boxes, not one: the hi-fi row is a baseline-aligned
+                        // flex row, and a flex item that grows taller drags the
+                        // baseline everything else is aligned to with it — put
+                        // the reorder controls *inside* the title column and the
+                        // position number and the running clock slide to the
+                        // bottom of the row with them. So the controls are a
+                        // sibling underneath, and the row above is untouched.
                         div {
                             key: song_id,
-                            style: "display: flex; align-items: baseline; gap: 10px; padding: 12px 0; \
-                                    border-bottom: 1px solid var(--sla-hairline-soft);",
-                            span {
-                                style: "width: 15px; flex-shrink: 0; color: var(--sla-accent); \
-                                        font-weight: 600; font-size: 13px;",
-                                {row.position.clone()}
-                            }
-                            div { style: "flex: 1; min-width: 0;",
-                                div {
-                                    style: "font-family: var(--sla-font-display); font-weight: 500; \
-                                            font-size: 18px; line-height: 1.25;",
-                                    {row.title.clone()}
+                            style: "padding: 12px 0; border-bottom: 1px solid var(--sla-hairline-soft);",
+                            div {
+                                style: "display: flex; align-items: baseline; gap: 10px;",
+                                span {
+                                    style: "width: 15px; flex-shrink: 0; color: var(--sla-accent); \
+                                            font-weight: 600; font-size: 13px;",
+                                    {row.position.clone()}
                                 }
-                                div { style: {format!("{T_META} margin-top: 2px;")}, {row.meta.clone()} }
-                                // A song with no chart says so, here, before
-                                // it matters on stage.
-                                if !has_chart {
+                                div { style: "flex: 1; min-width: 0;",
                                     div {
-                                        style: "display: inline-flex; align-items: center; gap: 5px; \
-                                                margin-top: 6px; background: var(--sla-accent-tint); \
-                                                color: var(--sla-accent-on-tint); border-radius: 6px; \
-                                                padding: 3px 8px; font-weight: 600; font-size: 11.5px;",
-                                        {icon(__scope, TablerIcon::AlertCircle, 13)}
-                                        "No chart attached"
+                                        style: "font-family: var(--sla-font-display); font-weight: 500; \
+                                                font-size: 18px; line-height: 1.25;",
+                                        {row.title.clone()}
+                                    }
+                                    div { style: {format!("{T_META} margin-top: 2px;")}, {row.meta.clone()} }
+                                    // A song with no chart says so, here, before
+                                    // it matters on stage.
+                                    if !has_chart {
+                                        div {
+                                            style: "display: inline-flex; align-items: center; gap: 5px; \
+                                                    margin-top: 6px; background: var(--sla-accent-tint); \
+                                                    color: var(--sla-accent-on-tint); border-radius: 6px; \
+                                                    padding: 3px 8px; font-weight: 600; font-size: 11.5px;",
+                                            {icon(__scope, TablerIcon::AlertCircle, 13)}
+                                            "No chart attached"
+                                        }
                                     }
                                 }
+                                div { style: "text-align: right; flex-shrink: 0;",
+                                    div { style: "font-weight: 500; font-size: 13px;", {row.duration.clone()} }
+                                    div { style: {format!("{T_META_SMALL} margin-top: 2px;")}, {row.start.clone()} }
+                                }
                             }
-                            div { style: "text-align: right; flex-shrink: 0;",
-                                div { style: "font-weight: 500; font-size: 13px;", {row.duration.clone()} }
-                                div { style: {format!("{T_META_SMALL} margin-top: 2px;")}, {row.start.clone()} }
+                            // The reorder controls, under the row rather
+                            // than beside it: three 40px targets in the
+                            // right-hand column would leave a phone-width
+                            // title about 140px to live in, and the running
+                            // clock beside it is the one thing this screen
+                            // exists to show. Indented past the position
+                            // number so they read as belonging to the song
+                            // above them.
+                            if reordering.get() {
+                                div {
+                                    style: "display: flex; align-items: center; gap: 4px; \
+                                            margin: 8px 0 0 25px;",
+                                    div {
+                                        onclick: move || {
+                                            if !is_first {
+                                                setlists.reorder(id, index, index - 1);
+                                            }
+                                        },
+                                        style: {format!(
+                                            "{MOVE_BUTTON} {}",
+                                            if is_first { MOVE_DEAD } else { MOVE_LIVE }
+                                        )},
+                                        {icon(__scope, TablerIcon::ChevronUp, 18)}
+                                    }
+                                    div {
+                                        onclick: move || {
+                                            if !is_last {
+                                                setlists.reorder(id, index, index + 1);
+                                            }
+                                        },
+                                        style: {format!(
+                                            "{MOVE_BUTTON} {}",
+                                            if is_last { MOVE_DEAD } else { MOVE_LIVE }
+                                        )},
+                                        {icon(__scope, TablerIcon::ChevronDown, 18)}
+                                    }
+                                    div { style: "flex: 1;" }
+                                    // Destructive, and named rather than
+                                    // drawn as a bare glyph: this is the
+                                    // control that stands in for a gesture
+                                    // nobody could have discovered anyway.
+                                    div {
+                                        onclick: move || setlists.remove_song(id, song_id),
+                                        style: "display: flex; align-items: center; gap: 6px; \
+                                                height: 40px; padding: 0 12px; border-radius: 999px; \
+                                                background: var(--sla-fill); color: var(--sla-danger); \
+                                                font-weight: 600; font-size: 13px;",
+                                        {icon(__scope, TablerIcon::Trash, 15)}
+                                        "Remove"
+                                    }
+                                }
                             }
                         }
                     }
@@ -100,13 +213,38 @@ pub fn SetlistDetail(id: Option<SetlistId>) -> NodeHandle {
                 // Editing happens here rather than on a screen of its own: the
                 // picker (`1i`) slides up over this list, so the set stays
                 // readable behind while songs are chosen for it.
-                div { style: "display: flex; gap: 22px; padding: 14px 0;",
+                div { style: "display: flex; gap: 22px; padding: 14px 0; align-items: center;",
                     span {
                         onclick: move || nav.picking_songs_for.set(Some(id)),
                         style: "color: var(--sla-accent); font-weight: 600; font-size: 14px;",
                         "+ Add songs"
                     }
-                    span { style: "color: var(--sla-muted); font-size: 14px;", "Reorder" }
+                    // The handoff's own affordance, now load-bearing: it opens
+                    // the mode the arrows and Remove live in. Hidden while the
+                    // set is empty — there is nothing to order.
+                    if !ordered(setlists, songs, id).is_empty() {
+                        span {
+                            onclick: move || reordering.set(!reordering.get()),
+                            style: {move || {
+                                if reordering.get() {
+                                    "color: var(--sla-accent); font-weight: 600; font-size: 14px;"
+                                } else {
+                                    "color: var(--sla-muted); font-size: 14px;"
+                                }
+                            }},
+                            {move || if reordering.get() { "Done" } else { "Reorder" }}
+                        }
+                    }
+                }
+
+                // One line, only while the mode is on, saying the thing a
+                // musician about to press Remove wants to know. J5's rule is
+                // the schema's promise; this is where it gets said out loud.
+                if reordering.get() {
+                    div {
+                        style: {format!("{T_META_SMALL} margin: -6px 0 10px;")},
+                        "Move songs with the arrows. Removing one here takes it out of this set only — the song stays in your book."
+                    }
                 }
 
                 // Derived, not authored.
@@ -116,6 +254,32 @@ pub fn SetlistDetail(id: Option<SetlistId>) -> NodeHandle {
                     div {
                         style: "font-size: 13.5px; line-height: 1.5; color: var(--sla-ink-2); margin-top: 7px;",
                         {move || prep_facts(&ordered(setlists, songs, id))}
+                    }
+                }
+            }
+
+            // The undo offer, outside the scroll box so it cannot be scrolled
+            // away from. What a removal actually costs is the *position* — the
+            // song was never at risk — and the picker can only put a song back
+            // on the end, so without this, undoing a mis-tap on song two of
+            // twenty is a dozen taps of Move up.
+            if pending_undo(setlists, id) {
+                div {
+                    style: {format!(
+                        "display: flex; align-items: center; gap: 12px; \
+                         padding: 11px {SCREEN_PAD}; background: var(--sla-fill); \
+                         border-top: 1px solid var(--sla-hairline);"
+                    )},
+                    div {
+                        style: "flex: 1; min-width: 0; font-size: 13px; color: var(--sla-ink-2); \
+                                overflow: hidden;",
+                        {move || undo_label(setlists, songs, id)}
+                    }
+                    span {
+                        onclick: move || { setlists.undo_removal(); },
+                        style: "color: var(--sla-accent); font-weight: 600; font-size: 14px; \
+                                padding: 6px 4px;",
+                        "Undo"
                     }
                 }
             }
@@ -164,11 +328,41 @@ fn header_meta(setlists: SetlistsStore, songs: SongsStore, id: SetlistId) -> Str
     parts.join(" · ")
 }
 
+/// Whether this setlist has a removal still waiting to be undone.
+///
+/// Scoped to `id` on purpose: the offer lives on the store, one at a time for
+/// the whole app, and a strip on this screen must not offer to undo something
+/// that happened to a different set.
+fn pending_undo(setlists: SetlistsStore, id: SetlistId) -> bool {
+    setlists
+        .last_removal
+        .get()
+        .is_some_and(|removal| removal.setlist == id)
+}
+
+/// `Removed Blackbird`, or just `Removed a song` if the song has since gone
+/// from the library entirely — which a cascade can do while this screen is up.
+fn undo_label(setlists: SetlistsStore, songs: SongsStore, id: SetlistId) -> String {
+    let Some(removal) = setlists.last_removal.get().filter(|r| r.setlist == id) else {
+        return String::new();
+    };
+    match songs.get(removal.song) {
+        Some(song) => format!("Removed {}", song.title),
+        None => "Removed a song".to_string(),
+    }
+}
+
 /// One drawn row, every field already a string so the loop body has only owned
 /// values to hand around.
 #[derive(Clone, PartialEq)]
 struct Row {
-    id: u32,
+    id: SongId,
+    /// Where this row sits in the running order — what `reorder` moves.
+    index: usize,
+    /// The arrows read these rather than comparing against a length the nested
+    /// closure cannot see.
+    is_first: bool,
+    is_last: bool,
     position: String,
     title: String,
     meta: String,
@@ -182,11 +376,15 @@ struct Row {
 fn rows(setlists: SetlistsStore, songs: SongsStore, id: SetlistId) -> Vec<Row> {
     let ordered = ordered(setlists, songs, id);
     let starts = cumulative_starts(&ordered);
+    let last = ordered.len().saturating_sub(1);
     ordered
         .iter()
         .enumerate()
         .map(|(index, song)| Row {
             id: song.id,
+            index,
+            is_first: index == 0,
+            is_last: index == last,
             position: format!("{}", index + 1),
             title: song.title.clone(),
             // `Artist · key · capo`, skipping whatever is unset.

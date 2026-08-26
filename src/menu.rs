@@ -31,6 +31,16 @@
 //! the crate root docs); when a touch backend exists this is the one place
 //! that needs to change, and the menu content below is unaffected either
 //! way.
+//!
+//! **That last sentence has since been overtaken.** Card C6's spike found that
+//! the Android backend does exist and never synthesises `oncontextmenu` from
+//! touch at all — every touch is a tap or a scroll, and nothing else (README,
+//! "Touch on Android is a tap and a scroll, and nothing else"). So this is not
+//! a stand-in awaiting a backend; on a phone it is a menu with no way in
+//! except song detail's ⋮ button. A library row and a setlist card each need
+//! their own explicit trigger before the app is honest on a device. Left as
+//! written rather than half-fixed here: it is a change to two screens' chrome,
+//! not to this file, and it belongs with whichever card owns that decision.
 
 use rinch::prelude::*;
 use rinch_tabler_icons::TablerIcon;

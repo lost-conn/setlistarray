@@ -211,11 +211,49 @@ The flows that let someone actually build a book of songs.
 | C3 | Add-to-setlist bottom sheet: search, checkbox list with `9 songs · 32:04` sub-lines, "already in this set" disabled state, `+ New setlist…`, multi-select. | `2e` | M |
 | C4 | Sort & group sheet: group-by chips, every metadata field as a sortable row with a human direction label, tap-active-to-reverse, greyed rows with counts for sparse fields. The store logic already exists — this is the sheet. | `2c` | M |
 | C5 | Setlist editing: the song picker slides over the setlist so the set stays visible behind; running "N picked" count. | `1i` | M |
-| C6 | Reorder by drag handle and swipe-left to remove inside a setlist. Rinch has drag support; swipe may need a gesture on top of pointer events. | — | M? |
+| C6 | ~~Reorder by drag handle and swipe-left to remove inside a setlist.~~ **Spiked, and both gestures refused.** Shipped as an explicit **Reorder** mode: Move up · Move down · Remove per row, plus an Undo strip. See below. | — | ✔ |
 | C7 | Setlist create/rename/duplicate/delete from the Setlists tab long-press. | `1m` | S |
 
 **Done when** a song can go from nothing to being in two setlists without
 touching the seed data.
+
+### C6: the gestures do not exist on Android, and that is not a C6 problem
+
+The spike (`src/bin/gesture_probe.rs`, driven by `scripts/gesture-probe.py`)
+proved both gestures on the **desktop** backend — a handle drag fires
+`dragstart → dragenter/dragover → drop → dragend` with usable coordinates, and
+a horizontal drag on a row reports its delta — and then proved, by reading the
+one function every Android touch passes through, that **neither can ever fire
+on a phone**. The table and the three consequences are in the README under
+"Touch on Android is a tap and a scroll, and nothing else". In one line:
+Android's `TouchGesture` emits `MouseDown` only at finger-*up*, immediately
+followed by `MouseUp`, and only for a finger that never moved; a finger that
+moves becomes wheel deltas and nothing else.
+
+So C6 ships tap-driven controls, which work identically on both platforms:
+
+- **Reorder** on the action row toggles an edit mode. Each row grows a Move up
+  and a Move down (dead, not hidden, at the ends) and a named **Remove**.
+  Positions renumber and the cumulative clock re-runs on every move, because
+  `SetlistDetail` derives both on read.
+- **Removal is undoable.** The handoff does not say, so: yes. Removing never
+  touches the song — that is J5's rule and `@on_delete(remove)` — so what it
+  actually destroys is the *place in the running order*, and the picker can
+  only put a song back on the end. `SetlistsStore::last_removal` holds one
+  removal, any other write to any running order spends it, and it does not
+  survive the process.
+
+**This lands on two other cards, and neither has been rescoped yet:**
+
+- **F2** — "Swipe between songs with edge chevrons" in performance mode is the
+  same dead gesture. It needs an explicit control (the chevrons themselves,
+  made tappable) or an upstream fix first.
+- **`src/menu.rs`'s long-press** already stands in `oncontextmenu` for
+  press-and-hold, on the grounds that the app "only runs in a desktop window
+  today". That is now wrong in a second way: `oncontextmenu` is never
+  synthesised from touch at all, so every long-press menu in the app is
+  unreachable on a phone. The ⋮ button on song detail still opens it; a library
+  row and a setlist card have no other way in.
 
 ---
 
@@ -287,7 +325,7 @@ this has been observed on a device; only that the APK still builds.
 | # | Card | Wireframe | Size |
 | --- | --- | --- | --- |
 | F1 | Performance view: thin top bar (`2 / 5`, title, key · capo · bpm), full-bleed chart, larger type. | `1o` | M |
-| F2 | Swipe between songs with edge chevrons that dim at the ends. | `1o` | M |
+| F2 | ~~Swipe between songs~~ with edge chevrons that dim at the ends. **The swipe cannot be built** — see C6 above; the chevrons have to be the control, not the hint. | `1o` | S–M |
 | F3 | Bottom bar: `up next`, keep-awake toggle, `set` button opening the running order; 5-segment progress strip. | `1o` | S |
 | F4 | Keep-awake for real. No Rinch platform API exists — on Linux this is a D-Bus inhibit; on Android it is a window flag. Wrap it behind a trait with a no-op default. | M? |
 | F5 | Performance theme setting: follow the app, or force dark. Design both. | S |
