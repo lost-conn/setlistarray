@@ -38,11 +38,11 @@ local path dependencies, so `Cargo.toml` expects three checkouts side by side:
 ```
 projects/personal/
 ├── setlistarray/     ← this
-├── rinch-fixes/      ← github.com/joeleaver/rinch, branch carrying #245 + #246 + #266
+├── rinch-fixes/      ← github.com/joeleaver/rinch, branch carrying #245, #246, #266, #267, #268, #270
 └── rhypedb-main/     ← github.com/joeleaver/rhypedb, main
 ```
 
-Both pins are deliberate and temporary — see "The three Rinch contributions"
+Both pins are deliberate and temporary — see "The Rinch contributions"
 below, and card A1. When those PRs land, `rinch` goes back to a git revision;
 rhypedb stays a path dep while this app is its early in-process consumer.
 
@@ -349,8 +349,23 @@ reasoning, and the two options not taken, are in
   characters the fallback font does not carry. Card K13.
 - **Touch, focus and the IME work.** Taps land where they are aimed, the search
   field focuses and raises the soft keyboard, and typed characters reach the
-  store. Card K7 is narrower than "untried" now — but see the repaint fault
-  below.
+  store *and are drawn* — the last of those took rinch#270. Card K7 is no
+  longer "untried".
+- **A text field used to vanish on the tap that focused it.** Card K11, and it
+  was never about the IME or about paint scheduling: the value attribute was
+  correct on every frame. Rinch gives a childless block container a one-line
+  `min-height` floor — the only thing that gives an `<input>` a height at all,
+  since its value lives in an attribute rather than in a child — and wrote that
+  floor straight onto the node's Taffy style from a pass that runs only on a
+  *structural* change. The pass that runs on every *style* change rebuilt the
+  style from the computed values and dropped it. Focusing a field re-resolves
+  its style (`data-focused`, `data-cursor-pos`, DOM `:focus`) and nothing
+  structural happens beside it, so the input collapsed to zero height, and a
+  zero-size box is skipped whole by `paint_node`: no background, no value, no
+  caret, for the life of the process. On the desktop the same thing happens and
+  self-heals within a frame, because filtering the list as you type is a
+  structural change that re-runs the pass — which is why it looked like an
+  Android fault, and was not one. [joeleaver/rinch#270](https://github.com/joeleaver/rinch/pull/270).
 - **INTERNET really is invisible.** `dumpsys package` lists it under *install
   permissions*, `granted=true`, with no runtime permissions at all — which is
   why there is nothing for the app's permission screen to show. The claim under
@@ -358,15 +373,6 @@ reasoning, and the two options not taken, are in
 
 ### Still open
 
-- **Typed text does not repaint.** The characters reach the store — type into
-  the search field, force-stop the app, launch it again, and the string is
-  there — but the field's drawn value goes blank the moment it takes focus and
-  never comes back while that process lives. Not on the keystroke, and not
-  after a background-and-resume either; only a fresh process shows it.
-  Everything around it repaints: the "N in your book" count updates when a song
-  is saved, the route switch is instant, the add-song screen's empty-title
-  error appears on the tap that earns it. So it is the input's own value, not
-  the paint loop. Card K11, and unexplained.
 - **The status bar icons are drawn white on the app's cream paper** and are
   close to illegible — the clock especially. The app never tells Android that
   its bars sit over a light background, so the system keeps the light-content
@@ -497,19 +503,22 @@ pointer events with capture, where the scroll decision is finally deferred to
 the DOM. Drag and swipe wait on stage 3, so until then every affordance in this
 app except the long-press menu is a tap.
 
-## The three Rinch contributions (upstream, awaiting review)
+## The Rinch contributions (upstream, awaiting review)
 
-The app is pinned to Rinch `d25f646` (2026-03-17). Two faults on `main` kept it
-there; both now have PRs, each with a regression test that fails before and
-passes after. A third PR adds something that was never there at all:
+The app is pinned to Rinch `d25f646` (2026-03-17). Faults on `main` kept it
+there; each has a PR with a regression test that fails before and passes after,
+and two of them add something that was never there at all:
 
 - [joeleaver/rinch#245](https://github.com/joeleaver/rinch/pull/245) — the paint regression
 - [joeleaver/rinch#246](https://github.com/joeleaver/rinch/pull/246) — the viewport scale fault
 - [joeleaver/rinch#266](https://github.com/joeleaver/rinch/pull/266) — a long press on Android is a context menu, stage 1 of three
+- [joeleaver/rinch#267](https://github.com/joeleaver/rinch/pull/267) — pointer-cancel semantics, stage 2 of three
+- [joeleaver/rinch#268](https://github.com/joeleaver/rinch/pull/268) — the Android `ClickContext` viewport, which is what put the overflow menu off screen
+- [joeleaver/rinch#270](https://github.com/joeleaver/rinch/pull/270) — the empty-block line-height floor, which is what blanked the search field
 
-The `../rinch-fixes` integration branch carries all three, which is why the long
-press works in an APK built here and would not in one built against `main`.
-Move the pin once they land.
+The `../rinch-fixes` integration branch carries all of them, which is why the
+long press works in an APK built here and would not in one built against
+`main`. Move the pin once they land.
 
 ### The paint regression
 
