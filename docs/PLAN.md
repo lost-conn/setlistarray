@@ -53,9 +53,12 @@ Two more crates change earlier assumptions:
 | Gap | Why we need it | Shape of the fix |
 | --- | --- | --- |
 | No keep-awake API | "Keep screen awake while playing" is a Settings toggle and a performance-mode control | `FLAG_KEEP_SCREEN_ON` on the activity window: a Java method plus a JNI wrapper in `rinch-android` |
-| No writable-storage accessor | The database and attachments directory need a path | `AndroidApp::internal_data_path()` from android-activity is already in scope at `android_main`; thread it into the app, or expose it from `rinch-android` |
+| ~~No writable-storage accessor~~ | Done (K3): `internal_data_path()` is threaded in at `android_main` | — |
 | No wallpaper colours | Material You accent extraction, per the handoff's resolution order | `WallpaperManager.getWallpaperColors()` over JNI; until then `AccentChoice::FromSystem` falls back to Rust, which the handoff explicitly allows |
-| Status bar space is hard-coded 44px | `src/main.rs` reserves it as a fixed strip | Use `display::safe_area_insets()` / `density_dpi()` as `hello-android` does |
+| ~~Status bar space is hard-coded 44px~~ | Done (K2): `src/platform.rs` | — |
+| No way to register an app-bundled font | Newsreader and Karla are not on Android; the app falls back to Noto Serif and Roboto | `RinchApp::register_font_data` exists but neither `run_android` nor `ThemeProviderProps` reaches it — add a font-data field to `ThemeProviderProps`, or a `run_android_with_fonts` |
+| `RinchActivity` never opts into edge-to-edge | Below Android 15 the system insets the window *and* the app reserves the same strip | `setDecorFitsSystemWindows(false)` (or the pre-30 flags) in `RinchActivity.onCreate` |
+| `android_runtime.rs` passes `logical_size` as `handle_event`'s `window_size` | `ClickContext`'s viewport reads `physical / scale²`; popup placement, not tap targets | Pass `physical_size`. Desktop equivalent was joeleaver/rinch#246; this is a follow-up PR |
 
 ### 2. Where the data lives — settled: rhypedb
 
@@ -275,9 +278,9 @@ sit alongside Phase C.
 
 | # | Card | Size |
 | --- | --- | --- |
-| K1 | Second crate target: `cdylib` + `android_main` calling `run_android`, an `AndroidManifest.xml` (no camera/location permissions — this app needs none), and a `build-apk.sh` adapted from `hello-android`. Get the library screen onto a device. | M |
-| K2 | Replace the hard-coded 44px status strip with `safe_area_insets()` and `density_dpi()`; check every screen against a notch and the gesture bar. | S |
-| K3 | Storage path from `AndroidApp::internal_data_path()`; make the Phase B database and attachments directory take their root from a platform seam rather than a desktop path. | S |
+| K1 | ~~Second crate target: `cdylib` + `android_main`, an `AndroidManifest.xml` (no permissions), a `build-apk.sh`.~~ Builds a signed APK; **not yet run on a device** — no hardware available. | ✔ |
+| K2 | ~~Replace the hard-coded 44px status strip with `safe_area_insets()` and `density_dpi()`.~~ Done, behind `platform::safe_area()`. Unverified against a real notch. | ✔ |
+| K3 | ~~Storage path from `AndroidApp::internal_data_path()` through a platform seam.~~ Done: `DataDir::install()` at the entry point, published as a context by `app()`. | ✔ |
 | K4 | Attachment import through `rinch_android::file_picker::pick_file` + `read_content_uri`; backup export through `save_file`. Same trait the desktop `rfd` path implements. | M |
 | K5 | Keep-awake: contribute `FLAG_KEEP_SCREEN_ON` to `rinch-android`, then wire F4 to it. | M |
 | K6 | ~~Confirm SQLite cross-compiles under cargo-ndk~~ — done, see decision 2. | ✔ |

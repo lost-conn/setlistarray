@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Build, package and (optionally) install SetListArray for Android.
+#
+# Adapted from rinch's examples/hello-android/build-apk.sh. The pipeline is
+# cargo-ndk → javac → d8 → aapt2 → zipalign → apksigner → adb.
+#
+# Usage:
+#   ./build-apk.sh                     # build, package, install, launch
+#   ./build-apk.sh --build-only        # build and package only (no device needed)
+#   ./build-apk.sh --target x86_64     # for an emulator (default: arm64-v8a)
+#   ./build-apk.sh --debug             # debug profile (slow: Stylo and Parley)
+#
+# Requirements:
+#   ANDROID_NDK_HOME          NDK r27c        (default ~/android/android-ndk-r27c)
+#   ANDROID_SDK_BUILD_TOOLS   build-tools 35  (default ~/android/sdk/build-tools/35.0.0)
+#   ANDROID_SDK_PLATFORM      android.jar     (default ~/android/sdk/platforms/android-35/android.jar)
+#   RINCH_DIR                 the rinch checkout supplying RinchActivity.java
+#                                             (default ../rinch-fixes, matching Cargo.toml)
+#   cargo-ndk on PATH, and the Android targets in rust-toolchain.toml.
+#   adb only for install/launch.
+#
+# The APK is signed with a throwaway debug keystore. It is not a release build.
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+TARGET="arm64-v8a"
+BUILD_ONLY=false
+RELEASE=true
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --target) TARGET="$2"; shift 2 ;;
+        --debug) RELEASE=false; shift ;;
+        --build-only) BUILD_ONLY=true; shift ;;
+        -h|--help) sed -n '3,26p' "$0"; exit 0 ;;
+        *) echo "Unknown arg: $1"; exit 1 ;;
+    esac
+done
+
+case "$TARGET" in
+    arm64-v8a)   ABI="arm64-v8a";   TRIPLE="aarch64-linux-android" ;;
+    x86_64)      ABI="x86_64";      TRIPLE="x86_64-linux-android" ;;
+    armeabi-v7a) ABI="armeabi-v7a"; TRIPLE="armv7-linux-androideabi" ;;
+    x86)         ABI="x86";         TRIPLE="i686-linux-android" ;;
+    *) echo "Unknown target: $TARGET"; exit 1 ;;
+esac
+
+ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-$HOME/android/android-ndk-r27c}"
+BUILD_TOOLS="${ANDROID_SDK_BUILD_TOOLS:-$HOME/android/sdk/build-tools/35.0.0}"
+PLATFORM="${ANDROID_SDK_PLATFORM:-$HOME/android/sdk/platforms/android-35/android.jar}"
+RINCH_DIR="${RINCH_DIR:-$SCRIPT_DIR/../rinch-fixes}"
+KEYSTORE="${ANDROID_DEBUG_KEYSTORE:-$SCRIPT_DIR/target/debug.keystore}"
+
+PACKAGE="dev.lostconnection.setlistarray"
+LIB_NAME="libsetlistarray.so"
+APK_NAME="setlistarray.apk"
+
+for path in "$ANDROID_NDK_HOME" "$BUILD_TOOLS" "$PLATFORM" "$RINCH_DIR"; do
+    if [[ ! -e "$path" ]]; then
+        echo "ERROR: not found: $path"
+        echo "       set ANDROID_NDK_HOME / ANDROID_SDK_BUILD_TOOLS / ANDROID_SDK_PLATFORM / RINCH_DIR"
+        exit 1
+    fi
+done
+
+PROFILE="release"
+PROFILE_FLAG="--release"
+if [[ "$RELEASE" == false ]]; then
+    PROFILE="debug"
+    PROFILE_FLAG=""
+fi
+
+# ── Rust ─────────────────────────────────────────────────────────────────────
+# `--lib` only: the desktop binary and the probe are not part of the APK.
+echo "==> Building $TARGET ($PROFILE)..."
+export ANDROID_NDK_HOME
+(cd "$SCRIPT_DIR" && cargo ndk -t "$TARGET" build --lib $PROFILE_FLAG)
+
+SO_PATH="$SCRIPT_DIR/target/$TRIPLE/$PROFILE/$LIB_NAME"
+if [[ ! -f "$SO_PATH" ]]; then
+    echo "ERROR: .so not found at $SO_PATH"
+    exit 1
+fi
+
+# ── Java companion classes ───────────────────────────────────────────────────
+# RinchActivity is a NativeActivity subclass; the two input classes are the IME
+# bridge. They come from rinch, not from this repo.
+JAVA_SRC="$RINCH_DIR/crates/rinch-android/java"
+
+APK_DIR="$(mktemp -d)"
+trap 'rm -rf "$APK_DIR"' EXIT
+
+echo "==> Compiling Java..."
+mkdir -p "$APK_DIR/classes"
+javac -source 8 -target 8 \
+    -classpath "$PLATFORM" \
+    -d "$APK_DIR/classes" \
+    "$JAVA_SRC/com/rinch/RinchActivity.java" \
+    "$JAVA_SRC/com/rinch/RinchInputConnection.java" \
+    "$JAVA_SRC/com/rinch/RinchInputView.java" 2>&1 | grep -v "^Note:" || true
+
+echo "==> Converting to DEX..."
+# `--lib` gives d8 the platform classes it needs to desugar the lambdas in
+# RinchActivity; without it every one of them is a warning.
+"$BUILD_TOOLS/d8" --min-api 28 --lib "$PLATFORM" --output "$APK_DIR/" \
+    $(find "$APK_DIR/classes" -name '*.class')
+
+# ── Package ──────────────────────────────────────────────────────────────────
+echo "==> Packaging APK..."
+mkdir -p "$APK_DIR/lib/$ABI"
+cp "$SO_PATH" "$APK_DIR/lib/$ABI/"
+
+"$BUILD_TOOLS/aapt2" link \
+    --manifest "$SCRIPT_DIR/android/AndroidManifest.xml" \
+    -I "$PLATFORM" \
+    --min-sdk-version 28 \
+    --target-sdk-version 35 \
+    -o "$APK_DIR/base.apk"
+
+(cd "$APK_DIR" && zip -qr base.apk lib/ classes.dex)
+
+"$BUILD_TOOLS/zipalign" -f 4 "$APK_DIR/base.apk" "$APK_DIR/aligned.apk"
+
+if [[ ! -f "$KEYSTORE" ]]; then
+    echo "==> Creating a throwaway debug keystore at $KEYSTORE..."
+    mkdir -p "$(dirname "$KEYSTORE")"
+    keytool -genkeypair \
+        -keystore "$KEYSTORE" -alias debug \
+        -keyalg RSA -keysize 2048 -validity 10000 \
+        -storepass android -keypass android \
+        -dname "CN=Debug, O=SetListArray" 2>/dev/null
+fi
+
+"$BUILD_TOOLS/apksigner" sign \
+    --ks "$KEYSTORE" --ks-key-alias debug \
+    --ks-pass pass:android --key-pass pass:android \
+    --out "$APK_DIR/$APK_NAME" \
+    "$APK_DIR/aligned.apk" 2>/dev/null
+
+cp "$APK_DIR/$APK_NAME" "$SCRIPT_DIR/$APK_NAME"
+echo "==> APK ready: $SCRIPT_DIR/$APK_NAME ($(du -h "$SCRIPT_DIR/$APK_NAME" | cut -f1))"
+
+if [[ "$BUILD_ONLY" == true ]]; then
+    exit 0
+fi
+
+# ── Install ──────────────────────────────────────────────────────────────────
+if ! command -v adb >/dev/null; then
+    echo "ERROR: adb not on PATH (try ~/android/sdk/platform-tools). Use --build-only."
+    exit 1
+fi
+if [[ -z "$(adb devices | sed -n '2,$p' | grep -w device || true)" ]]; then
+    echo "ERROR: no device or emulator attached. Use --build-only."
+    exit 1
+fi
+
+echo "==> Installing..."
+adb shell am force-stop "$PACKAGE" 2>/dev/null || true
+adb install -r "$SCRIPT_DIR/$APK_NAME" 2>&1 | grep -E "Success|Failure"
+
+echo "==> Launching..."
+adb shell am start -n "$PACKAGE/com.rinch.RinchActivity"
+
+echo "==> Done. 'adb logcat -s rinch' for logs."

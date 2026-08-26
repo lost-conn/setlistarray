@@ -108,6 +108,12 @@ fn app() -> NodeHandle {
     }
 }
 
+#[cfg(not(target_os = "android"))]
 fn main() {
     run("probe", 460, 300, app);
 }
+
+// Desktop-only, like the fault it demonstrates. Kept compilable for Android so
+// a whole-crate cross build does not trip over it.
+#[cfg(target_os = "android")]
+fn main() {}
