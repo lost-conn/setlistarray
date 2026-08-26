@@ -50,18 +50,59 @@ a path dep while this app is its early in-process consumer.
 
 ```bash
 scripts/screenshot.sh            # build, run under X11, capture, check
-scripts/screenshot.sh --update   # re-record baselines from this run instead
+scripts/screenshot.sh --update   # re-record thresholds from this run instead
+scripts/screenshot.sh --self-test  # assert the region arithmetic; builds nothing
 ```
 
 Builds release, launches the app under X11 (`-u WAYLAND_DISPLAY`; window
 capture needs a real X window) against a **throwaway seeded library**, grabs
-its window with ImageMagick's `import`, and samples five known-good regions
+its window with ImageMagick's `import`, and samples six known-good regions
 of the library screen against
 `scripts/screenshot-baseline.json`: the first row's attachment thumb (grey
 mean — this is the exact check that caught "The paint regression" below),
-the FAB and the first group header and the active bottom-nav item (all
-sampled for the accent colour, `#B54724`), and the screen background
-(`#FBF7F0`). Exits non-zero if any check fails, so it can gate a commit.
+the FAB and the first group header and the bottom-nav strip (all
+sampled for the accent colour, `#B54724`), the screen background
+(`#FBF7F0`), and a negative control. Exits non-zero if any check fails, so it
+can gate a commit.
+
+The sixth is the negative control, and it is not about the app at all: it
+asserts that the *other* corner of the same empty status-bar strip contains
+**no** accent pixels, through the same crop-and-`compare` path the accent
+checks use, at the same fuzz. Every other check here is of the form "this
+colour is present", and a suite made only of those goes green just as happily
+when the colour comparison has quietly started matching everything. Nothing
+the app can do makes this one red; only the machinery can. `--update`
+therefore refuses to re-record its ceiling — a control measured from the run
+it is policing is not a control.
+
+### Regions are anchored, not pinned
+
+Every region says which corner or edge of the captured image it hangs off,
+and is resolved against the capture's real dimensions at check time. The
+window manager is not obliged to grant the size the app asks for, and this
+one does not: the same `WM_NORMAL_HINTS` request produced a 491×1065 window
+one morning and a 550×1065 one that afternoon, with no code change in
+between. Absolute `WxH+X+Y` crops survive neither — the width grew by 59px,
+the bottom-right FAB moved with the right edge, and its sample slid off the
+button onto the paper beside it. The check went red while the FAB was
+perfectly fine, which is the one thing a commit gate must never do.
+
+So `fab_solid_accent` anchors bottom-right, `bottom_nav_accent` anchors to the
+bottom and spans the width (the two nav items are `flex: 1`, so the active one
+re-centres and there is no fixed x to sample), and the content-column checks
+anchor top-left and say so rather than relying on it. The offsets are written
+in **CSS pixels** — the units `src/` is written in, so `right: 36` reads
+against the FAB's own `right: 20px` without arithmetic — and converted through
+one scale factor, derived as `captured_height / 852`. Height and never width:
+the window manager stretched the width and left the height at exactly
+852 × 1.25, so the height is the dimension still carrying the scale factor
+honestly. A region that omits its anchor is an error, not a default.
+
+`--self-test` resolves every region against five capture sizes (both the ones
+this machine has produced, an absurdly wide one, a 2× display and a 1× one)
+and asserts the results, plus that eight kinds of malformed region are
+rejected. It builds nothing, launches nothing and needs no X server, so it is
+the part of this net that can run anywhere.
 
 The library it samples is its own: a fresh `$XDG_DATA_HOME` under `$TMPDIR`,
 filled by `--seed` and deleted on the way out. Never

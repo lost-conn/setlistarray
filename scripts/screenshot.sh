@@ -12,12 +12,25 @@
 # in ~/.local/share/setlistarray, so the pixels it samples depend on nothing
 # but the code in this repository. See the long note above the launch below.
 #
+# Every sampled region is anchored to an edge of the captured image rather
+# than pinned to an absolute WxH+X+Y. The window manager is not obliged to
+# grant the size the app asks for and this one does not: the same
+# `WM_NORMAL_HINTS` request has produced a 491x1065 window and later a
+# 550x1065 one, on the same machine, on the same day. Absolute coordinates
+# survive neither, so each region says which corner or edge it hangs off and
+# is resolved against the capture's real dimensions here. See
+# `region_schema` in the baseline file.
+#
 # Usage:
 #   scripts/screenshot.sh              # build, run, capture, check against
 #                                       # scripts/screenshot-baseline.json
 #   scripts/screenshot.sh --update     # same, but rewrite the baseline from
 #                                       # this run's measurements instead of
 #                                       # checking against it
+#   scripts/screenshot.sh --self-test  # resolve every region against a table
+#                                       # of capture sizes and assert the
+#                                       # arithmetic; builds and launches
+#                                       # nothing
 #
 # Exit status is non-zero if any check fails (or the window never appears),
 # so this can gate a commit later. Every capture is kept under
@@ -52,13 +65,16 @@ for arg in "$@"; do
     --update|-u)
       MODE="update"
       ;;
+    --self-test)
+      MODE="self-test"
+      ;;
     -h|--help)
-      sed -n '2,25p' "${BASH_SOURCE[0]}"
+      sed -n '2,38p' "${BASH_SOURCE[0]}"
       exit 0
       ;;
     *)
       echo "unknown option: $arg" >&2
-      echo "usage: $(basename "${BASH_SOURCE[0]}") [--update]" >&2
+      echo "usage: $(basename "${BASH_SOURCE[0]}") [--update | --self-test]" >&2
       exit 1
       ;;
   esac
@@ -73,9 +89,298 @@ die() {
   exit 1
 }
 
-for tool in cargo import convert compare identify jq xwininfo xprop; do
+# --self-test only reads the baseline and does arithmetic, so it must not
+# refuse to run on a machine with no X server, no ImageMagick and no toolchain
+# — that is most of the value of having it. Everything else needs the lot.
+if [[ "$MODE" == self-test ]]; then
+  REQUIRED_TOOLS=(jq awk)
+else
+  REQUIRED_TOOLS=(cargo import convert compare identify jq xwininfo xprop)
+fi
+for tool in "${REQUIRED_TOOLS[@]}"; do
   command -v "$tool" >/dev/null 2>&1 || die "missing dependency: $tool"
 done
+
+# ---------------------------------------------------------------------------
+# Geometry: anchor-relative regions
+#
+# The window manager, not the app, decides how big the window is. This one
+# grants a different width on different days for the same `WM_NORMAL_HINTS`
+# request — 491x1065 once, 550x1065 later, no code change in between — so a
+# region recorded as an absolute `WxH+X+Y` crop is a region that will one day
+# quietly slide off the thing it was pointed at. That is worse than a crash:
+# the FAB check went red while the FAB was perfectly fine, because its crop
+# had drifted onto the paper beside it.
+#
+# So the baseline states, per region, which corner or edge of the *captured
+# image* it hangs off, and the offsets are measured inward from there. A
+# bottom-right region stays on the FAB however wide the window turns out to
+# be; a top-left region stays on the content column, which starts at the left
+# edge and does not move either.
+#
+# The offsets are written in CSS pixels — the units src/ is written in, so
+# `right: 36` can be read against the FAB's `right: 20px` without arithmetic —
+# and converted to the capture's physical pixels through one scale factor.
+# ---------------------------------------------------------------------------
+
+# Which offset keys each anchor requires, and whether it spans the capture
+# width. Anything not listed here is rejected, which is the point: a future
+# check cannot be added without stating where it hangs from.
+anchor_offsets() {
+  case "$1" in
+    top-left)     printf 'left top\n' ;;
+    top-right)    printf 'right top\n' ;;
+    bottom-left)  printf 'left bottom\n' ;;
+    bottom-right) printf 'right bottom\n' ;;
+    top)          printf 'top\n' ;;
+    bottom)       printf 'bottom\n' ;;
+    *)            return 1 ;;
+  esac
+}
+
+anchor_spans_width() {
+  case "$1" in
+    top|bottom) return 0 ;;
+    *)          return 1 ;;
+  esac
+}
+
+# CSS pixels to this capture's physical pixels. Rounds half away from zero,
+# the same way the old absolute-coordinate scaler did.
+phys() {
+  awk -v v="$1" -v s="$SCALE" 'BEGIN { printf "%d", (v * s) + 0.5 }'
+}
+
+# Resolve one check's `region` object against ACTUAL_W/ACTUAL_H/SCALE.
+#
+# On success sets REGION_W/REGION_H/REGION_X/REGION_Y and returns 0. On a
+# schema fault it sets REGION_ERROR and returns 1 rather than calling `die`,
+# so that --self-test can assert the faults are caught as well as the
+# arithmetic; every other caller treats a non-zero return as fatal.
+resolve_region() {
+  local check="$1" name="$2"
+  REGION_ERROR=""
+  REGION_W=""; REGION_H=""; REGION_X=""; REGION_Y=""
+
+  local anchor keys key value spans w_spec h
+  anchor="$(jq -r '.region.anchor // "«missing»"' <<<"$check")"
+  if ! keys="$(anchor_offsets "$anchor")"; then
+    REGION_ERROR="check \"$name\": region.anchor is \"$anchor\"; every region must declare one of top-left, top-right, bottom-left, bottom-right, top, bottom"
+    return 1
+  fi
+
+  w_spec="$(jq -r '.region.w // "«missing»"' <<<"$check")"
+  h="$(jq -r '.region.h // "«missing»"' <<<"$check")"
+  if ! [[ "$h" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+    REGION_ERROR="check \"$name\": region.h must be a number, got \"$h\""
+    return 1
+  fi
+
+  if anchor_spans_width "$anchor"; then
+    spans=yes
+    if [[ "$w_spec" != "full" ]]; then
+      REGION_ERROR="check \"$name\": anchor \"$anchor\" spans the capture width, so region.w must be the string \"full\", got \"$w_spec\""
+      return 1
+    fi
+  else
+    spans=no
+    if ! [[ "$w_spec" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+      REGION_ERROR="check \"$name\": region.w must be a number for anchor \"$anchor\", got \"$w_spec\""
+      return 1
+    fi
+  fi
+
+  # Every offset the anchor names has to be there and has to be a number. A
+  # region that leaves one out would otherwise resolve to 0 and land in a
+  # corner, which is exactly the silent-wrong-answer this whole rewrite is
+  # about.
+  local left="" top="" right="" bottom=""
+  for key in $keys; do
+    value="$(jq -r --arg k "$key" '.region[$k] // "«missing»"' <<<"$check")"
+    if ! [[ "$value" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+      REGION_ERROR="check \"$name\": anchor \"$anchor\" requires a numeric region.$key, got \"$value\""
+      return 1
+    fi
+    case "$key" in
+      left)   left="$value" ;;
+      top)    top="$value" ;;
+      right)  right="$value" ;;
+      bottom) bottom="$value" ;;
+    esac
+  done
+
+  REGION_H="$(phys "$h")"
+  if [[ "$spans" == yes ]]; then
+    REGION_W="$ACTUAL_W"
+    REGION_X=0
+  else
+    REGION_W="$(phys "$w_spec")"
+    if [[ -n "$left" ]]; then
+      REGION_X="$(phys "$left")"
+    else
+      REGION_X=$(( ACTUAL_W - $(phys "$right") - REGION_W ))
+    fi
+  fi
+  if [[ -n "$top" ]]; then
+    REGION_Y="$(phys "$top")"
+  else
+    REGION_Y=$(( ACTUAL_H - $(phys "$bottom") - REGION_H ))
+  fi
+
+  # A region that has fallen off the capture is never what was meant, and
+  # sampling it would either crash `convert` or — worse — silently return the
+  # clamped remainder. Say so instead.
+  if (( REGION_W <= 0 || REGION_H <= 0 || REGION_X < 0 || REGION_Y < 0 \
+        || REGION_X + REGION_W > ACTUAL_W || REGION_Y + REGION_H > ACTUAL_H )); then
+    REGION_ERROR="check \"$name\": region resolves to ${REGION_W}x${REGION_H}+${REGION_X}+${REGION_Y}, which does not fit inside the ${ACTUAL_W}x${ACTUAL_H} capture"
+    return 1
+  fi
+  return 0
+}
+
+# Read the logical window size once — the size the app *asks* for, which is a
+# constant of the source (WIDTH/HEIGHT in src/lib.rs) and not a measurement.
+LOGICAL_W="$(jq -r '.logical_window.width' "$BASELINE_FILE")"
+LOGICAL_H="$(jq -r '.logical_window.height' "$BASELINE_FILE")"
+
+# Derive the display scale factor from the capture's height and never its
+# width. The window manager has been observed granting 491x1065 and 550x1065
+# for the same request: it stretched the width and left the height exactly at
+# 852 x 1.25. So the height is the dimension that still carries the scale
+# factor honestly, and the width is a number the compositor made up. There is
+# no other source of truth here — winit knows the real scale factor but the
+# app does not print it — so this is derived, not read, and it is derived from
+# the trustworthy half. If a window manager ever starts stretching the height
+# too, this assumption breaks loudly (every region shifts at once) rather than
+# quietly, which is the failure mode to prefer.
+derive_scale() {
+  awk -v a="$1" -v l="$2" 'BEGIN { printf "%.6f", a / l }'
+}
+
+# ---------------------------------------------------------------------------
+# --self-test: the region arithmetic, with no app and no X server
+#
+# The whole point of the anchor rewrite is that it survives a window size
+# nobody can arrange on demand. There is no way to make this window manager
+# grant a chosen geometry (no Xvfb, no wmctrl, no xdotool on this machine), so
+# the arithmetic is asserted directly instead, over the real regions from the
+# real baseline file at five capture sizes: the two this machine has actually
+# produced, an absurdly wide grant, a 2x display, and a 1x one. A resolver
+# that is right at all five is right for the reason the checks need it to be.
+#
+# It also asserts the schema faults, because "every region must state its
+# anchor" is only true if leaving it out is an error rather than a default.
+# ---------------------------------------------------------------------------
+
+if [[ "$MODE" == self-test ]]; then
+  SELF_TEST_FAILURES=0
+
+  expect_region() {
+    local name="$1" want="$2" check got
+    check="$(jq -c --arg n "$name" '.checks[] | select(.name == $n)' "$BASELINE_FILE")"
+    [[ -n "$check" ]] || die "self-test: no check named \"$name\" in $BASELINE_FILE"
+    if ! resolve_region "$check" "$name"; then
+      SELF_TEST_FAILURES=$((SELF_TEST_FAILURES + 1))
+      printf '%s✗ %s@%sx%s%s — %s\n' "$RED" "$name" "$ACTUAL_W" "$ACTUAL_H" "$RESET" "$REGION_ERROR" >&2
+      return 0
+    fi
+    got="${REGION_W}x${REGION_H}+${REGION_X}+${REGION_Y}"
+    if [[ "$got" == "$want" ]]; then
+      ok "$(printf '%-26s @ %sx%-5s -> %s' "$name" "$ACTUAL_W" "$ACTUAL_H" "$got")"
+    else
+      SELF_TEST_FAILURES=$((SELF_TEST_FAILURES + 1))
+      printf '%s✗ %-26s @ %sx%s%s -> %s, expected %s\n' "$RED" "$name" "$ACTUAL_W" "$ACTUAL_H" "$RESET" "$got" "$want" >&2
+    fi
+  }
+
+  expect_schema_fault() {
+    local label="$1" region="$2" check
+    check="$(jq -cn --argjson r "$region" '{name: "synthetic", region: $r}')"
+    if resolve_region "$check" "synthetic"; then
+      SELF_TEST_FAILURES=$((SELF_TEST_FAILURES + 1))
+      printf '%s✗ schema fault not caught%s — %s resolved to %sx%s+%s+%s\n' \
+        "$RED" "$RESET" "$label" "$REGION_W" "$REGION_H" "$REGION_X" "$REGION_Y" >&2
+    else
+      ok "$(printf '%-26s -> rejected: %s' "$label" "$REGION_ERROR")"
+    fi
+  }
+
+  at_size() {
+    ACTUAL_W="$1"; ACTUAL_H="$2"
+    SCALE="$(derive_scale "$ACTUAL_H" "$LOGICAL_H")"
+    info ""
+    info "${BOLD}capture ${ACTUAL_W}x${ACTUAL_H}${RESET} (scale $SCALE)"
+  }
+
+  # 491x1065 — the size this window manager granted when the baseline numbers
+  # below were first measured, and the size the app still asks for (393 x 1.25).
+  at_size 491 1065
+  expect_region thumb_painted            "40x50+30+330"
+  expect_region fab_solid_accent         "35x15+411+930"
+  expect_region group_header_accent      "55x20+20+290"
+  expect_region bottom_nav_accent        "491x70+0+975"
+  expect_region screen_background        "40x30+0+0"
+  expect_region background_has_no_accent "40x30+451+0"
+
+  # 550x1065 — the size the same window manager grants now, for the same
+  # request. Only the two right-anchored regions and the full-width one move,
+  # and they move by exactly the 59px the compositor added.
+  at_size 550 1065
+  expect_region thumb_painted            "40x50+30+330"
+  expect_region fab_solid_accent         "35x15+470+930"
+  expect_region group_header_accent      "55x20+20+290"
+  expect_region bottom_nav_accent        "550x70+0+975"
+  expect_region screen_background        "40x30+0+0"
+  expect_region background_has_no_accent "40x30+510+0"
+
+  # 700x1065 — no window manager has done this yet; the arithmetic should not
+  # care that it is unreasonable.
+  at_size 700 1065
+  expect_region thumb_painted            "40x50+30+330"
+  expect_region fab_solid_accent         "35x15+620+930"
+  expect_region bottom_nav_accent        "700x70+0+975"
+  expect_region background_has_no_accent "40x30+660+0"
+
+  # 786x1704 — a 2x display. Everything scales, including the vertical
+  # offsets, which is what the height-derived scale factor is for.
+  at_size 786 1704
+  expect_region thumb_painted            "64x80+48+528"
+  expect_region fab_solid_accent         "56x24+658+1488"
+  expect_region group_header_accent      "88x32+32+464"
+  expect_region bottom_nav_accent        "786x112+0+1560"
+  expect_region screen_background        "64x48+0+0"
+  expect_region background_has_no_accent "64x48+722+0"
+
+  # 393x852 — a 1x display, where CSS pixels and physical pixels are the same
+  # thing and the numbers in the baseline should appear unchanged.
+  at_size 393 852
+  expect_region thumb_painted            "32x40+24+264"
+  expect_region fab_solid_accent         "28x12+329+744"
+  expect_region group_header_accent      "44x16+16+232"
+  expect_region bottom_nav_accent        "393x56+0+780"
+  expect_region screen_background        "32x24+0+0"
+  expect_region background_has_no_accent "32x24+361+0"
+
+  info ""
+  info "${BOLD}schema faults${RESET} (a region that does not say where it hangs from is an error, not a default)"
+  ACTUAL_W=550; ACTUAL_H=1065; SCALE="$(derive_scale 1065 "$LOGICAL_H")"
+  expect_schema_fault "anchor missing"          '{"w":10,"h":10,"left":0,"top":0}'
+  expect_schema_fault "anchor unknown"          '{"anchor":"middle","w":10,"h":10}'
+  expect_schema_fault "corner missing offset"   '{"anchor":"bottom-right","w":10,"h":10,"right":4}'
+  expect_schema_fault "corner wrong offset"     '{"anchor":"bottom-right","w":10,"h":10,"left":4,"top":4}'
+  expect_schema_fault "edge anchor numeric w"   '{"anchor":"bottom","w":10,"h":10,"bottom":4}'
+  expect_schema_fault "corner anchor full w"    '{"anchor":"top-left","w":"full","h":10,"left":0,"top":0}'
+  expect_schema_fault "h missing"               '{"anchor":"top-left","w":10,"left":0,"top":0}'
+  expect_schema_fault "region off the capture"  '{"anchor":"top-left","w":10,"h":10,"left":9000,"top":0}'
+
+  info ""
+  if [[ "$SELF_TEST_FAILURES" -eq 0 ]]; then
+    ok "${BOLD}region resolver self-test passed${RESET}"
+    exit 0
+  else
+    die "${BOLD}$SELF_TEST_FAILURES region resolver assertions failed${RESET}"
+  fi
+fi
 
 mkdir -p "$CAPTURE_DIR"
 
@@ -171,15 +476,27 @@ fi
 # script just launched, so a sibling agent's window is never captured by
 # mistake — silently sampling someone else's screen would be a worse failure
 # than any of this script's other edge cases.
+#
+# The id is taken as the first field of the `xwininfo -root -tree` line and
+# not by grepping the line for something that looks like a hex literal. Those
+# lines carry the window geometry too, and a geometry of `550x1065` contains
+# the perfectly good hex literal `0x1065` — `grep -oE '0x[0-9a-fA-F]+'` finds
+# it and hands back a second, entirely fictional window id. Today the
+# `_NET_WM_PID` test below throws it away and nothing goes wrong, which is the
+# only reason this was never noticed; it is one unlucky window height
+# (`…x1234`, say, next to a real window whose id happens to match) away from
+# capturing something else. xwininfo puts the id first on every line, indented
+# by depth, so the first field is the id and nothing else ever is.
 find_own_window_id() {
   local id wmpid
   while IFS= read -r id; do
+    [[ "$id" =~ ^0x[0-9a-fA-F]+$ ]] || continue
     wmpid="$(xprop -id "$id" _NET_WM_PID 2>/dev/null | grep -oE '[0-9]+$')" || true
     if [[ "$wmpid" == "$APP_PID" ]]; then
       printf '%s\n' "$id"
       return 0
     fi
-  done < <(xwininfo -root -tree 2>/dev/null | grep -F "\"$WINDOW_TITLE\"" | grep -oE '0x[0-9a-fA-F]+')
+  done < <(xwininfo -root -tree 2>/dev/null | grep -F "\"$WINDOW_TITLE\"" | awk '{print $1}')
   return 1
 }
 
@@ -277,20 +594,20 @@ ACTUAL_W="${CAPTURE_DIMS%% *}"
 ACTUAL_H="${CAPTURE_DIMS##* }"
 info "captured ${ACTUAL_W}x${ACTUAL_H} -> $SHOT_PATH"
 
-REF_W="$(jq -r '.reference_capture.width' "$BASELINE_FILE")"
-REF_H="$(jq -r '.reference_capture.height' "$BASELINE_FILE")"
+SCALE="$(derive_scale "$ACTUAL_H" "$LOGICAL_H")"
+
+# A scale factor outside this range means the capture is not the app's window
+# — a stray grab of the whole root window, say, or a `import` that came back
+# with a placeholder. Every region would then resolve somewhere absurd and the
+# checks would report a paint regression that isn't there.
+if ! awk -v s="$SCALE" 'BEGIN { exit !(s >= 0.5 && s <= 8) }'; then
+  die "capture is ${ACTUAL_W}x${ACTUAL_H}, i.e. ${SCALE}x the ${LOGICAL_W}x${LOGICAL_H} window the app asks for — that is not a plausible display scale factor, so this run refuses to guess where anything is."
+fi
+info "scale factor ${SCALE} (captured height ${ACTUAL_H} / logical height ${LOGICAL_H}; the width the window manager granted is deliberately not used)"
 
 # ---------------------------------------------------------------------------
 # Sampling helpers
 # ---------------------------------------------------------------------------
-
-# Scale a reference-capture coordinate to this run's actual capture size, so
-# the baseline geometry doesn't have to be re-measured every time this runs
-# on a display with a different scale factor. Rounds half away from zero.
-scale() {
-  local value="$1" ref="$2" actual="$3"
-  awk -v v="$value" -v ref="$ref" -v act="$actual" 'BEGIN { printf "%d", (v * act / ref) + 0.5 }'
-}
 
 # Mean of ImageMagick's Gray colorspace conversion over a crop, 0..1. This is
 # exactly `convert shot.png -crop WxH+X+Y +repage -colorspace Gray -format
@@ -347,10 +664,8 @@ for i in $(seq 0 $((CHECK_COUNT - 1))); do
   name="$(jq -r '.name' <<<"$check")"
   desc="$(jq -r '.description' <<<"$check")"
   type="$(jq -r '.type' <<<"$check")"
-  w="$(scale "$(jq -r '.crop.w' <<<"$check")" "$REF_W" "$ACTUAL_W")"
-  h="$(scale "$(jq -r '.crop.h' <<<"$check")" "$REF_H" "$ACTUAL_H")"
-  x="$(scale "$(jq -r '.crop.x' <<<"$check")" "$REF_W" "$ACTUAL_W")"
-  y="$(scale "$(jq -r '.crop.y' <<<"$check")" "$REF_H" "$ACTUAL_H")"
+  resolve_region "$check" "$name" || die "$REGION_ERROR"
+  w="$REGION_W"; h="$REGION_H"; x="$REGION_X"; y="$REGION_Y"
 
   case "$type" in
     gray_mean)
@@ -372,21 +687,38 @@ for i in $(seq 0 $((CHECK_COUNT - 1))); do
         printf '    region: %sx%s+%s+%s in %s\n' "$w" "$h" "$x" "$y" "$SHOT_PATH" >&2
       fi
       ;;
-    solid_color|accent_presence)
+    solid_color|accent_presence|accent_absence)
       color="$(jq -r '.color' <<<"$check")"
       fuzz="$(jq -r '.fuzz_percent' <<<"$check")"
       read -r matched total < <(matched_pixels "$w" "$h" "$x" "$y" "$color" "$fuzz")
       [[ "$matched" == "ERROR:" ]] && die "check \"$name\": $total"
-      if [[ "$type" == solid_color ]]; then
-        threshold_kind="fraction"
-        min_fraction="$(jq -r '.min_match_fraction' <<<"$check")"
-        measured_frac="$(awk -v m="$matched" -v t="$total" 'BEGIN{printf "%.3f", m/t}')"
-      else
-        threshold_kind="count"
-        min_matched="$(jq -r '.min_matched' <<<"$check")"
-      fi
+      case "$type" in
+        solid_color)
+          threshold_kind="fraction"
+          min_fraction="$(jq -r '.min_match_fraction' <<<"$check")"
+          measured_frac="$(awk -v m="$matched" -v t="$total" 'BEGIN{printf "%.3f", m/t}')"
+          ;;
+        accent_presence)
+          threshold_kind="count"
+          min_matched="$(jq -r '.min_matched' <<<"$check")"
+          ;;
+        accent_absence)
+          threshold_kind="absence"
+          max_matched="$(jq -r '.max_matched' <<<"$check")"
+          ;;
+      esac
 
       if [[ "$MODE" == update ]]; then
+        if [[ "$threshold_kind" == absence ]]; then
+          # Never re-recorded. A negative control exists to prove the sampling
+          # path can still say "no"; a control whose ceiling is measured from
+          # the same run it is policing proves nothing at all — if `compare`
+          # started matching every pixel, --update would dutifully raise the
+          # ceiling to fit and the suite would go green forever.
+          printf '%skeep%s   %-24s max_matched %s (negative control — never re-recorded; measured %s/%s)\n' \
+            "$YELLOW" "$RESET" "$name" "$max_matched" "$matched" "$total" >&2
+          continue
+        fi
         if [[ "$threshold_kind" == fraction ]]; then
           # A small safety margin below a fresh full/near-full match, so
           # ordinary anti-aliasing jitter doesn't start failing the day
@@ -404,25 +736,39 @@ for i in $(seq 0 $((CHECK_COUNT - 1))); do
         continue
       fi
 
-      if [[ "$threshold_kind" == fraction ]]; then
-        if at_least_fraction "$matched" "$total" "$min_fraction"; then
-          ok "$name: $matched/$total near $color (>= $min_fraction)"
-        else
-          FAILURES=$((FAILURES + 1))
-          printf '%s✗ %s%s — %s\n' "$RED" "$name" "$RESET" "$desc" >&2
-          printf '    expected >= %s of %d px near %s, measured %s/%s\n' "$min_fraction" "$total" "$color" "$matched" "$total" >&2
-          printf '    region: %sx%s+%s+%s in %s\n' "$w" "$h" "$x" "$y" "$SHOT_PATH" >&2
-        fi
-      else
-        if [[ "$matched" -ge "$min_matched" ]]; then
-          ok "$name: $matched/$total px near $color (>= $min_matched)"
-        else
-          FAILURES=$((FAILURES + 1))
-          printf '%s✗ %s%s — %s\n' "$RED" "$name" "$RESET" "$desc" >&2
-          printf '    expected >= %s px near %s, measured %s/%s\n' "$min_matched" "$color" "$matched" "$total" >&2
-          printf '    region: %sx%s+%s+%s in %s\n' "$w" "$h" "$x" "$y" "$SHOT_PATH" >&2
-        fi
-      fi
+      case "$threshold_kind" in
+        fraction)
+          if at_least_fraction "$matched" "$total" "$min_fraction"; then
+            ok "$name: $matched/$total near $color (>= $min_fraction)"
+          else
+            FAILURES=$((FAILURES + 1))
+            printf '%s✗ %s%s — %s\n' "$RED" "$name" "$RESET" "$desc" >&2
+            printf '    expected >= %s of %d px near %s, measured %s/%s\n' "$min_fraction" "$total" "$color" "$matched" "$total" >&2
+            printf '    region: %sx%s+%s+%s in %s\n' "$w" "$h" "$x" "$y" "$SHOT_PATH" >&2
+          fi
+          ;;
+        count)
+          if [[ "$matched" -ge "$min_matched" ]]; then
+            ok "$name: $matched/$total px near $color (>= $min_matched)"
+          else
+            FAILURES=$((FAILURES + 1))
+            printf '%s✗ %s%s — %s\n' "$RED" "$name" "$RESET" "$desc" >&2
+            printf '    expected >= %s px near %s, measured %s/%s\n' "$min_matched" "$color" "$matched" "$total" >&2
+            printf '    region: %sx%s+%s+%s in %s\n' "$w" "$h" "$x" "$y" "$SHOT_PATH" >&2
+          fi
+          ;;
+        absence)
+          if [[ "$matched" -le "$max_matched" ]]; then
+            ok "$name: $matched/$total px near $color (<= $max_matched)"
+          else
+            FAILURES=$((FAILURES + 1))
+            printf '%s✗ %s%s — %s\n' "$RED" "$name" "$RESET" "$desc" >&2
+            printf '    expected <= %s px near %s, measured %s/%s\n' "$max_matched" "$color" "$matched" "$total" >&2
+            printf '    region: %sx%s+%s+%s in %s\n' "$w" "$h" "$x" "$y" "$SHOT_PATH" >&2
+            printf '    this region is empty paper at every window size, so the app cannot have caused this. Suspect the sampling path: ImageMagick, the -fuzz argument, or resolve_region.\n' >&2
+          fi
+          ;;
+      esac
       ;;
     *)
       die "unknown check type in baseline: $type"
@@ -431,12 +777,20 @@ for i in $(seq 0 $((CHECK_COUNT - 1))); do
 done
 
 if [[ "$MODE" == update ]]; then
-  jq --arg w "$ACTUAL_W" --arg h "$ACTUAL_H" '.reference_capture.width = ($w | tonumber) | .reference_capture.height = ($h | tonumber)' "$UPDATED_JSON" > "$CAPTURE_DIR/.tmp-baseline2.json"
+  # Only thresholds are re-recorded. The geometry is not, and there is no
+  # longer a captured size stored anywhere to re-record either: regions are
+  # anchored to the edges of whatever the window manager grants and written in
+  # the app's own CSS pixels, so the one thing --update used to write back —
+  # "the capture was this many pixels wide that day" — was precisely the
+  # transient machine state that had no business in the repository. Writing it
+  # was how a window-manager mood swing turned into a baseline diff.
+  jq . "$UPDATED_JSON" > "$CAPTURE_DIR/.tmp-baseline2.json"
   mv "$CAPTURE_DIR/.tmp-baseline2.json" "$BASELINE_FILE"
   rm -f "$CAPTURE_DIR/.tmp-baseline.json"
   info ""
-  info "${BOLD}baseline rewritten from this run's measurements${RESET} -> $BASELINE_FILE"
+  info "${BOLD}baseline thresholds rewritten from this run's measurements${RESET} -> $BASELINE_FILE"
   info "diff it before committing — every changed number above should be explained by an intentional change."
+  info "region geometry is never re-recorded; if a region has drifted off its target, move it by hand and say why."
   exit 0
 fi
 
