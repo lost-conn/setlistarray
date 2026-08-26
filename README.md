@@ -94,6 +94,11 @@ nothing in the UI code assumes either platform. See "Android" below.
   column, the no-chart warning pill, the derived "Before you start" panel,
   Play set.
 - **Setlists tab** — wireframe `1m`, styled with the hi-fi tokens.
+- **Add to setlist sheet** — wireframe `2e`. Bottom sheet over the song,
+  multi-select, `already in this set` on the sets that hold it, create inline.
+- **Sort & group sheet** — wireframe `2c`. Group-by chips, every metadata field
+  as a sort row, tap the active row to reverse, sparse fields greyed with a
+  count but still selectable.
 
 See [docs/PLAN.md](docs/PLAN.md) for the phased plan to finish the rest.
 
@@ -101,8 +106,8 @@ See [docs/PLAN.md](docs/PLAN.md) for the phased plan to finish the rest.
 
 Each of these has a `Stub` screen naming its wireframe: Settings (`1q`),
 Add/edit song (`1j`), Performance view (`1o`). Not yet started: attachment
-viewer (`1k`), offline webpage capture (`1l`), add-to-setlist sheet (`2e`),
-sort & group sheet (`2c`), search & filter (`1p`), first run (`1r`).
+viewer (`1k`), offline webpage capture (`1l`), search & filter (`1p`),
+first run (`1r`).
 
 Also outstanding:
 
@@ -279,6 +284,19 @@ seam every window-backed layout and paint site uses.
 - Statements inside `rsx!` bodies get re-emitted into those closures, so rustc
   reports plainly-used bindings as unused. `#![allow(unused_variables)]` in
   `main.rs` covers it.
+- Rinch interpolates a `transform` transition through its **matrix**, and the
+  matrix does not carry percentage translations (`rinch-dom`'s
+  `transition/apply.rs` zeroes them). `translateY(100%) → translateY(0)` snaps
+  instead of sliding; the bottom sheets park themselves in pixels for that
+  reason. A node also has to already be in the tree to slide, so the sheets stay
+  mounted and go transparent to taps rather than unmounting.
+- `--features devtools` is the only way to drive the app without a human, but on
+  a HiDPI display it also re-lays the page out at the physical surface size
+  (491×1065 here, not 393×852) after a `screenshot` command. Hit-test with the
+  boxes from a `dom_tree` dump rather than with coordinates read off a picture,
+  and take visual measurements from a build without the feature.
+- `pgrep -f setlistarray` matches your own shell's command line. Kill the app by
+  the PID you started, never by pattern.
 
 ### And two about rhypedb
 

@@ -4,7 +4,7 @@ use rinch::prelude::*;
 use rinch_tabler_icons::{TablerIcon, TablerIconOptions, TablerIconStyle, render_tabler_icon_with_options};
 
 use crate::model::{AttachmentKind, Confidence, Song};
-use crate::theme::{T_CHIP, T_LABEL_CAPS, T_META, T_META_SMALL, T_ROW_TITLE};
+use crate::theme::{SCREEN_PAD, T_CHIP, T_LABEL_CAPS, T_META, T_META_SMALL, T_ROW_TITLE};
 
 /// Tabler icon at an explicit size. Stroke 1.8–1.9 for outline icons, per the
 /// handoff; 24px glyphs inside the FAB, 21px in nav, 16–19px in buttons.
@@ -222,6 +222,102 @@ pub fn SongRow(
                 div { style: {format!("{T_META} margin-top: 2px;")}, {meta_line.clone()} }
             }
             ConfidenceDots { confidence: song.confidence }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Bottom sheets (`2e`, `2c`)
+// ---------------------------------------------------------------------------
+//
+// Hand-rolled rather than Rinch's `Drawer`. `Drawer`'s bottom sizes are five
+// fixed pixel buckets with no percentage option and no `style`/`class`/radius
+// prop to override, so "~57% height, 18px top corners" is unsayable; it paints
+// `--rinch-color-body` and its own header, not `var(--sla-*)`; its slide is
+// 300ms `ease` where the handoff asks for 200–250ms Android ease-out; and it
+// flips `display: none` on the root in the same frame as the transform class,
+// so the slide never actually runs. `Modal` is a centred dialog on fixed pixel
+// widths — a different shape entirely.
+//
+// The panel stays mounted and translated off-screen instead of being unmounted,
+// because a node that appears already at its resting place has nothing to
+// animate from. The closed offset is in pixels, not `100%`, because rinch's
+// transition engine drops percentage translations when it interpolates a
+// transform (`rinch-dom/src/transition/apply.rs`) — a percentage slide snaps.
+
+/// A standard Android ease-out (the deceleration curve), at the fast end of
+/// the handoff's 200–250ms.
+const SHEET_EASE: &str = "220ms cubic-bezier(0, 0, 0.2, 1)";
+
+/// Far enough below the window that the tallest sheet is fully clear of it.
+const SHEET_PARKED: &str = "700px";
+
+/// The full-bleed layer a sheet lives in. Transparent to taps while closed so
+/// the screen underneath stays live.
+pub fn sheet_root_style(open: bool) -> String {
+    let taps = if open { "auto" } else { "none" };
+    format!(
+        "position: absolute; left: 0; top: 0; right: 0; bottom: 0; z-index: 40; \
+         pointer-events: {taps};"
+    )
+}
+
+/// The scrim over the screen behind. Fades with the slide.
+pub fn sheet_scrim_style(open: bool) -> String {
+    let opacity = if open { "1" } else { "0" };
+    format!(
+        "position: absolute; left: 0; top: 0; right: 0; bottom: 0; \
+         background: rgba(28, 25, 23, 0.38); opacity: {opacity}; \
+         transition: opacity {SHEET_EASE};"
+    )
+}
+
+/// The sheet itself: `height_pct` of the window, 18px top corners, parked
+/// below the fold until it is opened.
+pub fn sheet_panel_style(open: bool, height_pct: u32) -> String {
+    let y = if open { "0px" } else { SHEET_PARKED };
+    format!(
+        "position: absolute; left: 0; right: 0; bottom: 0; height: {height_pct}%; \
+         background: var(--sla-paper); border-radius: 18px 18px 0 0; \
+         border-top: 1px solid var(--sla-hairline); \
+         display: flex; flex-direction: column; min-height: 0; \
+         box-shadow: 0 -8px 28px -12px rgba(28, 25, 23, 0.35); \
+         transform: translateY({y}); transition: transform {SHEET_EASE};"
+    )
+}
+
+/// The grab handle every sheet wears.
+#[component]
+pub fn SheetHandle() -> NodeHandle {
+    rsx! {
+        div {
+            style: "display: flex; justify-content: center; padding: 9px 0 5px; flex-shrink: 0;",
+            div { style: "width: 44px; height: 4px; border-radius: 999px; background: var(--sla-hairline);" }
+        }
+    }
+}
+
+/// The footer both sheets share: a muted note on the left, one accent button
+/// on the right.
+#[component]
+pub fn SheetFooter(note: String, action: String, enabled: bool, onclick: Option<Callback>) -> NodeHandle {
+    let button = if enabled {
+        "background: var(--sla-accent); color: var(--sla-on-accent);"
+    } else {
+        "background: var(--sla-fill); color: var(--sla-muted);"
+    };
+
+    rsx! {
+        div {
+            style: {format!("display: flex; align-items: center; gap: 12px; flex-shrink: 0; \
+                             padding: 12px {SCREEN_PAD} 24px; border-top: 1px solid var(--sla-hairline);")},
+            span { style: {format!("{T_META} flex: 1;")}, {note.clone()} }
+            div {
+                onclick: move || { if let Some(cb) = &onclick { cb.invoke() } },
+                style: {format!("{button} border-radius: 999px; padding: 13px 24px; \
+                                 font-weight: 600; font-size: 16px; white-space: nowrap;")},
+                {action.clone()}
+            }
         }
     }
 }
