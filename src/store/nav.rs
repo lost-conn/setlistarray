@@ -31,6 +31,12 @@ pub struct NavStore {
     pub add_to_setlist_for: Signal<Option<SongId>>,
     /// The sort & group bottom sheet.
     pub sort_sheet_open: Signal<bool>,
+    /// The setlist card currently in inline rename mode on the Setlists tab
+    /// (opened from its long-press/right-click menu), and the text field's
+    /// live draft. Screen-transient UI state, same as the two fields above —
+    /// not worth a store of its own for one small pair of signals.
+    pub renaming_setlist: Signal<Option<SetlistId>>,
+    pub rename_draft: Signal<String>,
 }
 
 impl NavStore {
@@ -40,6 +46,8 @@ impl NavStore {
             tab: Signal::new(Tab::Songs),
             add_to_setlist_for: Signal::new(None),
             sort_sheet_open: Signal::new(false),
+            renaming_setlist: Signal::new(None),
+            rename_draft: Signal::new(String::new()),
         }
     }
 

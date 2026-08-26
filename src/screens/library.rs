@@ -6,6 +6,7 @@ use rinch_tabler_icons::TablerIcon;
 
 use crate::model::{AttachmentKind, Song};
 use crate::derive::{GROUP_PREVIEW, visible_songs};
+use crate::menu::{FULL_WIDTH_TARGET, MENU_SURFACE, SongMenuItems};
 use crate::store::{
     AttachmentsStore, Density, LibraryViewStore, NavStore, Route, SettingsStore, SongsStore,
 };
@@ -121,12 +122,31 @@ pub fn Library() -> NodeHandle {
                                 for song in songs_in_group(view, songs, attachments, index) {
                                     let id = song.id;
                                     let kind = primary_kind(attachments, &song);
-                                    SongRow {
+                                    let menu_open = Signal::new(false);
+                                    // Right-click stands in for long-press —
+                                    // see the note in `crate::menu`.
+                                    div {
                                         key: id,
-                                        song: {song.clone()},
-                                        kind: {kind},
-                                        compact: {view.density.get() == Density::Compact},
-                                        onclick: move || nav.go(Route::SongDetail(id)),
+                                        oncontextmenu: move || menu_open.set(true),
+                                        DropdownMenu {
+                                            opened_fn: move || menu_open.get(),
+                                            on_close: move || menu_open.set(false),
+                                            position: "bottom-start",
+                                            style: {FULL_WIDTH_TARGET},
+                                            DropdownMenuTarget {
+                                                style: {FULL_WIDTH_TARGET},
+                                                SongRow {
+                                                    song: {song.clone()},
+                                                    kind: {kind},
+                                                    compact: {view.density.get() == Density::Compact},
+                                                    onclick: move || nav.go(Route::SongDetail(id)),
+                                                }
+                                            }
+                                            DropdownMenuDropdown {
+                                                style: {MENU_SURFACE},
+                                                SongMenuItems { id: id }
+                                            }
+                                        }
                                     }
                                 }
                             }

@@ -16,6 +16,7 @@
 
 mod db;
 mod derive;
+mod menu;
 mod model;
 mod screens;
 mod seed;
