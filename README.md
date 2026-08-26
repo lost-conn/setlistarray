@@ -24,6 +24,40 @@ content, and only ever into a library that has nothing in it.
 Requires stable Rust (`rust-toolchain.toml` pins it, along with the two Android
 targets). Rinch's docs ask for nightly; current main does not need it.
 
+### Visual regression check
+
+```bash
+scripts/screenshot.sh            # build, run under X11, capture, check
+scripts/screenshot.sh --update   # re-record baselines from this run instead
+```
+
+Builds release, launches the app under X11 (`-u WAYLAND_DISPLAY`; window
+capture needs a real X window), grabs its window with ImageMagick's `import`,
+and samples five known-good regions of the library screen against
+`scripts/screenshot-baseline.json`: the first row's attachment thumb (grey
+mean — this is the exact check that caught "The paint regression" below),
+the FAB and the first group header and the active bottom-nav item (all
+sampled for the accent colour, `#B54724`), and the screen background
+(`#FBF7F0`). Exits non-zero if any check fails, so it can gate a commit.
+
+The window is found by matching its title *and* its `_NET_WM_PID` X property
+against the PID this script just launched — not by title alone, because this
+machine routinely runs several worktrees of this repo side by side and two
+of them can have a window titled "SetListArray" open at once. Matching by
+title only risks silently sampling a sibling's window instead of your own.
+
+Captures land in `.screenshots/` (gitignored) — `latest.png` plus one
+timestamped PNG and app log per run, so a failure leaves something to look
+at. The app is killed by PID on the way out, never `pkill -f setlistarray`
+(that also matches this script's own command line).
+
+`--update` re-measures every check from a fresh run and rewrites the
+baseline file; it does not overwrite it blindly — it prints a `name: old ->
+new` line per check, and that diff (`git diff scripts/screenshot-baseline.json`)
+is what to review before committing. A diff that isn't explained by a
+deliberate visual change means something regressed, not that the baseline
+needed updating.
+
 **The pin is deliberately not on `main`.** See "The flex regression" below.
 
 The handoff targets Android, and Rinch has an Android backend, so the app
