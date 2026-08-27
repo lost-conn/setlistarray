@@ -175,18 +175,16 @@ pub fn Library() -> NodeHandle {
             // FAB — creates a song.
             //
             // `z-index` is load-bearing, not decoration: without it the FAB
-            // paints over the list but cannot be tapped. Rinch makes an
-            // `overflow: auto` box a stacking context (`Node::
-            // creates_stacking_context`), so the scrolling list is hoisted into
-            // the app root's z-index-0 stacking phase, which hit-testing walks
-            // *before* the plain non-stacking children — and the FAB, being
-            // `position: absolute` with `z-index: auto`, is one of those. Every
-            // tap on it therefore landed on whatever row happened to be
-            // underneath, or on nothing at all. CSS says a positioned element
-            // paints above its in-flow siblings and rinch's painter agrees,
-            // which is why this only ever showed up as a dead button and never
-            // as a wrong picture. Naming a layer puts the FAB in the phase that
-            // is tested first, below the bottom sheets' 40.
+            // is neither drawn nor tappable. Rinch implements no CSS painting
+            // step 8, so a `position: absolute; z-index: auto` box stays in the
+            // in-flow phase; and it makes an `overflow: auto` box a stacking
+            // context (`Node::creates_stacking_context`), so the scrolling list
+            // is hoisted into the z-index-0 phase that paints last and is
+            // hit-tested first. The list therefore covered the FAB and swallowed
+            // every tap on it. Naming a layer moves the FAB into that same phase,
+            // below the bottom sheets' 40. joeleaver/rinch#292 fixes it upstream
+            // by deriving paint order and hit-test order from one sequence; this
+            // stays until the pin moves onto a rinch that carries it.
             div {
                 onclick: move || nav.go(Route::AddSong),
                 style: "position: absolute; right: 20px; bottom: 16px; z-index: 10; \

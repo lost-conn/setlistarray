@@ -41,7 +41,7 @@ local path dependencies, so `Cargo.toml` expects three checkouts side by side:
 ```
 projects/personal/
 ├── setlistarray/     ← this
-├── rinch-fixes/      ← github.com/joeleaver/rinch, branch carrying #245, #246, #266, #267, #268, #270
+├── rinch-fixes/      ← github.com/joeleaver/rinch, branch carrying #245, #246, #266, #267, #268, #270, #292
 └── rhypedb-main/     ← github.com/joeleaver/rhypedb, main
 ```
 
@@ -577,16 +577,21 @@ and two of them add something that was never there at all:
 - [joeleaver/rinch#274](https://github.com/joeleaver/rinch/pull/274) — the Android IME's composing region, so autocorrect and swipe reach the document
 - [joeleaver/rinch#281](https://github.com/joeleaver/rinch/pull/281) — a `<textarea>` takes a line break from Enter, and Android's keyboard offers one
 - [joeleaver/rinch#286](https://github.com/joeleaver/rinch/pull/286) — an app can ship its own typefaces and say which CSS names they answer to
+- [joeleaver/rinch#292](https://github.com/joeleaver/rinch/pull/292) — one paint sequence for the painter and the finger, which is what made both FABs dead
 
 The `../rinch-fixes` integration branch carries all of them, which is why the
 long press works in an APK built here and would not in one built against
 `main`. Move the pin once they land.
 
-One fault found here has **no PR yet**: rinch's painter and hit-testing derive
-their ordering separately, so a `position: absolute; z-index: auto` element over
-an `overflow: auto` sibling paints on top but hit-tests underneath. Both FABs
-carry a `z-index: 10` workaround. It is not Android-specific and it reproduces
-on the desktop.
+The last of those was found here and filed late. Rinch derives paint order and
+hit-test order twice, by different rules, and implements no CSS painting step 8
+— so a `position: absolute; z-index: auto` element over an `overflow: auto`
+sibling loses to it both ways. The fault was reported here as a dead FAB, on the
+belief that the painter got it right and only the finger did not; writing the
+PR's readback test disproved that. The scrolling list painted *over* the FAB as
+well. It never looked wrong only because the `z-index: 10` workaround both FABs
+carry had been hiding the visual half from the day it was added. It is not
+Android-specific and it reproduces on the desktop.
 
 ### The paint regression
 

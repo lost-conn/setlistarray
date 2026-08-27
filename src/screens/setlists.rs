@@ -176,8 +176,8 @@ pub fn Setlists() -> NodeHandle {
             }
 
             // FAB — creates a setlist. `z-index` is load-bearing here for the
-            // same reason it is on the library's FAB: without it the button
-            // paints but cannot be tapped. The full explanation lives on that
+            // same reason it is on the library's FAB: without it the button is
+            // neither drawn nor tappable. The full explanation lives on that
             // one, in `crate::screens::library`.
             div {
                 onclick: move || { setlists.add("New setlist"); },
