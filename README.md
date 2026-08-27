@@ -41,7 +41,7 @@ local path dependencies, so `Cargo.toml` expects three checkouts side by side:
 ```
 projects/personal/
 ├── setlistarray/     ← this
-├── rinch-fixes/      ← github.com/joeleaver/rinch, branch carrying #245, #246, #266, #267, #268, #270, #292
+├── rinch-fixes/      ← github.com/joeleaver/rinch, branch carrying #245, #246, #266, #267, #270, #274, #281, #286, #292, #298
 └── rhypedb-main/     ← github.com/joeleaver/rhypedb, main
 ```
 
@@ -562,29 +562,43 @@ pointer events with capture, where the scroll decision is finally deferred to
 the DOM. Drag and swipe wait on stage 3, so until then every affordance in this
 app except the long-press menu is a tap.
 
-## The Rinch contributions (upstream, awaiting review)
+## The Rinch contributions (upstream)
 
-The app is pinned to Rinch `d25f646` (2026-03-17). Faults on `main` kept it
-there; each has a PR with a regression test that fails before and passes after,
-and two of them add something that was never there at all:
+This app depends on Rinch through the `../rinch-fixes` path dependency (see
+"Running it" above) rather than a pinned git revision, because `main` was
+missing fixes this app needed and several features it wanted.
+Each carries a PR with a regression test that fails before and passes after,
+and two of them add something that was never there at all. Three have since
+landed on `main`; one was superseded there, its diagnosis credited but its
+diff no longer needed; the rest are still waiting on review.
+
+**Landed on `main`:**
 
 - [joeleaver/rinch#245](https://github.com/joeleaver/rinch/pull/245) — the paint regression
 - [joeleaver/rinch#246](https://github.com/joeleaver/rinch/pull/246) — the viewport scale fault
+- [joeleaver/rinch#270](https://github.com/joeleaver/rinch/pull/270) — the empty-block line-height floor, which is what blanked the search field
+
+**Closed, superseded:**
+
+- [joeleaver/rinch#268](https://github.com/joeleaver/rinch/pull/268) — the Android `ClickContext` viewport, which is what put the overflow menu off screen. Filed against #246 while it was still a narrower mount-time fix; #246's own review widened it into a unified `window_size` contract across all three shells (`RinchApp::layout_viewport`, a shared guarded `rinch_platform::to_logical`) before merging, which fixed the same fault for a different reason. The maintainer credited the diagnosis on closing it, and filed [issue #300](https://github.com/joeleaver/rinch/issues/300) for the two loose ends that widening left behind — addressed by #306, below.
+
+**Still open, unreviewed:**
+
 - [joeleaver/rinch#266](https://github.com/joeleaver/rinch/pull/266) — a long press on Android is a context menu, stage 1 of three
 - [joeleaver/rinch#267](https://github.com/joeleaver/rinch/pull/267) — pointer-cancel semantics, stage 2 of three
-- [joeleaver/rinch#268](https://github.com/joeleaver/rinch/pull/268) — the Android `ClickContext` viewport, which is what put the overflow menu off screen
-- [joeleaver/rinch#270](https://github.com/joeleaver/rinch/pull/270) — the empty-block line-height floor, which is what blanked the search field
 - [joeleaver/rinch#274](https://github.com/joeleaver/rinch/pull/274) — the Android IME's composing region, so autocorrect and swipe reach the document
 - [joeleaver/rinch#281](https://github.com/joeleaver/rinch/pull/281) — a `<textarea>` takes a line break from Enter, and Android's keyboard offers one
 - [joeleaver/rinch#286](https://github.com/joeleaver/rinch/pull/286) — an app can ship its own typefaces and say which CSS names they answer to
 - [joeleaver/rinch#292](https://github.com/joeleaver/rinch/pull/292) — one paint sequence for the painter and the finger, which is what made both FABs dead
 - [joeleaver/rinch#298](https://github.com/joeleaver/rinch/pull/298) — an app can tell Android its system bars sit over a light background, which is what made the clock invisible
+- [joeleaver/rinch#306](https://github.com/joeleaver/rinch/pull/306) — the two loose ends issue #300 named after the #268 review: an inline, unrounded viewport division `dispatch_oncontextmenu` still did, and an architecture doc that never named `window_size`'s unit
 
-The `../rinch-fixes` integration branch carries all of them, which is why the
-long press works in an APK built here and would not in one built against
-`main`. Move the pin once they land.
+The `../rinch-fixes` integration branch carries the still-open fixes above
+(plus the already-landed and superseded ones it was built from), which is why
+the long press works in an APK built here and would not in one built against
+`main`. Move the pin once they land — card A1.
 
-The last of those was found here and filed late. Rinch derives paint order and
+#292 was found here and filed late. Rinch derives paint order and
 hit-test order twice, by different rules, and implements no CSS painting step 8
 — so a `position: absolute; z-index: auto` element over an `overflow: auto`
 sibling loses to it both ways. The fault was reported here as a dead FAB, on the
