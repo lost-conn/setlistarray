@@ -267,6 +267,92 @@ impl Song {
     pub fn has_chart(&self) -> bool {
         !self.attachments.is_empty()
     }
+
+    // ── Attachments ─────────────────────────────────────────────────────
+    //
+    // The three rules the handoff states about charts are rules about a
+    // *song*, so they live on `Song` rather than in a store: they need no
+    // database, no signal and no window, and there is exactly one copy of
+    // each. The store's job is to write the result down.
+    //
+    //   1. The first chart added becomes the primary one.
+    //   2. Expanding a collapsed chart does not make it primary — that is
+    //      view state, and nothing here can be reached from it.
+    //   3. A song with charts always has a primary one; a song with none
+    //      never does.
+    //
+    // Rule 3 is the awkward one, because the card that asked for rules 1 and
+    // 2 does not say what happens when the primary chart is *removed*.
+    // [`settle_primary`](Self::settle_primary) is the answer, and every
+    // mutation below goes through it.
+
+    /// The chart the card shows, or `None` when the song has none.
+    ///
+    /// Read through here rather than off `primary_attachment` directly. The
+    /// field can disagree with `attachments` — a library restored from a
+    /// backup, a row that failed to save, a future migration — and an empty
+    /// card sitting above three collapsed rows is a worse answer than the
+    /// oldest chart. The fallback is the same rule that chose the primary in
+    /// the first place, so a read never disagrees with a write.
+    pub fn primary(&self) -> Option<AttachmentId> {
+        self.primary_attachment
+            .filter(|id| self.attachments.contains(id))
+            .or_else(|| self.attachments.first().copied())
+    }
+
+    /// Attach a chart. The first one becomes primary; every one after it
+    /// joins the collapsed rows under the card.
+    ///
+    /// Attaching the same id twice is a no-op rather than a second row — the
+    /// list is a set that happens to be ordered, and the order is the order
+    /// they were added.
+    pub fn attach(&mut self, id: AttachmentId) {
+        if self.attachments.contains(&id) {
+            return;
+        }
+        self.attachments.push(id);
+        self.settle_primary();
+    }
+
+    /// Remove a chart. `false` if the song never had it.
+    ///
+    /// **When the primary chart is removed, the oldest chart still attached
+    /// takes its place.** The card does not say what should happen, so:
+    /// leaving `primary_attachment` pointing at something that is gone is out
+    /// (rule 3), and clearing it while charts remain is out for the same
+    /// reason — it would leave a song showing an empty card above a list of
+    /// its own charts. Between the two remaining candidates, "the oldest one
+    /// left" is rule 1 applied a second time, and it is the one the user can
+    /// predict: the row directly under the card is the row that moves into
+    /// it.
+    pub fn detach(&mut self, id: AttachmentId) -> bool {
+        let before = self.attachments.len();
+        self.attachments.retain(|a| *a != id);
+        if self.attachments.len() == before {
+            return false;
+        }
+        self.settle_primary();
+        true
+    }
+
+    /// Promote a chart the song already has. `false` — and nothing changed —
+    /// for one it does not, because a primary pointer into another song's
+    /// library is the state rule 3 exists to prevent.
+    pub fn set_primary(&mut self, id: AttachmentId) -> bool {
+        if !self.attachments.contains(&id) {
+            return false;
+        }
+        self.primary_attachment = Some(id);
+        true
+    }
+
+    /// Rule 3, enforced. Keeps a primary that is still valid, promotes the
+    /// oldest chart when it is not, and clears it when there are no charts
+    /// left. Every mutation of `attachments` ends here, which is what makes
+    /// "attachments but no primary" unreachable rather than merely unlikely.
+    fn settle_primary(&mut self) {
+        self.primary_attachment = self.primary();
+    }
 }
 
 /// `3:44` — the form used down the right edge of a setlist.
@@ -412,6 +498,128 @@ mod tests {
         assert!(!song.has_chart());
         song.attachments.push(101);
         assert!(song.has_chart());
+    }
+
+    // ── The attachment rules (card D1) ──────────────────────────────────
+
+    fn with_charts(ids: &[AttachmentId]) -> Song {
+        let mut song = Song::new(1, "Bron-Yr-Aur Stomp", "Led Zeppelin");
+        for id in ids {
+            song.attach(*id);
+        }
+        song
+    }
+
+    #[test]
+    fn the_first_chart_attached_becomes_the_primary_one() {
+        let mut song = Song::new(1, "Carolina", "M. Ward");
+        assert_eq!(song.primary(), None, "a song with no chart has no primary");
+
+        song.attach(101);
+        assert_eq!(song.primary_attachment, Some(101));
+
+        // And nothing after it takes the place.
+        song.attach(102);
+        song.attach(103);
+        assert_eq!(song.primary_attachment, Some(101));
+        assert_eq!(song.attachments, vec![101, 102, 103]);
+    }
+
+    #[test]
+    fn attaching_the_same_chart_twice_does_not_list_it_twice() {
+        let mut song = with_charts(&[101, 102]);
+        song.attach(101);
+        assert_eq!(song.attachments, vec![101, 102]);
+        assert_eq!(song.primary_attachment, Some(101));
+    }
+
+    #[test]
+    fn removing_the_primary_chart_promotes_the_oldest_one_left() {
+        let mut song = with_charts(&[101, 102, 103]);
+        assert!(song.detach(101));
+        assert_eq!(
+            song.primary_attachment,
+            Some(102),
+            "the row directly under the card moves into it"
+        );
+        assert_eq!(song.attachments, vec![102, 103]);
+    }
+
+    #[test]
+    fn removing_a_chart_that_is_not_primary_leaves_the_primary_alone() {
+        let mut song = with_charts(&[101, 102, 103]);
+        assert!(song.detach(103));
+        assert_eq!(song.primary_attachment, Some(101));
+        assert_eq!(song.attachments, vec![101, 102]);
+    }
+
+    #[test]
+    fn removing_a_promoted_chart_promotes_again() {
+        // The rule has to survive being applied twice: this is the sequence
+        // that would leave a dangling pointer if `settle_primary` only ran on
+        // the first removal.
+        let mut song = with_charts(&[101, 102, 103]);
+        song.detach(101);
+        song.detach(102);
+        assert_eq!(song.primary_attachment, Some(103));
+        assert_eq!(song.primary(), Some(103));
+    }
+
+    #[test]
+    fn removing_the_last_chart_leaves_no_primary() {
+        let mut song = with_charts(&[101]);
+        assert!(song.detach(101));
+        assert!(song.attachments.is_empty());
+        assert_eq!(song.primary_attachment, None, "and not a dangling id");
+        assert_eq!(song.primary(), None);
+        assert!(!song.has_chart());
+    }
+
+    #[test]
+    fn removing_a_chart_the_song_never_had_changes_nothing() {
+        let mut song = with_charts(&[101, 102]);
+        let before = song.clone();
+        assert!(!song.detach(999));
+        assert_eq!(song, before);
+    }
+
+    #[test]
+    fn set_primary_promotes_a_chart_the_song_already_has() {
+        let mut song = with_charts(&[101, 102, 103]);
+        assert!(song.set_primary(103));
+        assert_eq!(song.primary(), Some(103));
+        // The list order is the order they were added and does not move.
+        assert_eq!(song.attachments, vec![101, 102, 103]);
+    }
+
+    #[test]
+    fn set_primary_refuses_a_chart_that_is_not_attached() {
+        let mut song = with_charts(&[101, 102]);
+        assert!(!song.set_primary(999));
+        assert_eq!(song.primary(), Some(101), "and did not point at nothing");
+    }
+
+    #[test]
+    fn a_song_with_charts_always_reads_a_primary_even_if_the_field_is_wrong() {
+        // A library edited behind the app's back: the stored pointer names a
+        // chart this song does not have. The card renders the oldest one
+        // rather than nothing at all.
+        let mut song = with_charts(&[101, 102]);
+        song.primary_attachment = Some(999);
+        assert_eq!(song.primary(), Some(101));
+
+        // And the next mutation writes the correct answer down.
+        song.attach(103);
+        assert_eq!(song.primary_attachment, Some(101));
+    }
+
+    #[test]
+    fn a_song_with_charts_and_no_primary_recovers_one() {
+        let mut song = with_charts(&[101, 102]);
+        song.primary_attachment = None;
+        assert_eq!(song.primary(), Some(101));
+        song.detach(102);
+        assert_eq!(song.primary_attachment, Some(101));
     }
 
     #[test]

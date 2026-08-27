@@ -13,7 +13,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
-use rhypedb_engine::database::Database;
+use rhypedb_engine::database::{Database, OpenOptions};
 
 pub mod convert;
 pub mod prefs;
@@ -125,7 +125,44 @@ pub fn open(dir: &DataDir) -> DbResult<Arc<Database>> {
     let schema =
         rhypedb_schema::parser::parse_schema(SCHEMA).map_err(|e| DbError::Schema(e.to_string()))?;
 
-    Database::open(schema, dir.database()).map_err(|e| DbError::Engine(e.to_string()))
+    Database::open_with_options(schema, dir.database(), options())
+        .map_err(|e| DbError::Engine(e.to_string()))
+}
+
+/// The one knob this app turns, and why.
+///
+/// **`background_cover_refresh: false`.** rhypedb's default spawns a worker
+/// thread that reacts to an `update()` on an object something else links *to*
+/// by rewriting the covering blobs embedded in those inbound edges. It is a
+/// read-path optimisation, it is best-effort by design, and its own comment
+/// says a failed refresh is self-healing — but it commits on its own thread,
+/// and the transaction manager detects write-write conflicts by comparing a
+/// transaction's snapshot against everything committed since. A foreground
+/// write that touches the same edge keys a fraction of a second later loses the
+/// race and comes back `write conflict`.
+///
+/// That is not hypothetical. Attaching a chart writes the `Attachment → Song`
+/// link and then updates the song (it now has a primary chart), which queues
+/// exactly such a refresh; deleting that song moments later hit the worker's
+/// commit and failed roughly half the time. It reads as a corrupt library — the
+/// song is still on screen, the fault line says the database refused — and
+/// nothing about it is reproducible.
+///
+/// This app has exactly one writer. It has no use for a background thread that
+/// can make a user's delete fail, and the covers it maintains buy nothing at
+/// this size: the reader falls through to the slower path when a cover is
+/// stale, which is the path a few hundred songs take anyway. So the worker is
+/// off, writes are serial, and a write conflict from here on means something
+/// real rather than a race with a housekeeper.
+///
+/// The alternative — retrying a conflicted write in [`crate::store::Storage`] —
+/// was not taken. It would work, but it turns a deterministic engine into a
+/// probabilistic one and hides the next race instead of removing it.
+fn options() -> OpenOptions {
+    OpenOptions {
+        background_cover_refresh: false,
+        ..OpenOptions::default()
+    }
 }
 
 /// Open a library this same process only just let go of.

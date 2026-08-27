@@ -255,11 +255,12 @@ mod tests {
                 }
             });
             let loaded = storage.load();
+            let attachments = AttachmentsStore::restored(storage, loaded.attachments);
             Self {
                 storage,
-                songs: SongsStore::restored(storage, loaded.songs),
+                songs: SongsStore::restored(storage, attachments, loaded.songs),
                 setlists: SetlistsStore::restored(storage, loaded.setlists),
-                attachments: AttachmentsStore::restored(storage, loaded.attachments),
+                attachments,
                 view: LibraryViewStore::restored(storage),
                 settings: SettingsStore::restored(storage),
             }
@@ -539,13 +540,13 @@ mod tests {
         let s = Session::open(&dir);
         let song = s.songs.add("Carolina", "M. Ward");
 
-        let id = s.attachments.add(song, chart("carolina-chords.pdf")).unwrap();
+        let id = s.songs.attach(song, chart("carolina-chords.pdf")).unwrap();
         let path = s.attachments.directory(id).unwrap();
         assert_eq!(path, dir.attachment(id as u64));
         assert!(path.is_dir());
         assert_eq!(s.attachments.total_bytes(), 412_000);
 
-        s.attachments.delete(id);
+        assert!(s.songs.detach(song, id));
         assert!(!path.exists());
         assert!(s.attachments.get(id).is_none());
     }
@@ -556,8 +557,7 @@ mod tests {
         let id = {
             let s = Session::open(&dir);
             let song = s.songs.add("Carolina", "M. Ward");
-            let id = s.attachments.add(song, chart("carolina-chords.pdf")).unwrap();
-            s.songs.edit(song, |song| song.primary_attachment = Some(id));
+            let id = s.songs.attach(song, chart("carolina-chords.pdf")).unwrap();
             id
         };
 
@@ -569,6 +569,82 @@ mod tests {
         assert_eq!(s.attachments.get(id).unwrap().title, "carolina-chords.pdf");
     }
 
+    /// The whole of D1's lifecycle, and then a restart to prove the answers
+    /// were written down rather than derived on the way past.
+    #[test]
+    fn which_chart_is_primary_survives_attaching_promoting_and_removing() {
+        let dir = scratch("store-primary-lifecycle");
+        let (song, second, third) = {
+            let s = Session::open(&dir);
+            let song = s.songs.add("Bron-Yr-Aur Stomp", "Led Zeppelin");
+
+            let first = s.songs.attach(song, chart("tab.pdf")).unwrap();
+            assert_eq!(s.songs.get(song).unwrap().primary_attachment, Some(first));
+
+            let second = s.songs.attach(song, chart("chords.pdf")).unwrap();
+            let third = s.songs.attach(song, chart("lyrics.pdf")).unwrap();
+            assert_eq!(
+                s.songs.get(song).unwrap().primary_attachment,
+                Some(first),
+                "still the first one added"
+            );
+
+            assert!(s.songs.set_primary(song, third));
+            assert_eq!(s.songs.get(song).unwrap().primary_attachment, Some(third));
+
+            // Removing the promoted one falls back to the oldest still there,
+            // not to the one it displaced.
+            assert!(s.songs.detach(song, third));
+            assert_eq!(s.songs.get(song).unwrap().primary_attachment, Some(first));
+
+            assert!(s.songs.detach(song, first));
+            assert_eq!(s.songs.get(song).unwrap().primary_attachment, Some(second));
+            (song, second, third)
+        };
+
+        let s = Session::open(&dir);
+        let stored = s.songs.get(song).expect("the song came back");
+        assert_eq!(stored.attachments, vec![second]);
+        assert_eq!(stored.primary_attachment, Some(second));
+        assert_eq!(stored.primary(), Some(second));
+        assert_eq!(
+            s.attachments.items.get().len(),
+            1,
+            "and the two removed charts are gone from the library"
+        );
+        assert!(s.attachments.get(third).is_none());
+    }
+
+    #[test]
+    fn removing_a_chart_never_touches_the_song_but_deleting_the_song_takes_the_chart() {
+        let dir = scratch("store-chart-lifetimes");
+        let (kept_song, kept_chart) = {
+            let s = Session::open(&dir);
+            let kept_song = s.songs.add("Ripple", "Grateful Dead");
+            let doomed_song = s.songs.add("Carolina", "M. Ward");
+            let kept_chart = s.songs.attach(kept_song, chart("ripple.pdf")).unwrap();
+            let removed = s.songs.attach(kept_song, chart("spare.pdf")).unwrap();
+            let doomed_chart = s.songs.attach(doomed_song, chart("carolina.pdf")).unwrap();
+            let doomed_dir = s.attachments.directory(doomed_chart).unwrap();
+
+            // Removing a chart is not an edit to the song.
+            assert!(s.songs.detach(kept_song, removed));
+            assert_eq!(s.songs.count(), 2, "both songs are still in the book");
+            assert_eq!(s.songs.get(kept_song).unwrap().title, "Ripple");
+
+            // Deleting a song is.
+            s.songs.delete(doomed_song);
+            assert!(!doomed_dir.exists(), "the chart's bytes went with the song");
+            assert!(s.attachments.get(doomed_chart).is_none());
+            (kept_song, kept_chart)
+        };
+
+        let s = Session::open(&dir);
+        assert_eq!(s.songs.count(), 1);
+        assert_eq!(s.songs.get(kept_song).unwrap().attachments, vec![kept_chart]);
+        assert_eq!(s.attachments.items.get().len(), 1);
+    }
+
     #[test]
     fn a_list_row_never_carries_an_attachment_body() {
         let dir = scratch("store-no-body");
@@ -578,7 +654,16 @@ mod tests {
             let mut typed = chart("Landslide — my version");
             typed.kind = AttachmentKind::Text;
             typed.body = Some("Capo 3. Eb shapes played as C.".into());
-            s.attachments.add(song, typed).unwrap()
+            let id = s.songs.attach(song, typed).unwrap();
+            // Not only after a restart: the chart arrives here carrying its
+            // text, and the list drops it on the way in rather than holding a
+            // megabyte until the next launch tidies up.
+            assert_eq!(s.attachments.get(id).unwrap().body, None);
+            assert_eq!(
+                s.attachments.body(id).as_deref(),
+                Some("Capo 3. Eb shapes played as C.")
+            );
+            id
         };
 
         let s = Session::open(&dir);
@@ -596,7 +681,7 @@ mod tests {
         let path = {
             let s = Session::open(&dir);
             let song = s.songs.add("Carolina", "M. Ward");
-            let id = s.attachments.add(song, chart("carolina-chords.pdf")).unwrap();
+            let id = s.songs.attach(song, chart("carolina-chords.pdf")).unwrap();
             let path = s.attachments.directory(id).unwrap();
             assert!(path.is_dir());
 
@@ -620,7 +705,11 @@ mod tests {
         // A song the screens believe in and the library has never heard of —
         // the shape every failed write takes from up here.
         let phantom = Song::new(9_999, "Carolina", "M. Ward");
-        let songs = SongsStore::restored(storage, vec![phantom]);
+        let songs = SongsStore::restored(
+            storage,
+            AttachmentsStore::restored(storage, Vec::new()),
+            vec![phantom],
+        );
 
         songs.edit(9_999, |song| song.key = Some("G".into()));
 
@@ -641,7 +730,11 @@ mod tests {
     fn a_failed_delete_leaves_the_song_on_screen() {
         let dir = scratch("store-failed-delete");
         let storage = Storage::open(&dir);
-        let songs = SongsStore::restored(storage, vec![Song::new(9_999, "Carolina", "M. Ward")]);
+        let songs = SongsStore::restored(
+            storage,
+            AttachmentsStore::restored(storage, Vec::new()),
+            vec![Song::new(9_999, "Carolina", "M. Ward")],
+        );
 
         songs.delete(9_999);
 
@@ -665,7 +758,11 @@ mod tests {
         );
 
         // The app still runs; it just remembers nothing.
-        let songs = SongsStore::restored(storage, Vec::new());
+        let songs = SongsStore::restored(
+            storage,
+            AttachmentsStore::restored(storage, Vec::new()),
+            Vec::new(),
+        );
         let id = songs.add("Carolina", "M. Ward");
         assert_eq!(songs.get(id).unwrap().title, "Carolina");
     }

@@ -59,7 +59,7 @@
 use rinch::prelude::*;
 use rinch_tabler_icons::TablerIcon;
 
-use crate::model::{Confidence, Day, SetlistId, SongId};
+use crate::model::{AttachmentId, Confidence, Day, SetlistId, SongId};
 use crate::store::{NavStore, Route, SetlistsStore, SongsStore};
 
 /// Surface for a dropdown/context menu panel — the app's `card` token, not
@@ -160,6 +160,79 @@ pub fn SongMenuItems(id: SongId) -> NodeHandle {
                 style: {ITEM_DANGER},
                 onclick: move || songs.delete(id),
                 "Delete song"
+            }
+        }
+    }
+}
+
+/// The menu one attachment gets — **Set as primary** and **Remove
+/// attachment** — opened by long-pressing the primary card or one of the
+/// collapsed rows beneath it.
+///
+/// ## Why this is not an entry in the song's ⋮ menu
+///
+/// Card D1 says "set-primary from the ⋮ menu or long-press", and the obvious
+/// reading is that a row joins `SongMenuItems` above. Wireframe `2d` says
+/// otherwise, and it is deliberate about order: its five entries are Add to
+/// setlist… · Set confidence · Mark played today · Duplicate · Delete song, and
+/// every one of them is an action on *the song*. The handoff puts set-primary
+/// somewhere else entirely — in the sentence describing the collapsed
+/// attachment rows: "Expanding one inlines its content; it does not become
+/// primary. Long-press or the ⋮ menu sets primary."
+///
+/// It has to be there, because "Set as primary" in the song's menu has no
+/// object. A song with three charts would need a submenu naming all three, and
+/// `SongMenuItems` already explains why a submenu cannot work here. So the
+/// answer to "where in `2d`'s order does it go" is: nowhere. It goes on the
+/// thing it is about, and `2d` keeps the five entries it was drawn with.
+///
+/// The way in is long-press — `oncontextmenu`, which rinch#266 now synthesises
+/// from a held touch — exactly as it is for a library row and a setlist card.
+/// The hi-fi draws these rows with a chevron and no ⋮ button, and adding one
+/// would be the only overflow affordance in the app that is visible.
+///
+/// A chart that is already primary gets a one-item menu: there is nothing to
+/// promote it to.
+#[component]
+pub fn AttachmentMenuItems(song: Option<SongId>, attachment: Option<AttachmentId>) -> NodeHandle {
+    let songs = use_store::<SongsStore>();
+    let song = song.unwrap_or_default();
+    let attachment = attachment.unwrap_or_default();
+
+    // Read at build time rather than in a closure: this component is rebuilt
+    // whenever the row it hangs off is, and `DropdownMenuItem`'s close-on-click
+    // only binds items that exist at the menu's first render.
+    let is_primary = songs
+        .get(song)
+        .map(|s| s.primary() == Some(attachment))
+        .unwrap_or(false);
+
+    if is_primary {
+        return rsx! {
+            div {
+                DropdownMenuItem {
+                    left_section: TablerIcon::Trash,
+                    style: {ITEM_DANGER},
+                    onclick: move || { songs.detach(song, attachment); },
+                    "Remove attachment"
+                }
+            }
+        };
+    }
+
+    rsx! {
+        div {
+            DropdownMenuItem {
+                left_section: TablerIcon::Star,
+                style: {ITEM_HIGHLIGHT},
+                onclick: move || { songs.set_primary(song, attachment); },
+                "Set as primary"
+            }
+            DropdownMenuItem {
+                left_section: TablerIcon::Trash,
+                style: {ITEM_DANGER},
+                onclick: move || { songs.detach(song, attachment); },
+                "Remove attachment"
             }
         }
     }

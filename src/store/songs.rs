@@ -1,7 +1,7 @@
 use rinch::prelude::*;
 
-use crate::model::{Confidence, Day, Song, SongId};
-use crate::store::Storage;
+use crate::model::{Attachment, AttachmentId, Confidence, Day, Song, SongId};
+use crate::store::{AttachmentsStore, Storage};
 
 /// The library, in memory, with every mutation written through to disk first.
 ///
@@ -17,22 +17,46 @@ pub struct SongsStore {
     /// library which loses its database mid-session does not reuse an id.
     next_id: Signal<SongId>,
     storage: Storage,
+    /// The charts.
+    ///
+    /// A song *owns* its attachments — the schema says so with a cascade on
+    /// `Attachment.song` — and the three rules on [`Song`] about which chart is
+    /// primary are rules about a song. So attaching and removing live here,
+    /// where `Song.attachments` and `Song.primary_attachment` can move in the
+    /// same operation as the row and the directory, and
+    /// [`AttachmentsStore`]'s mutating half is `pub(super)` so there is no
+    /// second door into it.
+    ///
+    /// The dependency points this way and only this way. A leaf store that had
+    /// to reach back into the library would be a cycle, and there is nothing an
+    /// attachment needs to know about a song.
+    attachments: AttachmentsStore,
 }
 
 impl SongsStore {
-    /// In memory only — no database behind it.
+    /// In memory only — no database behind it. The attachments store it gets
+    /// is its own, and equally in memory: the two have to share a `Storage` or
+    /// half the library would be persistent and half of it would not.
     pub fn new(seed: Vec<Song>) -> Self {
-        Self::restored(Storage::in_memory(), seed)
+        let storage = Storage::in_memory();
+        Self::restored(storage, AttachmentsStore::restored(storage, Vec::new()), seed)
     }
 
     /// The library as it was left, behind the storage that will keep it.
-    pub fn restored(storage: Storage, songs: Vec<Song>) -> Self {
+    pub fn restored(storage: Storage, attachments: AttachmentsStore, songs: Vec<Song>) -> Self {
         let next = songs.iter().map(|s| s.id).max().unwrap_or(0) + 1;
         Self {
             songs: Signal::new(songs),
             next_id: Signal::new(next),
             storage,
+            attachments,
         }
+    }
+
+    /// The charts, for a screen that has a `SongsStore` and would otherwise
+    /// have to pull a second store out of the context to read one.
+    pub fn attachments(self) -> AttachmentsStore {
+        self.attachments
     }
 
     pub fn get(self, id: SongId) -> Option<Song> {
@@ -72,25 +96,122 @@ impl SongsStore {
     }
 
     pub fn edit(self, id: SongId, f: impl FnOnce(&mut Song)) {
-        let Some(mut song) = self.get(id) else { return };
+        let _ = self.try_edit(id, f);
+    }
+
+    /// [`edit`](Self::edit), for callers that have to know whether it landed.
+    ///
+    /// A screen does not: a failed write leaves the row exactly as it was,
+    /// which is the truth, and `Storage` has already recorded why. The
+    /// attachment operations below do, because each is two writes and the
+    /// second failing has to undo the first.
+    fn try_edit(self, id: SongId, f: impl FnOnce(&mut Song)) -> bool {
+        let Some(mut song) = self.get(id) else {
+            return false;
+        };
         f(&mut song);
         if !self
             .storage
             .write("saving a song", |repo| repo.save_song(&song))
         {
-            return;
+            return false;
         }
         self.songs.update(|list| {
             if let Some(slot) = list.iter_mut().find(|s| s.id == id) {
                 *slot = song;
             }
         });
+        true
+    }
+
+    // ── Attachments (card D1) ───────────────────────────────────────────────
+
+    /// Attach a chart: the row, the link to the song, the directory its bytes
+    /// go in, and the song's own list and primary pointer. The first chart a
+    /// song gets becomes its primary one.
+    ///
+    /// `None` means nothing was attached, and in that case the song is exactly
+    /// as it was — including the case where the chart was written and the
+    /// song's own row then refused the pointer, which takes the chart back out
+    /// again. There is no state where a chart exists and no song lists it: an
+    /// unlisted chart is invisible in the UI, immortal on disk, and a size in
+    /// the Storage screen nobody can account for.
+    ///
+    /// The bytes are not written here. A producer — a typed editor (D2), a PDF
+    /// import (D3), a capture (E2) — calls this to mint an id and a directory,
+    /// writes into [`AttachmentsStore::directory`], and calls
+    /// [`detach`](Self::detach) if that write fails.
+    pub fn attach(self, song: SongId, attachment: Attachment) -> Option<AttachmentId> {
+        // `Attachment.song` is what the cascade rides on, so a chart with no
+        // song would be an orphan from the moment it was written.
+        self.get(song)?;
+        let id = self.attachments.insert(song, attachment)?;
+        if !self.try_edit(song, |s| s.attach(id)) {
+            self.attachments.forget(id);
+            return None;
+        }
+        Some(id)
+    }
+
+    /// Remove a chart from a song and take its bytes with it. `false` if the
+    /// song never had it, or if the write did not land.
+    ///
+    /// If it was the primary chart, the oldest chart still attached takes its
+    /// place — [`Song::detach`] is where that rule lives and why.
+    ///
+    /// The bytes go first, for the same reason
+    /// [`AttachmentsStore::forget`](AttachmentsStore) deletes the row before
+    /// the directory. If the song's save then fails, the song lists an id that
+    /// no longer resolves — which every read here already tolerates, and which
+    /// the next launch does not even see, because the link went with the row.
+    /// The other order risks the opposite: a song that has let go of a chart
+    /// still sitting on disk, which nothing will ever clean up.
+    pub fn detach(self, song: SongId, attachment: AttachmentId) -> bool {
+        let Some(current) = self.get(song) else {
+            return false;
+        };
+        if !current.attachments.contains(&attachment) {
+            return false;
+        }
+        if !self.attachments.forget(attachment) {
+            return false;
+        }
+        self.try_edit(song, |s| {
+            s.detach(attachment);
+        })
+    }
+
+    /// Promote one of the song's charts to primary — the ⋮ menu and the
+    /// long-press on a collapsed row. `false`, and nothing written, for a
+    /// chart this song does not have.
+    ///
+    /// Expanding a collapsed row does *not* come through here. That is view
+    /// state and it stays on the screen that owns it.
+    pub fn set_primary(self, song: SongId, attachment: AttachmentId) -> bool {
+        let Some(current) = self.get(song) else {
+            return false;
+        };
+        if !current.attachments.contains(&attachment) {
+            return false;
+        }
+        if current.primary_attachment == Some(attachment) {
+            return true;
+        }
+        self.try_edit(song, |s| {
+            s.set_primary(attachment);
+        })
     }
 
     /// The schema takes the song's attachments with it and drops it from every
     /// setlist. In-memory setlists keep the id until the next launch; nothing
     /// renders for a song that is not there, so it shows as already gone.
+    ///
+    /// Its charts are not left that way. `@on_delete(cascade)` takes the rows
+    /// and `Repo::delete_song` takes the directories, but the attachments
+    /// signal has no way to learn either happened, so the ids are collected
+    /// before the delete and dropped from it afterwards.
     pub fn delete(self, id: SongId) {
+        let doomed = self.get(id).map(|s| s.attachments).unwrap_or_default();
         if !self
             .storage
             .write("deleting a song", |repo| repo.delete_song(id))
@@ -98,6 +219,7 @@ impl SongsStore {
             return;
         }
         self.songs.update(|list| list.retain(|s| s.id != id));
+        self.attachments.forget_all(&doomed);
     }
 
     /// A copy of the song's data under a new id, from the overflow menu.
@@ -170,8 +292,23 @@ pub fn now_millis() -> u64 {
 mod tests {
     use super::*;
 
+    use crate::model::AttachmentKind;
+
     fn store() -> SongsStore {
         SongsStore::new(vec![Song::new(1, "Carolina", "M. Ward")])
+    }
+
+    fn chart(title: &str) -> Attachment {
+        Attachment {
+            id: 0,
+            kind: AttachmentKind::Text,
+            title: title.into(),
+            bytes_on_disk: 900,
+            page_count: None,
+            source_url: None,
+            captured_at: None,
+            body: Some("Capo 3.".into()),
+        }
     }
 
     #[test]
@@ -222,5 +359,145 @@ mod tests {
 
         songs.mark_played(1, Day::new(2026, 6, 2));
         assert_eq!(songs.get(1).unwrap().last_played, Some(Day::new(2026, 6, 2)));
+    }
+
+    // ── D1: attaching, removing and promoting ───────────────────────────────
+
+    #[test]
+    fn the_first_chart_a_song_gets_becomes_its_primary() {
+        let songs = store();
+        let first = songs.attach(1, chart("chords.txt")).expect("attached");
+        assert_eq!(songs.get(1).unwrap().primary_attachment, Some(first));
+
+        let second = songs.attach(1, chart("lyrics.txt")).expect("attached");
+        assert_eq!(
+            songs.get(1).unwrap().primary_attachment,
+            Some(first),
+            "the second one joins the rows under the card"
+        );
+        assert_eq!(songs.get(1).unwrap().attachments, vec![first, second]);
+        assert!(songs.get(1).unwrap().has_chart());
+    }
+
+    #[test]
+    fn attaching_records_the_chart_where_the_screens_look_for_it() {
+        let songs = store();
+        let id = songs.attach(1, chart("chords.txt")).unwrap();
+        // The song's list and the attachment list have to agree the moment the
+        // call returns — song detail reads both, and a card that appears only
+        // after a restart is the bug this seam exists to prevent.
+        assert_eq!(songs.get(1).unwrap().attachments, vec![id]);
+        assert_eq!(songs.attachments().get(id).unwrap().title, "chords.txt");
+    }
+
+    #[test]
+    fn a_chart_cannot_be_attached_to_a_song_that_is_not_there() {
+        let songs = store();
+        assert_eq!(songs.attach(999, chart("chords.txt")), None);
+        assert!(
+            songs.attachments().items.get().is_empty(),
+            "and no orphan row was written"
+        );
+    }
+
+    #[test]
+    fn removing_the_primary_chart_promotes_the_oldest_one_left() {
+        let songs = store();
+        let first = songs.attach(1, chart("chords.txt")).unwrap();
+        let second = songs.attach(1, chart("lyrics.txt")).unwrap();
+        let third = songs.attach(1, chart("tab.txt")).unwrap();
+
+        assert!(songs.detach(1, first));
+
+        let song = songs.get(1).unwrap();
+        assert_eq!(song.attachments, vec![second, third]);
+        assert_eq!(song.primary_attachment, Some(second));
+        assert!(songs.attachments().get(first).is_none(), "and the row went");
+    }
+
+    #[test]
+    fn removing_the_last_chart_leaves_the_song_with_no_primary() {
+        let songs = store();
+        let only = songs.attach(1, chart("chords.txt")).unwrap();
+        assert!(songs.detach(1, only));
+
+        let song = songs.get(1).unwrap();
+        assert!(song.attachments.is_empty());
+        assert_eq!(song.primary_attachment, None);
+        assert!(!song.has_chart());
+    }
+
+    #[test]
+    fn removing_a_chart_leaves_the_song_itself_alone() {
+        let songs = store();
+        songs.edit(1, |s| s.key = Some("G".into()));
+        let id = songs.attach(1, chart("chords.txt")).unwrap();
+
+        songs.detach(1, id);
+
+        let song = songs.get(1).unwrap();
+        assert_eq!(song.title, "Carolina");
+        assert_eq!(song.key.as_deref(), Some("G"), "removing a chart is not an edit");
+        assert_eq!(songs.count(), 1);
+    }
+
+    #[test]
+    fn deleting_a_song_takes_its_charts_and_leaves_another_songs_alone() {
+        let songs = store();
+        let other = songs.add("Ripple", "Grateful Dead");
+        let doomed = songs.attach(1, chart("chords.txt")).unwrap();
+        let kept = songs.attach(other, chart("ripple.txt")).unwrap();
+
+        songs.delete(1);
+
+        assert!(songs.get(1).is_none());
+        assert!(
+            songs.attachments().get(doomed).is_none(),
+            "the chart went with the song, in memory as well as on disk"
+        );
+        assert_eq!(songs.attachments().get(kept).unwrap().title, "ripple.txt");
+        assert_eq!(songs.get(other).unwrap().attachments, vec![kept]);
+    }
+
+    #[test]
+    fn set_primary_promotes_a_chart_the_song_already_has() {
+        let songs = store();
+        let first = songs.attach(1, chart("chords.txt")).unwrap();
+        let second = songs.attach(1, chart("lyrics.txt")).unwrap();
+
+        assert!(songs.set_primary(1, second));
+        assert_eq!(songs.get(1).unwrap().primary_attachment, Some(second));
+        assert_eq!(
+            songs.get(1).unwrap().attachments,
+            vec![first, second],
+            "and the rows do not reshuffle"
+        );
+    }
+
+    #[test]
+    fn set_primary_refuses_a_chart_filed_under_a_different_song() {
+        let songs = store();
+        let other = songs.add("Ripple", "Grateful Dead");
+        let mine = songs.attach(1, chart("chords.txt")).unwrap();
+        let theirs = songs.attach(other, chart("ripple.txt")).unwrap();
+
+        assert!(!songs.set_primary(1, theirs));
+        assert_eq!(songs.get(1).unwrap().primary_attachment, Some(mine));
+    }
+
+    #[test]
+    fn a_duplicate_starts_with_no_charts_of_its_own() {
+        let songs = store();
+        let id = songs.attach(1, chart("chords.txt")).unwrap();
+        let copy = songs.duplicate(1).unwrap();
+
+        let copy = songs.get(copy).unwrap();
+        assert!(copy.attachments.is_empty());
+        assert_eq!(copy.primary_attachment, None);
+        assert_eq!(
+            songs.get(1).unwrap().primary_attachment,
+            Some(id),
+            "and the original keeps its own"
+        );
     }
 }

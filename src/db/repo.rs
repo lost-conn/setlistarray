@@ -558,6 +558,36 @@ mod tests {
         assert!(repo.songs().unwrap()[0].attachments.is_empty());
     }
 
+
+    /// Attaching a chart writes the link *and* then updates the song, because
+    /// the song now has a primary chart to point at. Deleting that song
+    /// afterwards used to fail with `write conflict` about half the time: the
+    /// update queued a cover refresh, and rhypedb's background worker committed
+    /// on top of the same edge keys while the delete was in flight. The library
+    /// looked corrupt and the failure never reproduced twice in a row.
+    ///
+    /// `db::options()` turns that worker off — the reasoning is there — and
+    /// this is the shape that caught it. Forty rounds because one round passed
+    /// perfectly well on the bad build.
+    #[test]
+    fn attaching_a_chart_and_deleting_its_song_is_repeatable() {
+        for round in 0..40 {
+            let dir = scratch(&format!("repo-attach-delete-{round}"));
+            let repo = Repo::open(&dir).unwrap();
+            let owner = repo.create_song(&song("Landslide", "Fleetwood Mac")).unwrap() as SongId;
+            let id = repo.create_attachment(owner, &chart("landslide.txt")).unwrap() as AttachmentId;
+
+            let mut stored = repo.songs().unwrap().into_iter().next().unwrap();
+            stored.primary_attachment = Some(id);
+            repo.save_song(&stored).unwrap();
+
+            repo.delete_song(owner)
+                .unwrap_or_else(|e| panic!("round {round} refused the delete: {e}"));
+            assert!(repo.attachments().unwrap().is_empty());
+            assert!(!dir.attachment(id as u64).exists());
+        }
+    }
+
     #[test]
     fn the_startup_scan_never_reads_an_attachment_body() {
         let dir = scratch("repo-no-body");

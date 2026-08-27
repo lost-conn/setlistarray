@@ -167,7 +167,16 @@ nothing in the UI code assumes either platform. See "Android" below.
   both directions, per-group collapse and truncation, comfortable/compact
   density, search, FAB, bottom nav.
 - **Song detail** — hi-fi. Metadata chips with the tinted key chip, status line,
-  primary attachment card, collapsed other attachments, footer actions.
+  primary attachment card, collapsed other attachments, footer actions. The card
+  is fed by the attachment's own content rather than by skeleton bars: a typed
+  chart renders monospaced with its chord alignment intact, and a kind with
+  nothing to render yet (a PDF before D4, a capture before E2 has extracted its
+  text) says so in one muted line. Tapping a collapsed row inlines it and does
+  not promote it; long-pressing one opens **Set as primary · Remove
+  attachment**. The first chart a song gets becomes its primary one, and
+  removing the primary promotes the oldest chart still attached — see
+  `Song::attach` / `detach` / `set_primary` in `src/model.rs`, which is where
+  those three rules live.
 - **Setlist detail** — hi-fi. Position numbers, the cumulative start-time
   column, the no-chart warning pill, the derived "Before you start" panel,
   Play set. Every value on it is derived inside a reactive closure, because the
@@ -611,7 +620,7 @@ seam every window-backed layout and paint site uses.
   with its tag, its attributes and an empty subtree. `src/capture/reader.rs`
   moves the keeper before it sweeps, for that reason.
 
-### And two about rhypedb
+### And three about rhypedb
 
 - **`@on_delete` reads backwards from how it looks.** The policy is applied to
   the relations pointing *at* the object being deleted, and it acts on their
@@ -620,6 +629,22 @@ seam every window-backed layout and paint site uses.
   cascade that takes a chart with its song has to live on `Attachment.song`,
   with `Song.attachments` as the `@inverse`. `Setlist.songs @on_delete(remove)`
   happens to read correctly under the same rule.
+- **A background thread could lose the app a write, at random.** rhypedb spawns
+  a cover-refresh worker by default: an `update()` on an object something links
+  *to* queues a rewrite of the covering blobs embedded in those inbound edges,
+  and the worker commits it on its own thread. The transaction manager detects
+  write-write conflicts by comparing a transaction's snapshot against everything
+  committed since, so a foreground write touching the same edge keys a moment
+  later loses and comes back `write conflict`. Card D1 walked straight into it:
+  attaching a chart writes the `Attachment → Song` link and then updates the
+  song, and deleting that song immediately afterwards failed **roughly half the
+  time**, differently on every run. `src/db/mod.rs` now opens with
+  `background_cover_refresh: false` — this app has exactly one writer and no use
+  for a housekeeper that can make a delete fail — and
+  `attaching_a_chart_and_deleting_its_song_is_repeatable` runs the sequence
+  forty times, because one round passed perfectly well on the bad build. The
+  alternative, retrying a conflicted write in `Storage`, was not taken: it would
+  work, and it would hide the next race instead of removing it.
 - **Reopening a library the same process just closed races.** rhypedb's
   compaction worker holds a `Weak` to the tree and upgrades it while it works;
   if the last external handle goes during that window, the tree — and the

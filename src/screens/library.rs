@@ -223,8 +223,12 @@ fn expand_group(view: LibraryViewStore, songs: SongsStore, index: usize) {
 
 /// The badge a row's thumb shows, or `None` for the dashed empty thumb.
 fn primary_kind(attachments: AttachmentsStore, song: &Song) -> Option<AttachmentKind> {
-    song.primary_attachment
-        .or_else(|| song.attachments.first().copied())
+    // `Song::primary` is the same rule the card on song detail reads, including
+    // its fallback for a `primary_attachment` that names nothing — so a row's
+    // badge and the card it opens can never disagree about which chart is the
+    // song's. Note it reads the *kind* and nothing else: the body stays on
+    // disk, which is what lets three hundred of these rows be built.
+    song.primary()
         .and_then(|id| attachments.get(id))
         .map(|a| a.kind)
 }

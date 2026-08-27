@@ -56,10 +56,21 @@
 //! today, `/data/data/<package>/files` on a phone, and whatever a restored
 //! backup makes of it in Phase I.
 //!
-//! E2's sequence is therefore: capture into memory, `AttachmentsStore::add`
-//! to mint an id and a directory, `write_into` that directory, and delete the
-//! attachment again if the write fails. Capturing first means a page that
-//! turns out to be a JavaScript shell never leaves a row behind.
+//! E2's sequence is therefore: capture into memory,
+//! `SongsStore::attach` to mint an id and a directory, `write_into` that
+//! directory, and `SongsStore::detach` again if the write fails. Capturing
+//! first means a page that turns out to be a JavaScript shell never leaves a
+//! row behind.
+//!
+//! Card D1 moved that first step. It used to be `AttachmentsStore::add`, which
+//! wrote the row without telling the song about it; attaching is now the song's
+//! operation, because the first chart a song gets becomes its primary one and
+//! only the song can know that. `attach` takes the [`Attachment`] whole, so a
+//! capture fills in `source_url`, `captured_at`, the extracted text as `body`
+//! and its best guess at `bytes_on_disk`, then corrects the size through
+//! `AttachmentsStore::update` once `write_into` has returned the real figure.
+//!
+//! [`Attachment`]: crate::model::Attachment
 
 pub mod assets;
 pub mod detect;

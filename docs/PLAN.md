@@ -264,7 +264,7 @@ So C6 ships tap-driven controls, which work identically on both platforms:
 
 | # | Card | Wireframe | Size |
 | --- | --- | --- | --- |
-| D1 | Attachment model plumbing: add/remove, first attachment becomes primary automatically, set-primary from the ⋮ menu, `card`-styled primary panel fed by real content. | — | S |
+| D1 | ~~Attachment model plumbing: add/remove, first attachment becomes primary automatically, set-primary from the ⋮ menu, `card`-styled primary panel fed by real content.~~ Done — see below. | — | ✔ |
 | D2 | Typed lyrics/chords: a full-screen editor writing a `Text` attachment; monospace-ish rendering in the card. | `1j` | M |
 | D3 | Pick a PDF via `rfd` file dialog, copy into the attachments directory, record page count. | — | S |
 | D4 | PDF rendering per decision 3 — rasterise pages on import, cache PNGs, show page one in the card. | L? |
@@ -272,6 +272,36 @@ So C6 ships tap-driven controls, which work identically on both platforms:
 
 **Done when** all three attachment kinds attach, display in the card, and open
 full screen.
+
+### D1: where the rules live, and what D2–D5 inherit
+
+- **`Song::attach` / `detach` / `set_primary` / `primary`** (`src/model.rs`) are
+  the three rules and their read, as pure functions over a `Song`. One private
+  `settle_primary` ends every mutation, which is what makes "a song with charts
+  and no primary" unreachable rather than merely unlikely.
+- **Removing the primary chart promotes the oldest chart still attached.** The
+  card did not say; leaving a dangling pointer and clearing it while charts
+  remain are both out, and "the oldest one left" is the first-becomes-primary
+  rule applied a second time — the row directly under the card is the row that
+  moves into it.
+- **`SongsStore::attach` / `detach` / `set_primary` are the store seam.** A song
+  owns its charts (the schema's cascade says so), so the song store holds the
+  attachments store and `AttachmentsStore`'s mutating half is `pub(super)`.
+  There is no second door: a producer cannot write a chart the song does not
+  list. `AttachmentsStore::update` stays public for the metadata a producer
+  learns later — D4's page count, E2's real size on disk.
+- **Expanding a collapsed row is view state**, a `Signal<Vec<AttachmentId>>` on
+  the screen, and cannot reach a write.
+- **Set-primary is not in wireframe `2d`.** It is in the handoff's sentence
+  about the collapsed rows, and it has no unambiguous object at song level, so
+  it lives on a per-attachment long-press menu — `menu::AttachmentMenuItems`,
+  which explains the reasoning in full. `2d` keeps its five entries.
+- **The card degrades honestly.** No skeleton bars: a kind with nothing to
+  render says which of the three reasons it is. D4 and E2/E5 replace those
+  sentences with content, and `song_detail::preview` is the one place to change.
+- **There is still no way to add an attachment from the UI.** D1 is the
+  plumbing; D2, D3 and E2 are the three producers, and `+ Add attachment` stays
+  inert until one exists.
 
 ---
 

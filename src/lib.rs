@@ -102,9 +102,13 @@ pub fn app() -> NodeHandle {
     }
 
     let settings = create_store(SettingsStore::restored(storage));
-    create_store(SongsStore::restored(storage, loaded.songs));
+    // Attachments first: a song owns its charts, so `SongsStore` is handed the
+    // store it mutates them through. The dependency runs one way (see the note
+    // on `SongsStore::attachments`), so there is no wiring-up step and no
+    // half-built store either of them can be observed in.
+    let attachments = create_store(AttachmentsStore::restored(storage, loaded.attachments));
+    create_store(SongsStore::restored(storage, attachments, loaded.songs));
     create_store(SetlistsStore::restored(storage, loaded.setlists));
-    create_store(AttachmentsStore::restored(storage, loaded.attachments));
     create_store(LibraryViewStore::restored(storage));
     create_store(PlaybackStore::new());
     let nav = create_store(NavStore::new());

@@ -91,6 +91,13 @@ pub const ACCENTS: [Accent; 4] = [RUST, PINE, INDIGO, PLUM];
 
 pub const FONT_DISPLAY: &str = "Newsreader, Georgia, serif";
 pub const FONT_UI: &str = "Karla, 'Helvetica Neue', sans-serif";
+/// Charts only. A chord chart is written with the chord names sitting over the
+/// syllable they land on, and that alignment is the notation — in a
+/// proportional face it is noise. The handoff never names a family for it (it
+/// draws the preview as grey bars), so this is the standard fallback chain and
+/// nothing is bundled for it; on Android it resolves to the system monospace.
+pub const FONT_MONO: &str =
+    "'DejaVu Sans Mono', 'Liberation Mono', 'Courier New', ui-monospace, monospace";
 
 /// Horizontal padding for every screen.
 pub const SCREEN_PAD: &str = "22px";
@@ -164,6 +171,7 @@ pub fn tokens(dark: bool, accent: Accent) -> String {
          --sla-accent-dim: {dim};\
          --sla-font-display: {FONT_DISPLAY};\
          --sla-font-ui: {FONT_UI};\
+         --sla-font-mono: {FONT_MONO};\
          background: var(--sla-paper);\
          color: var(--sla-ink);\
          font-family: var(--sla-font-ui);"
@@ -190,4 +198,10 @@ pub const T_LABEL_CAPS: &str =
 pub const T_SECTION_CAPS: &str =
     "font-weight: 600; font-size: 12px; letter-spacing: 0.10em; text-transform: uppercase;";
 pub const T_CHIP: &str = "font-weight: 500; font-size: 13px;";
+/// One line of a chart, in the attachment card and in an expanded row.
+/// `white-space: pre` and a monospaced face together are what keep a chord
+/// over its syllable; `overflow: hidden` keeps a long line from widening the
+/// card rather than wrapping in the middle of a lyric.
+pub const T_CHART: &str = "font-family: var(--sla-font-mono); font-size: 12.5px; \
+     line-height: 1.5; white-space: pre; overflow: hidden;";
 pub const T_NAV_LABEL: &str = "font-size: 11px; letter-spacing: 0.04em;";

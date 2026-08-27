@@ -3,10 +3,10 @@
 use rinch::prelude::*;
 use rinch_tabler_icons::TablerIcon;
 
-use crate::menu::{MENU_SURFACE, SongMenuItems};
-use crate::model::{Attachment, Song, SongId, fmt_duration};
+use crate::menu::{AttachmentMenuItems, FULL_WIDTH_TARGET, MENU_SURFACE, SongMenuItems};
+use crate::model::{Attachment, AttachmentId, AttachmentKind, Song, SongId, fmt_duration};
 use crate::store::{AttachmentsStore, NavStore, Route, SetlistsStore, SongsStore};
-use crate::theme::{SCREEN_PAD, T_BODY, T_DETAIL_TITLE, T_META, T_META_SMALL};
+use crate::theme::{SCREEN_PAD, T_BODY, T_CHART, T_DETAIL_TITLE, T_META, T_META_SMALL};
 use crate::ui::{ConfidenceDots, IconButton, MetaChip, icon};
 
 #[component]
@@ -16,6 +16,11 @@ pub fn SongDetail(id: Option<SongId>) -> NodeHandle {
     let setlists = use_store::<SetlistsStore>();
     let attachments = use_store::<AttachmentsStore>();
     let menu_open = Signal::new(false);
+    // Which collapsed rows are open. Purely view state: expanding a row inlines
+    // its content and nothing else — it does not promote it, and it is not
+    // remembered past this screen. The mutation seam is `SongsStore::attach` /
+    // `detach` / `set_primary`, and none of it can be reached from here.
+    let expanded = Signal::new(Vec::<AttachmentId>::new());
 
     let id = id.unwrap_or_default();
 
@@ -26,11 +31,6 @@ pub fn SongDetail(id: Option<SongId>) -> NodeHandle {
     };
 
     let chips = metadata_chips(&song);
-    let all = attachments.many(&song.attachments);
-    let primary = song
-        .primary_attachment
-        .and_then(|pid| all.iter().find(|a| a.id == pid).cloned())
-        .or_else(|| all.first().cloned());
     let set_count = setlists.containing(id).len();
 
     // Facts that follow the confidence word, each only when it exists.
@@ -102,21 +102,117 @@ pub fn SongDetail(id: Option<SongId>) -> NodeHandle {
                     span { style: {format!("{T_META}")}, {status_tail.clone()} }
                 }
 
-                // Primary attachment card.
-                {primary_card(__scope, primary.clone())}
-
-                // Other attachments, collapsed. Expanding one inlines it; it
-                // does not become primary.
-                for att in other_attachments(attachments, songs, id) {
+                // Primary attachment card, and the collapsed rows under it.
+                //
+                // Both are derived on read rather than at mount: attaching a
+                // chart, removing one or promoting another has to redraw this
+                // block, and a value computed once when the screen opened
+                // cannot. `for` over a nought-or-one vector stands in for the
+                // `if let` the macro has no reactive form of, and every helper
+                // below takes only `Copy` arguments so a nested closure can
+                // call it.
+                for att in primary_of(songs, attachments, id) {
+                    let menu_open = Signal::new(false);
                     div {
                         key: {att.id},
-                        style: "display: flex; align-items: center; gap: 8px; padding: 12px 0; \
-                                border-bottom: 1px solid var(--sla-hairline-soft);",
-                        span { style: "font-weight: 500; font-size: 15px; flex: 1;",
-                            {format!("{} · {}", att.title, att.kind.descriptor())}
+                        oncontextmenu: move || menu_open.set(true),
+                        DropdownMenu {
+                            opened_fn: move || menu_open.get(),
+                            on_close: move || menu_open.set(false),
+                            position: "bottom-start",
+                            style: {FULL_WIDTH_TARGET},
+                            DropdownMenuTarget {
+                                style: {FULL_WIDTH_TARGET},
+                                div {
+                                    style: "background: var(--sla-card); border-radius: 16px; \
+                                            padding: 16px 18px; margin-top: 14px; \
+                                            box-shadow: var(--sla-card-shadow);",
+                                    div { style: "display: flex; align-items: center; gap: 8px;",
+                                        div { style: "flex: 1; min-width: 0;",
+                                            div { style: "font-weight: 600; font-size: 15px;", {att.title.clone()} }
+                                            div { style: {format!("{T_META_SMALL} margin-top: 2px;")},
+                                                {primary_subtitle(&att)}
+                                            }
+                                        }
+                                        span { style: "color: var(--sla-accent); display: flex;",
+                                            {icon(__scope, TablerIcon::Maximize, 18)}
+                                        }
+                                    }
+
+                                    // The chart itself, as far as it exists.
+                                    // Nothing here is a skeleton: a kind with
+                                    // no renderable content says so.
+                                    div { style: "margin-top: 14px; display: flex; flex-direction: column;",
+                                        for (index, line, note) in preview_of_primary(songs, attachments, id) {
+                                            div {
+                                                key: {index},
+                                                style: {if note {
+                                                    format!("{T_META_SMALL} margin-top: 4px;")
+                                                } else {
+                                                    T_CHART.to_string()
+                                                }},
+                                                {line.clone()}
+                                            }
+                                        }
+                                    }
+
+                                    div { style: {format!("{T_META_SMALL} margin-top: 14px;")},
+                                        "Tap to open full screen"
+                                    }
+                                }
+                            }
+                            DropdownMenuDropdown {
+                                style: {MENU_SURFACE},
+                                AttachmentMenuItems { song: {id}, attachment: {att.id} }
+                            }
                         }
-                        span { style: "color: var(--sla-muted); display: flex;",
-                            {icon(__scope, TablerIcon::ChevronDown, 17)}
+                    }
+                }
+
+                // Other attachments, collapsed. Tapping one inlines it; it does
+                // not become primary. Long-press opens the menu that does.
+                for (index, label, open) in other_rows(songs, attachments, id, expanded) {
+                    let menu_open = Signal::new(false);
+                    div {
+                        key: {index},
+                        oncontextmenu: move || menu_open.set(true),
+                        style: "border-bottom: 1px solid var(--sla-hairline-soft);",
+                        DropdownMenu {
+                            opened_fn: move || menu_open.get(),
+                            on_close: move || menu_open.set(false),
+                            position: "bottom-start",
+                            style: {FULL_WIDTH_TARGET},
+                            DropdownMenuTarget {
+                                style: {FULL_WIDTH_TARGET},
+                                div {
+                                    onclick: move || toggle_expanded(songs, attachments, id, index, expanded),
+                                    style: "display: flex; align-items: center; gap: 8px; padding: 12px 0;",
+                                    span { style: "font-weight: 500; font-size: 15px; flex: 1;",
+                                        {label.clone()}
+                                    }
+                                    span { style: "color: var(--sla-muted); display: flex;",
+                                        {icon(__scope, if open { TablerIcon::ChevronUp } else { TablerIcon::ChevronDown }, 17)}
+                                    }
+                                }
+                                for (line_index, line, note) in preview_of_row(songs, attachments, id, index, expanded) {
+                                    div {
+                                        key: {line_index},
+                                        style: {if note {
+                                            format!("{T_META_SMALL} padding-bottom: 4px;")
+                                        } else {
+                                            T_CHART.to_string()
+                                        }},
+                                        {line.clone()}
+                                    }
+                                }
+                            }
+                            DropdownMenuDropdown {
+                                style: {MENU_SURFACE},
+                                AttachmentMenuItems {
+                                    song: {id},
+                                    attachment: {other_id(songs, attachments, id, index).unwrap_or_default()},
+                                }
+                            }
                         }
                     }
                 }
@@ -173,68 +269,367 @@ fn metadata_chips(song: &Song) -> Vec<(String, bool)> {
     chips
 }
 
-/// The card the primary attachment gets: filename, page count, a preview of
-/// the content, and the tap target for the full-screen viewer. Empty when the
-/// song has no attachment yet.
-#[component]
-fn primary_card(att: Option<Attachment>) -> NodeHandle {
-    let Some(att) = att else {
-        return rsx! { div {} };
-    };
-    let subtitle = match att.page_count {
-        Some(n) => format!("primary · {n} pages"),
-        None => "primary".to_string(),
-    };
+/// How many lines of a chart the card shows before it stops. The card is a
+/// preview — the viewer (D5) is where a chart is read.
+const PREVIEW_LINES: usize = 8;
 
-    rsx! {
-        div {
-            style: "background: var(--sla-card); border-radius: 16px; padding: 16px 18px; \
-                    margin-top: 14px; box-shadow: var(--sla-card-shadow);",
-            div { style: "display: flex; align-items: center; gap: 8px;",
-                div { style: "flex: 1; min-width: 0;",
-                    div { style: "font-weight: 600; font-size: 15px;", {att.title.clone()} }
-                    div { style: {format!("{T_META_SMALL} margin-top: 2px;")}, {subtitle.clone()} }
-                }
-                span { style: "color: var(--sla-accent); display: flex;",
-                    {icon(__scope, TablerIcon::Maximize, 18)}
-                }
-            }
-
-            // Content preview. A real attachment renders its own body here;
-            // skeleton bars stand in until the viewer exists.
-            div { style: "margin-top: 14px; display: flex; flex-direction: column; gap: 8px;",
-                for i in 0u8..6 {
-                    div {
-                        key: i,
-                        style: {
-                            let w = 100 - (i as u32 % 3) * 14;
-                            format!("height: 8px; border-radius: 4px; width: {w}%; background: var(--sla-skeleton);")
-                        },
-                    }
-                }
-            }
-
-            div { style: {format!("{T_META_SMALL} margin-top: 14px;")}, "Tap to open full screen" }
-        }
-    }
-}
-
-/// Everything except the primary attachment, recomputed from the stores so
-/// the `for` loop captures only `Copy` values.
-fn other_attachments(
-    attachments: AttachmentsStore,
+/// The primary attachment, as a nought-or-one vector so `rsx!`'s `for` can
+/// stand in for an `if let`. Recomputed from the stores, so it takes only
+/// `Copy` arguments and can be called from inside a reactive closure.
+fn primary_of(
     songs: SongsStore,
+    attachments: AttachmentsStore,
     id: SongId,
 ) -> Vec<Attachment> {
+    songs
+        .get(id)
+        .and_then(|song| song.primary())
+        .and_then(|primary| attachments.get(primary))
+        .into_iter()
+        .collect()
+}
+
+/// Everything except the primary chart, in the order it was attached.
+fn others(songs: SongsStore, attachments: AttachmentsStore, id: SongId) -> Vec<Attachment> {
     let Some(song) = songs.get(id) else {
         return Vec::new();
     };
-    let primary = song
-        .primary_attachment
-        .or_else(|| song.attachments.first().copied());
+    let primary = song.primary();
     attachments
         .many(&song.attachments)
         .into_iter()
         .filter(|a| Some(a.id) != primary)
         .collect()
+}
+
+/// One collapsed row per non-primary chart: `(index, label, is expanded)`.
+///
+/// Rows are addressed by index rather than by the attachment itself, because
+/// the `rsx!` closures nested inside a row can only capture `Copy` values —
+/// the pattern `songs_in_group` in the library uses, for the same reason.
+/// Reading `expanded` here is what re-runs the list when a row opens.
+fn other_rows(
+    songs: SongsStore,
+    attachments: AttachmentsStore,
+    id: SongId,
+    expanded: Signal<Vec<AttachmentId>>,
+) -> Vec<(usize, String, bool)> {
+    let open = expanded.get();
+    others(songs, attachments, id)
+        .into_iter()
+        .enumerate()
+        .map(|(index, a)| {
+            (
+                index,
+                format!("{} · {}", a.title, a.kind.descriptor()),
+                open.contains(&a.id),
+            )
+        })
+        .collect()
+}
+
+fn other_id(
+    songs: SongsStore,
+    attachments: AttachmentsStore,
+    id: SongId,
+    index: usize,
+) -> Option<AttachmentId> {
+    others(songs, attachments, id).get(index).map(|a| a.id)
+}
+
+/// Open or close one collapsed row. A signal, a screen, and no write: this is
+/// the whole of "expanding a row does not make it primary".
+fn toggle_expanded(
+    songs: SongsStore,
+    attachments: AttachmentsStore,
+    id: SongId,
+    index: usize,
+    expanded: Signal<Vec<AttachmentId>>,
+) {
+    let Some(attachment) = other_id(songs, attachments, id, index) else {
+        return;
+    };
+    expanded.update(|open| match open.iter().position(|a| *a == attachment) {
+        Some(at) => {
+            open.remove(at);
+        }
+        None => open.push(attachment),
+    });
+}
+
+/// `primary · 2 pages`, or `primary · saved page` for a kind that has no pages
+/// to count.
+fn primary_subtitle(attachment: &Attachment) -> String {
+    match attachment.page_count {
+        Some(n) => format!("primary · {n} pages"),
+        None => format!("primary · {}", attachment.kind.descriptor()),
+    }
+}
+
+fn preview_of_primary(
+    songs: SongsStore,
+    attachments: AttachmentsStore,
+    id: SongId,
+) -> Vec<(usize, String, bool)> {
+    match songs.get(id).and_then(|song| song.primary()) {
+        Some(primary) => preview(attachments, primary),
+        None => Vec::new(),
+    }
+}
+
+/// The inlined content of an expanded row, and nothing at all for a closed one.
+fn preview_of_row(
+    songs: SongsStore,
+    attachments: AttachmentsStore,
+    id: SongId,
+    index: usize,
+    expanded: Signal<Vec<AttachmentId>>,
+) -> Vec<(usize, String, bool)> {
+    let Some(attachment) = other_id(songs, attachments, id, index) else {
+        return Vec::new();
+    };
+    if !expanded.get().contains(&attachment) {
+        return Vec::new();
+    }
+    preview(attachments, attachment)
+}
+
+/// What one chart shows: `(index, text, is a note)`.
+///
+/// A note is the muted sentence that stands in when there is nothing to render
+/// — which is most of Phase D's job still to come, and the reason this replaced
+/// six grey bars. A skeleton says "loading"; three of the six lines here would
+/// have been a lie about a PDF that has never been rasterised.
+///
+/// This is the one place in the app that reads an attachment body, and it costs
+/// one object read per redraw of one card. The performance budget's rule is
+/// about *rows* — the library builds three hundred of them and must not touch a
+/// body for any — and the row list still cannot: `AttachmentsStore::items`
+/// never carries one.
+fn preview(attachments: AttachmentsStore, id: AttachmentId) -> Vec<(usize, String, bool)> {
+    let Some(attachment) = attachments.get(id) else {
+        return Vec::new();
+    };
+    let body = attachments.body(id).unwrap_or_default();
+
+    // Leading blank lines are an artefact of however the text was written and
+    // waste a preview that is only eight lines tall. Blank lines *inside* the
+    // chart separate its verses, so they are kept — as a space, because an
+    // empty text node collapses and the gap it stands for disappears with it.
+    let all: Vec<&str> = body.lines().skip_while(|l| l.trim().is_empty()).collect();
+    let mut lines: Vec<(usize, String, bool)> = all
+        .iter()
+        .take(PREVIEW_LINES)
+        .enumerate()
+        .map(|(index, line)| {
+            let text = if line.trim().is_empty() {
+                " ".to_string()
+            } else {
+                line.to_string()
+            };
+            (index, text, false)
+        })
+        .collect();
+
+    if let Some(note) = note(&attachment, lines.len(), all.len()) {
+        lines.push((lines.len(), note, true));
+    }
+    lines
+}
+
+/// The honest sentence under a preview: how much was left out, or why there was
+/// nothing to show.
+fn note(attachment: &Attachment, shown: usize, total: usize) -> Option<String> {
+    if total > shown {
+        let rest = total - shown;
+        let lines = if rest == 1 { "line" } else { "lines" };
+        return Some(format!("+{rest} more {lines}"));
+    }
+    if shown > 0 {
+        return None;
+    }
+    // Nothing rendered. Say which of the three reasons it is, rather than
+    // drawing bars that imply something is on its way.
+    Some(
+        match attachment.kind {
+            AttachmentKind::Text => "Nothing typed yet.",
+            // D4 rasterises a PDF's pages to PNGs beside it on import; until
+            // then the app has the file and no way to look inside it.
+            AttachmentKind::Pdf => "No page preview yet.",
+            // E2 writes `page.html` into the directory and extracts the text
+            // beside it. A capture made before that lands has the page and no
+            // extract, and rendering the page itself is E5.
+            AttachmentKind::CapturedPage => "Saved on this device. No preview yet.",
+        }
+        .to_string(),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Attachment, AttachmentKind, Song};
+
+    fn text(body: Option<&str>) -> Attachment {
+        Attachment {
+            id: 0,
+            kind: AttachmentKind::Text,
+            title: "chords.txt".into(),
+            bytes_on_disk: 40,
+            page_count: None,
+            source_url: None,
+            captured_at: None,
+            body: body.map(str::to_string),
+        }
+    }
+
+    fn of_kind(kind: AttachmentKind) -> Attachment {
+        Attachment {
+            kind,
+            body: None,
+            ..text(None)
+        }
+    }
+
+    /// The stores are `Copy` handles over signals, which is all these helpers
+    /// need — no window, no database, no component.
+    fn library(charts: Vec<Attachment>) -> (SongsStore, AttachmentsStore, SongId) {
+        let songs = SongsStore::new(vec![Song::new(1, "Carolina", "M. Ward")]);
+        for chart in charts {
+            songs.attach(1, chart).expect("attached");
+        }
+        (songs, songs.attachments(), 1)
+    }
+
+    #[test]
+    fn the_card_shows_the_primary_chart_and_the_rows_show_the_rest() {
+        let (songs, attachments, id) = library(vec![
+            text(Some("Capo 3")),
+            Attachment { title: "lyrics.txt".into(), ..text(None) },
+        ]);
+
+        let card = primary_of(songs, attachments, id);
+        assert_eq!(card.len(), 1);
+        assert_eq!(card[0].title, "chords.txt");
+
+        let rows = other_rows(songs, attachments, id, Signal::new(Vec::new()));
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].1, "lyrics.txt · typed");
+        assert!(!rows[0].2, "and it starts closed");
+    }
+
+    #[test]
+    fn a_song_with_no_charts_draws_neither_a_card_nor_a_row() {
+        let (songs, attachments, id) = library(Vec::new());
+        assert!(primary_of(songs, attachments, id).is_empty());
+        assert!(other_rows(songs, attachments, id, Signal::new(Vec::new())).is_empty());
+    }
+
+    #[test]
+    fn expanding_a_row_inlines_its_content_and_does_not_make_it_primary() {
+        let (songs, attachments, id) = library(vec![
+            text(Some("Capo 3")),
+            Attachment {
+                title: "lyrics.txt".into(),
+                ..text(Some("Blue jean baby"))
+            },
+        ]);
+        let expanded = Signal::new(Vec::new());
+        let primary_before = songs.get(id).unwrap().primary_attachment;
+
+        assert!(preview_of_row(songs, attachments, id, 0, expanded).is_empty());
+
+        toggle_expanded(songs, attachments, id, 0, expanded);
+
+        let lines = preview_of_row(songs, attachments, id, 0, expanded);
+        assert_eq!(lines[0].1, "Blue jean baby");
+        assert_eq!(
+            songs.get(id).unwrap().primary_attachment,
+            primary_before,
+            "expanding is view state and writes nothing"
+        );
+        assert!(other_rows(songs, attachments, id, expanded)[0].2, "the chevron flips");
+
+        // And it closes again.
+        toggle_expanded(songs, attachments, id, 0, expanded);
+        assert!(preview_of_row(songs, attachments, id, 0, expanded).is_empty());
+    }
+
+    #[test]
+    fn a_typed_chart_renders_its_own_text() {
+        let (songs, attachments, id) = library(vec![text(Some("G       D
+Carolina"))]);
+        let lines = preview_of_primary(songs, attachments, id);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].1, "G       D");
+        assert_eq!(lines[1].1, "Carolina");
+        assert!(lines.iter().all(|(_, _, note)| !note), "no note is needed");
+    }
+
+    #[test]
+    fn a_long_chart_stops_and_says_how_much_is_left() {
+        let body: String = (0..20).map(|n| format!("line {n}
+")).collect();
+        let (songs, attachments, id) = library(vec![text(Some(&body))]);
+        let lines = preview_of_primary(songs, attachments, id);
+        assert_eq!(lines.len(), PREVIEW_LINES + 1);
+        assert_eq!(lines[PREVIEW_LINES], (PREVIEW_LINES, "+12 more lines".into(), true));
+    }
+
+    #[test]
+    fn a_blank_line_between_verses_survives_but_a_leading_one_does_not() {
+        let (songs, attachments, id) = library(vec![text(Some("
+
+verse one
+
+verse two"))]);
+        let lines = preview_of_primary(songs, attachments, id);
+        assert_eq!(lines[0].1, "verse one");
+        assert_eq!(lines[1].1, " ", "the gap is kept, as something with a height");
+        assert_eq!(lines[2].1, "verse two");
+    }
+
+    /// The card the handoff draws is a preview of *content*. Where there is
+    /// none, this app says so rather than drawing the six grey bars the hi-fi
+    /// uses as a placeholder — those would claim a PDF had a preview coming.
+    #[test]
+    fn a_kind_with_nothing_to_render_says_so_instead_of_faking_it() {
+        for (kind, expected) in [
+            (AttachmentKind::Pdf, "No page preview yet."),
+            (AttachmentKind::CapturedPage, "Saved on this device. No preview yet."),
+            (AttachmentKind::Text, "Nothing typed yet."),
+        ] {
+            let (songs, attachments, id) = library(vec![of_kind(kind)]);
+            let lines = preview_of_primary(songs, attachments, id);
+            assert_eq!(lines.len(), 1, "one note, and no skeleton bars");
+            assert_eq!(lines[0].1, expected);
+            assert!(lines[0].2, "and it is styled as a note, not as a chart");
+        }
+    }
+
+    #[test]
+    fn a_pdf_names_its_page_count_and_a_typed_chart_names_itself() {
+        let pdf = Attachment {
+            title: "tab.pdf".into(),
+            page_count: Some(2),
+            ..of_kind(AttachmentKind::Pdf)
+        };
+        assert_eq!(primary_subtitle(&pdf), "primary · 2 pages");
+        assert_eq!(primary_subtitle(&text(None)), "primary · typed");
+    }
+
+    #[test]
+    fn removing_the_primary_chart_moves_the_row_under_it_into_the_card() {
+        let (songs, attachments, id) = library(vec![
+            text(Some("Capo 3")),
+            Attachment { title: "lyrics.txt".into(), ..text(None) },
+        ]);
+        let first = songs.get(id).unwrap().attachments[0];
+
+        songs.detach(id, first);
+
+        let card = primary_of(songs, attachments, id);
+        assert_eq!(card[0].title, "lyrics.txt");
+        assert!(other_rows(songs, attachments, id, Signal::new(Vec::new())).is_empty());
+    }
 }
