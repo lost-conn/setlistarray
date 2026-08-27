@@ -13,10 +13,13 @@ the wireframes (turn 2 wins over turn 1) for flow.
 ## Running it
 
 ```bash
-./scripts/install-fonts.sh   # once — Newsreader and Karla, via fontconfig
 cargo run --release          # always --release; debug Stylo/Parley is slow
 cargo run --release -- --seed   # ...with the demo library, if yours is empty
 ```
+
+The typefaces are in the binary (`crate::FONTS`), so nothing has to be
+installed first. `scripts/install-fonts.sh` still puts Newsreader and Karla on
+the system for other tools that want them; the app no longer needs it.
 
 The library lives in `$XDG_DATA_HOME/setlistarray` (`~/.local/share/setlistarray`):
 a rhypedb database in `db/`, and one directory per attachment under
@@ -406,13 +409,13 @@ reasoning, and the two options not taken, are in
   close to illegible — the clock especially. The app never tells Android that
   its bars sit over a light background, so the system keeps the light-content
   icons it starts with. Card K12.
-- **The fonts do not ship.** Newsreader and Karla are picked up from the system
-  font list, which on Android does not have them, and the APK settles it: seven
-  entries, none of them a font. The app falls back to the system serif and
-  Roboto. Rinch can register font bytes (`RinchApp::register_font_data`) but
-  neither `run_android` nor `ThemeProviderProps` exposes a way to reach it, so
-  `assets/fonts/` cannot get in yet. Small upstream fix; the app is already
-  carrying the files.
+- ~~**The fonts do not ship.**~~ Fixed upstream and consumed here. Rinch's
+  shells now take an `&[AppFont]` — the file plus the CSS names it answers to —
+  and register it before the first layout pass; `crate::FONTS` in `src/lib.rs`
+  carries Newsreader, Karla and DejaVu Sans Mono into the `.so` on both
+  platforms. On the moto, `Songs` is Newsreader rather than Noto Serif (the
+  title's ink is 196px wide where Noto Serif's was 226px) and the body is Karla
+  rather than Roboto.
 - **Keep-awake** does not exist in Rinch's Android backend at all. Card K5.
 - **`ClickContext`'s viewport is wrong by one scale factor on Android** — and
   it is no longer harmless. See below.
@@ -432,11 +435,17 @@ reasoning, and the two options not taken, are in
   keyboard with nothing telling the app it happened. The editor carries 320px of
   scrollable emptiness below its field so the screen can always be scrolled far
   enough by hand. Also a stopgap.
-- **`font-family: monospace` does not resolve on Android**, so a chord chart is
-  drawn proportional and its alignment — which *is* the notation — is lost. It
-  is the same fault as "The fonts do not ship" above and it has the same fix;
-  it is called out separately because it is the one place where the missing
-  font costs meaning rather than style. Correct on the desktop.
+- ~~**`font-family: monospace` does not resolve on Android**~~ — and it was
+  worse than "the app's font is missing". Every name in `--sla-font-mono`
+  resolved to *nothing* on the phone, `monospace` included: the platform's
+  generic map looks up a font family literally named `monospace`, and no font
+  file is called that, so the whole stack fell through to the proportional
+  script fallback. Fixed by shipping DejaVu Sans Mono and declaring it as
+  `monospace`. On the moto, in the chart editor's own field, the chord `D` in
+  column 18 sat 112px left of the syllable it belongs over; it now sits on it
+  exactly (both at x=515), and the two lines finally share one column width
+  (20.3px against 20.3px, where the chord line's spaces used to measure 9.2px
+  against the lyric line's 15.5px).
 
 ### A third Rinch fault, found by reading
 

@@ -55,6 +55,34 @@ use ui::icon;
 pub const WIDTH: u32 = 393;
 pub const HEIGHT: u32 = 852;
 
+/// The typefaces this build carries, on either platform.
+///
+/// The app used to rely on the machine having Newsreader and Karla installed
+/// (`scripts/install-fonts.sh`), which a phone never does — so on Android the
+/// whole identity fell back to Noto Serif and Roboto, and `--sla-font-mono`
+/// resolved to nothing at all. Shipping the files is the only version of this
+/// that holds on a device somebody else owns.
+///
+/// What each face answers to is what matters here, and it is not symmetric:
+///
+/// * **Newsreader** and **Karla** are named directly by `--sla-font-display`
+///   and `--sla-font-ui`, so registering them is enough. They also take the
+///   `serif` / `sans-serif` slots so that the *tails* of those same stacks land
+///   back on the app's own faces rather than on whatever the device has.
+/// * **DejaVu Sans Mono** is the one that has to claim `monospace`. It is
+///   already the first name in `--sla-font-mono`, so bundling it would be
+///   enough for this app's own charts — but `monospace` is what a chart *is*
+///   asking for, and on Android nothing answers it. See `theme::FONT_MONO`.
+///
+/// The italic is registered by name only: it is the same family as the roman,
+/// and `font-style: italic` picks it from within that family.
+const FONTS: &[AppFont] = &[
+    AppFont::serif(include_bytes!("../assets/fonts/Newsreader[opsz,wght].ttf")),
+    AppFont::new(include_bytes!("../assets/fonts/Newsreader-Italic[opsz,wght].ttf")),
+    AppFont::sans_serif(include_bytes!("../assets/fonts/Karla[wght].ttf")),
+    AppFont::monospace(include_bytes!("../assets/fonts/DejaVuSansMono.ttf")),
+];
+
 /// The bottom nav's own breathing room, below which the gesture-bar inset is
 /// not allowed to shrink it. A device with no gesture bar reports 0.
 const NAV_MIN_GAP: f32 = 10.0;
@@ -225,9 +253,9 @@ fn start(dir: DataDir, seed: bool) {
 
 /// The desktop entry point.
 ///
-/// Newsreader and Karla are picked up from the system font list. Run
-/// `scripts/install-fonts.sh` once if the app falls back to Georgia and a
-/// default sans.
+/// The typefaces come from [`FONTS`], not from the system font list, so
+/// `scripts/install-fonts.sh` is no longer what stands between this and
+/// Georgia.
 #[cfg(not(target_os = "android"))]
 pub fn run_desktop() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -235,7 +263,14 @@ pub fn run_desktop() {
     // flag, for screenshots and for anyone who wants something to look at
     // before they have typed a song in.
     start(DataDir::desktop_default(), args.iter().any(|a| a == "--seed"));
-    run_with_theme("SetListArray", WIDTH, HEIGHT, app, theme_props());
+    run_with_fonts(
+        "SetListArray",
+        WIDTH,
+        HEIGHT,
+        app,
+        Some(theme_props()),
+        FONTS,
+    );
 }
 
 /// The Android entry point's half of the same work: the platform hands us the

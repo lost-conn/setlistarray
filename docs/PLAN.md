@@ -56,7 +56,7 @@ Two more crates change earlier assumptions:
 | ~~No writable-storage accessor~~ | Done (K3): `internal_data_path()` is threaded in at `android_main` | — |
 | No wallpaper colours | Material You accent extraction, per the handoff's resolution order | `WallpaperManager.getWallpaperColors()` over JNI; until then `AccentChoice::FromSystem` falls back to Rust, which the handoff explicitly allows |
 | ~~Status bar space is hard-coded 44px~~ | Done (K2): `src/platform.rs` | — |
-| No way to register an app-bundled font | Newsreader and Karla are not on Android, and the APK carries no font files; on the phone the app falls back to the system serif and Roboto | `RinchApp::register_font_data` exists but neither `run_android` nor `ThemeProviderProps` reaches it — add a font-data field to `ThemeProviderProps`, or a `run_android_with_fonts` |
+| ~~No way to register an app-bundled font~~ | Done (upstream): `run_android_with_fonts` takes `&[AppFont]`, and `src/lib.rs`'s `FONTS` carries Newsreader, Karla and DejaVu Sans Mono into the `.so`. The mono one is what makes `font-family: monospace` resolve at all on Android — it resolved to *nothing* before, so every chart rendered proportional | — |
 | `RinchActivity` never opts into edge-to-edge | Predicted double insets below Android 15; **disproved on Android 13** — the window spans the whole display and `safe_area()` applies the strip once. Still untested on 15, which enforces edge-to-edge for an SDK 35 target | `setDecorFitsSystemWindows(false)` (or the pre-30 flags) in `RinchActivity.onCreate`, if 15 turns out to need it |
 | `android_runtime.rs` passes `logical_size` as `handle_event`'s `window_size` | `ClickContext`'s viewport reads `physical / scale²`; popup placement, not tap targets. No longer theoretical — the long-press overflow menu flips up and lands outside the list on the phone | Pass `physical_size`. Desktop equivalent was joeleaver/rinch#246; this is a follow-up PR |
 
@@ -334,9 +334,10 @@ gives it a second thing to choose.
 **Two framework gaps shape this screen and are not fixable from it** — a
 `<textarea>` cannot scroll to its caret, and tapping to place the caret lands
 about a line off. The first is worked around by growing the field with its
-value; the second is not worked around at all. Both, plus the missing Android
-monospace font and the missing IME inset, are written up under "Still open" in
-the README.
+value; the second is not worked around at all. Both, plus the missing IME
+inset, are written up under "Still open" in the README. The third one this
+screen was written around — no monospaced face on Android — is fixed: the app
+now ships DejaVu Sans Mono and declares it as `monospace`.
 
 **One latent fault fell out of it.** `AttachmentsStore::update` projected the
 body away *inside* `Signal::update`'s closure, and `strip_body` reads another

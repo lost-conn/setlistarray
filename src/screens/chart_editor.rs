@@ -51,12 +51,14 @@
 //! a narrow column count and two spare rows, because over-guessing costs blank
 //! paper and under-guessing swallows a line.
 //!
-//! Two more, neither fixable from here, both worth knowing about while reading
-//! this file: tapping to place the caret lands about one line high in a
-//! multi-line field, and `font-family: monospace` does not resolve on Android
-//! (`register_font_data` is unreachable from `run_android`), so the mono face
-//! below is a desktop-only promise today. The CSS is written correctly anyway —
-//! the day the fonts ship, this screen is already asking for the right one.
+//! One more, not fixable from here: tapping to place the caret lands about one
+//! line high in a multi-line field.
+//!
+//! The mono face below used to be a desktop-only promise — `font-family:
+//! monospace` resolved to nothing on Android and the chords floated over the
+//! wrong syllables. The app now ships DejaVu Sans Mono and declares it as
+//! `monospace` (`crate::FONTS`), so the CSS here, which was always written for
+//! the face it wanted, finally gets it.
 
 use rinch::prelude::*;
 use rinch_tabler_icons::TablerIcon;

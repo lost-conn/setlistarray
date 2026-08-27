@@ -94,8 +94,14 @@ pub const FONT_UI: &str = "Karla, 'Helvetica Neue', sans-serif";
 /// Charts only. A chord chart is written with the chord names sitting over the
 /// syllable they land on, and that alignment is the notation — in a
 /// proportional face it is noise. The handoff never names a family for it (it
-/// draws the preview as grey bars), so this is the standard fallback chain and
-/// nothing is bundled for it; on Android it resolves to the system monospace.
+/// draws the preview as grey bars), so this is the standard fallback chain.
+///
+/// The first name in it is bundled (`crate::FONTS`) and so is always the one
+/// that answers. That is not belt-and-braces: on Android *every* name in this
+/// list resolves to nothing — `monospace` included, because the platform's
+/// generic map looks for a family literally called `monospace` and no font
+/// file is called that — so before the app carried the file, a chart on a
+/// phone came out proportional and stopped meaning anything.
 pub const FONT_MONO: &str =
     "'DejaVu Sans Mono', 'Liberation Mono', 'Courier New', ui-monospace, monospace";
 
