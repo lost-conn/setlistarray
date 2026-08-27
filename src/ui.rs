@@ -41,9 +41,17 @@ pub fn IconButton(glyph: Option<TablerIcon>, size: Option<u32>, onclick: Option<
 }
 
 /// A filter/sort chip. `active` uses ink-on-paper; `selected` is the softer
-/// fill state used for the current sort field.
+/// fill state used for the current sort field. `glyph` is an optional
+/// trailing icon — e.g. the sort direction arrow — drawn as a path so it
+/// reads as part of the label rather than a second element.
 #[component]
-pub fn Chip(label: String, active: bool, selected: bool, onclick: Option<Callback>) -> NodeHandle {
+pub fn Chip(
+    label: String,
+    glyph: Option<TablerIcon>,
+    active: bool,
+    selected: bool,
+    onclick: Option<Callback>,
+) -> NodeHandle {
     let colors = if active {
         "background: var(--sla-ink); color: var(--sla-paper);"
     } else if selected {
@@ -55,8 +63,12 @@ pub fn Chip(label: String, active: bool, selected: bool, onclick: Option<Callbac
     rsx! {
         div {
             onclick: move || { if let Some(cb) = &onclick { cb.invoke() } },
-            style: {format!("{T_CHIP} {colors} border-radius: 999px; padding: 6px 12px; white-space: nowrap;")},
+            style: {format!("{T_CHIP} {colors} border-radius: 999px; padding: 6px 12px; \
+                             white-space: nowrap; display: flex; align-items: center; gap: 4px;")},
             {label.clone()}
+            if let Some(g) = glyph {
+                {icon(__scope, g, 14)}
+            }
         }
     }
 }

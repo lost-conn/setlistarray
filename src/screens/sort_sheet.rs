@@ -6,12 +6,13 @@
 //! (songs missing the field sort last). This file is only the sheet.
 
 use rinch::prelude::*;
+use rinch_tabler_icons::TablerIcon;
 
 use crate::derive::{direction_arrow, field_fill_count, fill_note, is_sparse_field};
 use crate::store::{GroupBy, LibraryViewStore, NavStore, SongsStore, SortDir, SortField};
 use crate::theme::{SCREEN_PAD, T_BODY, T_META_SMALL, T_ROW_TITLE};
 use crate::ui::{
-    Chip, SheetFooter, SheetHandle, sheet_panel_style, sheet_root_style, sheet_scrim_style,
+    Chip, SheetFooter, SheetHandle, icon, sheet_panel_style, sheet_root_style, sheet_scrim_style,
 };
 
 /// `2c` draws 562 of 720; on the 393×852 viewport the designs assume, that is
@@ -120,8 +121,10 @@ pub fn SortGroupSheet() -> NodeHandle {
                                 {row.side.clone()}
                             }
                             span {
-                                style: {format!("font-size: 15px; line-height: 1; color: {arrow_color};")},
-                                {row.arrow}
+                                style: {format!("display: flex; align-items: center; color: {arrow_color};")},
+                                if let Some(glyph) = row.arrow {
+                                    {icon(__scope, glyph, 15)}
+                                }
                             }
                         }
                     }
@@ -147,7 +150,7 @@ struct Row {
     /// The words to the right of the name: the direction this row would sort
     /// in, or — for a field hardly anyone has filled in — why it will not help.
     side: String,
-    arrow: &'static str,
+    arrow: Option<TablerIcon>,
 }
 
 /// The ten metadata rows, recomputed from the stores. Takes only `Copy`
@@ -175,9 +178,9 @@ fn rows(view: LibraryViewStore, songs: SongsStore) -> Vec<Row> {
                     field.direction_label(dir).to_string()
                 },
                 arrow: if sparse && !active {
-                    ""
+                    None
                 } else {
-                    direction_arrow(field, dir)
+                    Some(direction_arrow(field, dir))
                 },
             }
         })

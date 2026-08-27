@@ -1,4 +1,5 @@
 use rinch::prelude::*;
+use rinch_tabler_icons::TablerIcon;
 
 use crate::model::Song;
 use crate::store::Storage;
@@ -87,7 +88,7 @@ impl SortField {
         let asc = dir == SortDir::Asc;
         match self {
             SortField::Artist | SortField::Title | SortField::Key | SortField::Tuning => {
-                if asc { "A → Z" } else { "Z → A" }
+                if asc { "A to Z" } else { "Z to A" }
             }
             SortField::Confidence => {
                 if asc {
@@ -104,13 +105,13 @@ impl SortField {
                 }
             }
             SortField::Tempo => {
-                if asc { "slow → fast" } else { "fast → slow" }
+                if asc { "slow to fast" } else { "fast to slow" }
             }
             SortField::Duration => {
-                if asc { "short → long" } else { "long → short" }
+                if asc { "short to long" } else { "long to short" }
             }
             SortField::Capo => {
-                if asc { "low → high" } else { "high → low" }
+                if asc { "low to high" } else { "high to low" }
             }
         }
     }
@@ -171,10 +172,10 @@ pub enum SortDir {
 }
 
 impl SortDir {
-    pub fn arrow(self) -> &'static str {
+    pub fn arrow(self) -> TablerIcon {
         match self {
-            SortDir::Asc => "↑",
-            SortDir::Desc => "↓",
+            SortDir::Asc => TablerIcon::ArrowNarrowUp,
+            SortDir::Desc => TablerIcon::ArrowNarrowDown,
         }
     }
 

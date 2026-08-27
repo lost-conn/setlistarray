@@ -5,6 +5,8 @@
 //! plain functions — no signals, no stores — means the rules the screens are
 //! thin over can be tested without a window.
 
+use rinch_tabler_icons::TablerIcon;
+
 use crate::model::{Confidence, Day, Setlist, Song, fmt_duration};
 use crate::store::{Group, GroupBy, SortDir, SortField};
 
@@ -442,11 +444,11 @@ pub fn is_sparse_field(songs: &[Song], field: SortField) -> bool {
 /// The arrow beside a sort row. It points the way the row's own words read,
 /// which is not always the way the field sorts: `Asc` on a date field means
 /// "newest first", and newest-first reads downward. Everything else ascends.
-pub fn direction_arrow(field: SortField, dir: SortDir) -> &'static str {
+pub fn direction_arrow(field: SortField, dir: SortDir) -> TablerIcon {
     let downward = matches!(field, SortField::LastPlayed | SortField::DateAdded);
     match (dir, downward) {
-        (SortDir::Asc, false) | (SortDir::Desc, true) => "↑",
-        (SortDir::Asc, true) | (SortDir::Desc, false) => "↓",
+        (SortDir::Asc, false) | (SortDir::Desc, true) => TablerIcon::ArrowNarrowUp,
+        (SortDir::Asc, true) | (SortDir::Desc, false) => TablerIcon::ArrowNarrowDown,
     }
 }
 
@@ -954,13 +956,13 @@ mod tests {
 
     #[test]
     fn the_arrow_follows_the_words_beside_it_not_the_comparator() {
-        // "A → Z" reads up the alphabet; "newest first" reads down the calendar.
-        assert_eq!(direction_arrow(SortField::Artist, SortDir::Asc), "↑");
-        assert_eq!(direction_arrow(SortField::Artist, SortDir::Desc), "↓");
-        assert_eq!(direction_arrow(SortField::LastPlayed, SortDir::Asc), "↓");
-        assert_eq!(direction_arrow(SortField::LastPlayed, SortDir::Desc), "↑");
-        assert_eq!(direction_arrow(SortField::DateAdded, SortDir::Asc), "↓");
-        assert_eq!(direction_arrow(SortField::Tempo, SortDir::Asc), "↑");
+        // "A to Z" reads up the alphabet; "newest first" reads down the calendar.
+        assert_eq!(direction_arrow(SortField::Artist, SortDir::Asc), TablerIcon::ArrowNarrowUp);
+        assert_eq!(direction_arrow(SortField::Artist, SortDir::Desc), TablerIcon::ArrowNarrowDown);
+        assert_eq!(direction_arrow(SortField::LastPlayed, SortDir::Asc), TablerIcon::ArrowNarrowDown);
+        assert_eq!(direction_arrow(SortField::LastPlayed, SortDir::Desc), TablerIcon::ArrowNarrowUp);
+        assert_eq!(direction_arrow(SortField::DateAdded, SortDir::Asc), TablerIcon::ArrowNarrowDown);
+        assert_eq!(direction_arrow(SortField::Tempo, SortDir::Asc), TablerIcon::ArrowNarrowUp);
     }
 
     #[test]
@@ -968,7 +970,11 @@ mod tests {
         for field in SortField::ALL {
             for dir in [SortDir::Asc, SortDir::Desc] {
                 assert!(!field.direction_label(dir).is_empty(), "{field:?}");
-                assert!(["↑", "↓"].contains(&direction_arrow(field, dir)), "{field:?}");
+                assert!(
+                    [TablerIcon::ArrowNarrowUp, TablerIcon::ArrowNarrowDown]
+                        .contains(&direction_arrow(field, dir)),
+                    "{field:?}"
+                );
             }
             // Reversing has to actually change what the row says.
             assert_ne!(

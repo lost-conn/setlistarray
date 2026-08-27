@@ -73,7 +73,8 @@ pub fn Library() -> NodeHandle {
                     onclick: move || nav.sort_sheet_open.set(true),
                 }
                 Chip {
-                    label: {|| format!("{} {}", view.sort_field.get().label(), view.sort_dir.get().arrow())},
+                    label: {|| view.sort_field.get().label().to_string()},
+                    glyph: {|| Some(view.sort_dir.get().arrow())},
                     active: false,
                     selected: true,
                     onclick: move || nav.sort_sheet_open.set(true),
@@ -83,12 +84,6 @@ pub fn Library() -> NodeHandle {
                     active: false,
                     selected: false,
                     onclick: move || nav.sort_sheet_open.set(true),
-                }
-                Chip {
-                    label: "≣",
-                    active: false,
-                    selected: false,
-                    onclick: move || view.toggle_density(),
                 }
             }
 
