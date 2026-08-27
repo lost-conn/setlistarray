@@ -23,6 +23,8 @@ mod android;
 pub mod capture;
 pub mod db;
 mod derive;
+#[cfg(test)]
+mod gesture_reachability;
 mod menu;
 mod model;
 pub mod platform;
