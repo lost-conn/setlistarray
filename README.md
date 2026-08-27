@@ -574,10 +574,19 @@ and two of them add something that was never there at all:
 - [joeleaver/rinch#267](https://github.com/joeleaver/rinch/pull/267) — pointer-cancel semantics, stage 2 of three
 - [joeleaver/rinch#268](https://github.com/joeleaver/rinch/pull/268) — the Android `ClickContext` viewport, which is what put the overflow menu off screen
 - [joeleaver/rinch#270](https://github.com/joeleaver/rinch/pull/270) — the empty-block line-height floor, which is what blanked the search field
+- [joeleaver/rinch#274](https://github.com/joeleaver/rinch/pull/274) — the Android IME's composing region, so autocorrect and swipe reach the document
+- [joeleaver/rinch#281](https://github.com/joeleaver/rinch/pull/281) — a `<textarea>` takes a line break from Enter, and Android's keyboard offers one
+- [joeleaver/rinch#286](https://github.com/joeleaver/rinch/pull/286) — an app can ship its own typefaces and say which CSS names they answer to
 
 The `../rinch-fixes` integration branch carries all of them, which is why the
 long press works in an APK built here and would not in one built against
 `main`. Move the pin once they land.
+
+One fault found here has **no PR yet**: rinch's painter and hit-testing derive
+their ordering separately, so a `position: absolute; z-index: auto` element over
+an `overflow: auto` sibling paints on top but hit-tests underneath. Both FABs
+carry a `z-index: 10` workaround. It is not Android-specific and it reproduces
+on the desktop.
 
 ### The paint regression
 
