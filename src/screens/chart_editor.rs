@@ -51,8 +51,13 @@
 //! a narrow column count and two spare rows, because over-guessing costs blank
 //! paper and under-guessing swallows a line.
 //!
-//! One more, not fixable from here: tapping to place the caret lands about one
-//! line high in a multi-line field.
+//! Tapping to place the caret used to land a line off, and that one is fixed
+//! rather than worked around: this field is an inline-block the surrounding
+//! text flow positions, so the anonymous block wrapping it carries the padding
+//! of the column above (22px across, 14px down). Paint and hit testing both
+//! added that back; the caret arithmetic summed the parent chain and did not,
+//! so a tap was measured against a box 14px above the painted one — 0.89 of a
+//! 15.71px line, and so a line. Fixed upstream in joeleaver/rinch#310.
 //!
 //! The mono face below used to be a desktop-only promise — `font-family:
 //! monospace` resolved to nothing on Android and the chords floated over the
