@@ -35,6 +35,7 @@ mod ui;
 use std::sync::OnceLock;
 
 use rinch::prelude::*;
+use rinch::reactive::Effect;
 use rinch_tabler_icons::TablerIcon;
 
 use db::DataDir;
@@ -130,6 +131,15 @@ pub fn app() -> NodeHandle {
     }
 
     let settings = create_store(SettingsStore::restored(storage));
+
+    // The status bar and the gesture bar are the OS's to draw, but what they
+    // are drawn *over* is `--sla-paper`, and Android has no way to see it: its
+    // default is white glyphs, which on the light theme's cream is barely
+    // there. An effect rather than a call, because dark mode is flipped at
+    // runtime and the bars have to follow it, not just the mode the app
+    // launched in. Nothing platform-specific here — `platform` is where the
+    // desktop's version of this (nothing at all) lives.
+    Effect::new(move || platform::set_light_system_bars(!settings.dark_mode.get()));
     // Attachments first: a song owns its charts, so `SongsStore` is handed the
     // store it mutates them through. The dependency runs one way (see the note
     // on `SongsStore::attachments`), so there is no wiring-up step and no

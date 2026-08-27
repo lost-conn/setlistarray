@@ -1,11 +1,16 @@
-//! The one thing the two platforms genuinely disagree about in layout: how much
-//! of the screen the app is not allowed to draw in.
+//! The system bars: how much of the screen the app is not allowed to draw in,
+//! and which way round the OS should draw the bits it puts there.
 //!
 //! Android hands back physical pixels — the status bar, the navigation or
 //! gesture bar, and the display cutout — which have to be divided by the
 //! display density to become the CSS pixels the stylesheet is written in.
 //! The desktop has no such thing, so it stands in the numbers a phone would
 //! report, because the desktop window is a phone-shaped preview of one.
+//!
+//! The clock and the battery icon are Android's to draw, not ours, and it has
+//! no way of knowing what colour the app painted underneath them —
+//! [`set_light_system_bars`] is how it is told. The desktop window has no such
+//! bars, so there it is nothing.
 //!
 //! Nothing above this module knows which platform it is on.
 
@@ -68,6 +73,29 @@ pub fn safe_area() -> SafeArea {
 pub fn safe_area() -> SafeArea {
     SafeArea::PHONE_STANDIN
 }
+
+/// Tell the OS which way to draw the status and navigation bars' own contents.
+///
+/// `true` means the app has painted something light under them, so the clock,
+/// the battery, the signal icons and the gesture pill should all be dark. The
+/// system's default is the opposite — white glyphs, for a dark app — which on
+/// this app's cream `--sla-paper` is barely there at all.
+///
+/// Both bars take the same answer here because the app is one shade end to end:
+/// the theme paints the whole page, and the strip behind each bar is that page.
+/// Rinch keeps them apart so an app with dark bottom chrome can differ.
+///
+/// Unlike [`safe_area`] this is not read once at mount — it is written whenever
+/// the theme changes, so the bars follow a runtime flip of dark mode rather
+/// than only the mode the app started in.
+#[cfg(target_os = "android")]
+pub fn set_light_system_bars(light: bool) {
+    rinch_android::display::set_light_status_bars(light);
+    rinch_android::display::set_light_navigation_bars(light);
+}
+
+#[cfg(not(target_os = "android"))]
+pub fn set_light_system_bars(_light: bool) {}
 
 #[cfg(test)]
 mod tests {
