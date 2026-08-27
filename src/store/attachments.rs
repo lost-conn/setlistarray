@@ -99,9 +99,17 @@ impl AttachmentsStore {
         {
             return false;
         }
-        self.items.update(|list| {
+        // Projected *before* the update, not inside it. `Signal::update` holds
+        // the signal store's `RefCell` borrowed for as long as its closure
+        // runs, and `strip_body` asks `Storage` whether there is a repository —
+        // which is another signal read. Doing that from inside here panics
+        // with "RefCell already mutably borrowed", and it took until card D2
+        // for anything to call this on a persistent library and find out.
+        // `insert` above already had the order right.
+        let listed = strip_body(attachment, self.storage);
+        self.items.update(move |list| {
             if let Some(slot) = list.iter_mut().find(|a| a.id == id) {
-                *slot = strip_body(attachment, self.storage);
+                *slot = listed;
             }
         });
         true

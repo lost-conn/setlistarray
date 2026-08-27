@@ -265,7 +265,7 @@ So C6 ships tap-driven controls, which work identically on both platforms:
 | # | Card | Wireframe | Size |
 | --- | --- | --- | --- |
 | D1 | ~~Attachment model plumbing: add/remove, first attachment becomes primary automatically, set-primary from the ⋮ menu, `card`-styled primary panel fed by real content.~~ Done — see below. | — | ✔ |
-| D2 | Typed lyrics/chords: a full-screen editor writing a `Text` attachment; monospace-ish rendering in the card. | `1j` | M |
+| D2 | ~~Typed lyrics/chords: a full-screen editor writing a `Text` attachment; monospace-ish rendering in the card.~~ Done — see below. | `1j` | ✔ |
 | D3 | Pick a PDF via `rfd` file dialog, copy into the attachments directory, record page count. | — | S |
 | D4 | PDF rendering per decision 3 — rasterise pages on import, cache PNGs, show page one in the card. | L? |
 | D5 | Attachment viewer: full-screen dark chrome, page prev/next, zoom, rotate, auto-hiding chrome that returns on tap. | `1k` | M |
@@ -302,6 +302,47 @@ full screen.
 - **There is still no way to add an attachment from the UI.** D1 is the
   plumbing; D2, D3 and E2 are the three producers, and `+ Add attachment` stays
   inert until one exists.
+
+### D2: a screen with no wireframe, and four decisions
+
+`1j` names the row that opens this editor and never draws what is behind it;
+`1k` is the viewer. So D2 is the minimal reading of the card — full-screen
+`✕ / title / Save`, one field, a `Text` attachment — wearing `1j`'s own chrome,
+because `song_form.rs` is the closest sibling and the only full-screen-form
+pattern the app has. `src/screens/chart_editor.rs` opens with the reasoning.
+
+- **Save creates the attachment; opening the screen does not.** `attach` mints
+  a row *and* a directory, and the first chart a song gets becomes its primary
+  one — so create-on-open would litter a directory per abandoned edit and let
+  an empty ghost take the card away from a real chart.
+- **`✕` asks, but only over changed text.** `song_form` discards silently and
+  is right to for two short fields; a verse someone typed out, with no undo
+  anywhere in this app, is not that. An untouched editor still closes straight
+  back.
+- **An empty body is refused, not written.** Emptying an existing chart and
+  saving is a *removal*, and there is already one, on the long-press menu,
+  where a destructive action looks like one. The refusal says so.
+- **An existing typed chart edits in the same screen**, reached from
+  `menu::AttachmentMenuItems`, which grows an **Edit lyrics / chords…** entry
+  for `AttachmentKind::Text` only. The primary card's own tap is spoken for —
+  it opens the viewer, which is D5.
+
+`+ Add attachment` on song detail is live and goes straight here, with a muted
+sub-line saying so. It becomes the three-row chooser `1j` draws when D3 or E2
+gives it a second thing to choose.
+
+**Two framework gaps shape this screen and are not fixable from it** — a
+`<textarea>` cannot scroll to its caret, and tapping to place the caret lands
+about a line off. The first is worked around by growing the field with its
+value; the second is not worked around at all. Both, plus the missing Android
+monospace font and the missing IME inset, are written up under "Still open" in
+the README.
+
+**One latent fault fell out of it.** `AttachmentsStore::update` projected the
+body away *inside* `Signal::update`'s closure, and `strip_body` reads another
+signal to do it — which panics with "RefCell already mutably borrowed" the
+moment anything calls it on a persistent library. D2 is the first caller;
+`insert` had the order right all along.
 
 ---
 

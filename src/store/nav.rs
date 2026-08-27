@@ -1,6 +1,6 @@
 use rinch::prelude::*;
 
-use crate::model::{SetlistId, SongId};
+use crate::model::{AttachmentId, SetlistId, SongId};
 
 /// Two bottom-nav tabs only. Settings is a gear in each tab's header.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -20,6 +20,13 @@ pub enum Route {
     /// editing arrives carrying the song it is about to overwrite.
     AddSong,
     EditSong(SongId),
+    /// The typed lyrics/chords editor (D2) — the screen behind `1j`'s
+    /// `TXT · Type lyrics / chords · ›` row, which the handoff never drew.
+    /// One screen serves both jobs here too: `chart: None` writes a new
+    /// `Text` attachment on Save, `Some(id)` reopens that one. The song is
+    /// carried because a chart cannot exist without one — `attach` needs it,
+    /// and ✕ goes back to it.
+    TypeChart { song: SongId, chart: Option<AttachmentId> },
     /// Wireframe screens still to be built out.
     Performance(SetlistId),
 }

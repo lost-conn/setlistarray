@@ -1,4 +1,5 @@
 mod add_to_setlist;
+mod chart_editor;
 mod library;
 mod setlist_detail;
 mod setlist_picker;
@@ -9,6 +10,7 @@ mod sort_sheet;
 mod stub;
 
 pub use add_to_setlist::AddToSetlistSheet;
+pub use chart_editor::ChartEditor;
 pub use library::Library;
 pub use setlist_detail::SetlistDetail;
 pub use setlist_picker::SetlistPicker;

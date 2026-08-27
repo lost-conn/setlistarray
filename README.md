@@ -202,7 +202,27 @@ nothing in the UI code assumes either platform. See "Android" below.
   autocompletes against the artists already in the book, with the `use
   "<typed>"` escape hatch. Reached from the library FAB (add) and from song
   detail's pencil or a row's overflow menu (edit). Its **Attachments** section
-  is not built — those are Phase D.
+  is not built — those are Phase D, and the one producer that exists lives on
+  song detail instead (below).
+- **Typed lyrics / chords** — card D2, and **the handoff never drew this
+  screen**: `1j` names the row that opens it (`TXT · Type lyrics / chords · ›`)
+  and stops, `1k` is the viewer. So it is the minimal reading of the card,
+  wearing `1j`'s own chrome: full-screen `✕ · Lyrics / chords · Save` over one
+  field in the app's mono face, writing a `Text` attachment. Reached from song
+  detail's `+ Add attachment` — which is live now, and says underneath that
+  typing is what it currently does, because PDFs (D3) and saved pages (E2) are
+  not built. An existing typed chart reopens in the same screen from its
+  long-press menu's **Edit lyrics / chords…**.
+
+  Save is the only writer, as on the form above it. Nothing is created by
+  *opening* the editor: a chart minted on arrival and abandoned would be an
+  empty ghost holding the primary card. `✕` over changed text asks before
+  discarding — an inline strip, not a dialog — and goes straight back when
+  nothing was typed. An empty body is refused rather than written, and the
+  refusal points at **Remove attachment** rather than inventing a second way to
+  delete a chart. The chart is named after its first line of text, because the
+  collapsed row is the only place a title shows and two rows reading
+  `lyrics · typed` would be unusable.
 
 See [docs/PLAN.md](docs/PLAN.md) for the phased plan to finish the rest.
 
@@ -396,6 +416,27 @@ reasoning, and the two options not taken, are in
 - **Keep-awake** does not exist in Rinch's Android backend at all. Card K5.
 - **`ClickContext`'s viewport is wrong by one scale factor on Android** — and
   it is no longer harmless. See below.
+- **A `<textarea>` cannot scroll to its caret**, on either platform. Whatever
+  falls past its `rows` height is clipped at the border and unreachable, and
+  there is no scroll inside the control at all. The typed-chart editor works
+  around it by driving `rows` from the value — `chart_editor::field_rows`, which
+  is deliberately generous, because over-guessing costs blank paper and
+  under-guessing eats a line — so the box grows and the *screen* scrolls
+  instead. Watched on the moto: 28 lines drawn in full, all reachable with the
+  keyboard up. It is a stopgap and it is approximate for soft-wrapped lines.
+- **Tapping to place the caret in a multi-line field lands about a line off.**
+  Real, and the first thing a hand hits when correcting a chord — a tap aimed at
+  the end of line four put the caret mid-line and the next 22 lines went in
+  there. Nothing the app can do about it from here.
+- **No IME inset is exposed**, so a focused field can sit under the soft
+  keyboard with nothing telling the app it happened. The editor carries 320px of
+  scrollable emptiness below its field so the screen can always be scrolled far
+  enough by hand. Also a stopgap.
+- **`font-family: monospace` does not resolve on Android**, so a chord chart is
+  drawn proportional and its alignment — which *is* the notation — is lost. It
+  is the same fault as "The fonts do not ship" above and it has the same fix;
+  it is called out separately because it is the one place where the missing
+  font costs meaning rather than style. Correct on the desktop.
 
 ### A third Rinch fault, found by reading
 

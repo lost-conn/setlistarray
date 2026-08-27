@@ -675,6 +675,54 @@ mod tests {
         );
     }
 
+    /// D2. A chord chart's shape *is* its content: the blank line between two
+    /// verses, the run of spaces that puts a chord over the right syllable, and
+    /// the trailing newline the caret was sitting on. A round trip that
+    /// trimmed, collapsed or dropped any of them would silently rewrite
+    /// somebody's chart, and the editor has no undo.
+    #[test]
+    fn a_typed_chart_survives_its_blank_lines_and_its_trailing_newlines() {
+        const TYPED: &str = "G           D\nCarolina in my mind\n\n  Em        C\nGoin' to Carolina\n\n\n";
+
+        let dir = scratch("store-typed-round-trip");
+        let id = {
+            let s = Session::open(&dir);
+            let song = s.songs.add("Carolina In My Mind", "James Taylor");
+            let mut typed = chart("G D");
+            typed.kind = AttachmentKind::Text;
+            typed.body = Some(TYPED.into());
+            let id = s.songs.attach(song, typed).expect("attached");
+            assert_eq!(s.attachments.body(id).as_deref(), Some(TYPED));
+            id
+        };
+
+        {
+            let s = Session::open(&dir);
+            assert_eq!(
+                s.attachments.body(id).as_deref(),
+                Some(TYPED),
+                "byte for byte, a launch later"
+            );
+
+            // ...and again after the editor reopens it and saves a correction,
+            // which is `AttachmentsStore::update` rather than a fresh attach.
+            let corrected = TYPED.replace("Em", "Am");
+            assert!(s.attachments.update(id, |a| {
+                a.title = "G D".into();
+                a.bytes_on_disk = corrected.len() as u64;
+                a.body = Some(corrected.clone());
+            }));
+            assert_eq!(s.attachments.get(id).unwrap().body, None, "still not in the row");
+        }
+
+        let s = Session::open(&dir);
+        assert_eq!(
+            s.attachments.body(id).as_deref(),
+            Some(TYPED.replace("Em", "Am").as_str()),
+            "an edited chart keeps its shape too"
+        );
+    }
+
     #[test]
     fn deleting_a_song_takes_its_attachment_directory_with_it() {
         let dir = scratch("store-attachment-cascade");

@@ -59,8 +59,8 @@
 use rinch::prelude::*;
 use rinch_tabler_icons::TablerIcon;
 
-use crate::model::{AttachmentId, Confidence, Day, SetlistId, SongId};
-use crate::store::{NavStore, Route, SetlistsStore, SongsStore};
+use crate::model::{AttachmentId, AttachmentKind, Confidence, Day, SetlistId, SongId};
+use crate::store::{AttachmentsStore, NavStore, Route, SetlistsStore, SongsStore};
 
 /// Surface for a dropdown/context menu panel — the app's `card` token, not
 /// the component's own default theme.
@@ -193,9 +193,25 @@ pub fn SongMenuItems(id: SongId) -> NodeHandle {
 ///
 /// A chart that is already primary gets a one-item menu: there is nothing to
 /// promote it to.
+///
+/// ## Edit lyrics / chords (D2)
+///
+/// A typed chart gets a third entry, and it is first. The card that built the
+/// editor asked whether an existing typed chart is edited in the same screen —
+/// it is, and this menu is the way back into it, because it is already the way
+/// a chart is acted on. The primary card's own tap is spoken for: it says "Tap
+/// to open full screen", which is the viewer (`1k`, card D5).
+///
+/// It only appears for `AttachmentKind::Text`. A PDF and a captured page are
+/// not text this app wrote and it will not offer to rewrite them, so the branch
+/// is taken here, at build time — the four shapes of this menu are four
+/// `rsx!` blocks rather than a reactive `if`, for the same reason `is_primary`
+/// is read here: `DropdownMenuItem`'s close-on-click only binds items that
+/// exist at the menu's first render.
 #[component]
 pub fn AttachmentMenuItems(song: Option<SongId>, attachment: Option<AttachmentId>) -> NodeHandle {
     let songs = use_store::<SongsStore>();
+    let attachments = use_store::<AttachmentsStore>();
     let song = song.unwrap_or_default();
     let attachment = attachment.unwrap_or_default();
 
@@ -206,34 +222,87 @@ pub fn AttachmentMenuItems(song: Option<SongId>, attachment: Option<AttachmentId
         .get(song)
         .map(|s| s.primary() == Some(attachment))
         .unwrap_or(false);
+    // The row, not the body: this is the list signal, which never carries one.
+    let typed = attachments
+        .get(attachment)
+        .map(|a| a.kind == AttachmentKind::Text)
+        .unwrap_or(false);
 
-    if is_primary {
-        return rsx! {
+    match (typed, is_primary) {
+        (true, true) => rsx! {
             div {
-                DropdownMenuItem {
-                    left_section: TablerIcon::Trash,
-                    style: {ITEM_DANGER},
-                    onclick: move || { songs.detach(song, attachment); },
-                    "Remove attachment"
-                }
+                EditChartItem { song: {song}, attachment: {attachment} }
+                RemoveChartItem { song: {song}, attachment: {attachment} }
             }
-        };
+        },
+        (false, true) => rsx! {
+            div {
+                RemoveChartItem { song: {song}, attachment: {attachment} }
+            }
+        },
+        (true, false) => rsx! {
+            div {
+                EditChartItem { song: {song}, attachment: {attachment} }
+                SetPrimaryItem { song: {song}, attachment: {attachment} }
+                RemoveChartItem { song: {song}, attachment: {attachment} }
+            }
+        },
+        (false, false) => rsx! {
+            div {
+                SetPrimaryItem { song: {song}, attachment: {attachment} }
+                RemoveChartItem { song: {song}, attachment: {attachment} }
+            }
+        },
     }
+}
+
+/// Reopen a typed chart in the editor that wrote it (D2). Navigating takes the
+/// whole screen — and the menu with it — so this item does not depend on
+/// close-on-click having bound it.
+#[component]
+fn EditChartItem(song: Option<SongId>, attachment: Option<AttachmentId>) -> NodeHandle {
+    let nav = use_store::<NavStore>();
+    let song = song.unwrap_or_default();
+    let attachment = attachment.unwrap_or_default();
 
     rsx! {
-        div {
-            DropdownMenuItem {
-                left_section: TablerIcon::Star,
-                style: {ITEM_HIGHLIGHT},
-                onclick: move || { songs.set_primary(song, attachment); },
-                "Set as primary"
-            }
-            DropdownMenuItem {
-                left_section: TablerIcon::Trash,
-                style: {ITEM_DANGER},
-                onclick: move || { songs.detach(song, attachment); },
-                "Remove attachment"
-            }
+        DropdownMenuItem {
+            left_section: TablerIcon::Pencil,
+            style: {ITEM},
+            onclick: move || nav.go(Route::TypeChart { song, chart: Some(attachment) }),
+            "Edit lyrics / chords…"
+        }
+    }
+}
+
+#[component]
+fn SetPrimaryItem(song: Option<SongId>, attachment: Option<AttachmentId>) -> NodeHandle {
+    let songs = use_store::<SongsStore>();
+    let song = song.unwrap_or_default();
+    let attachment = attachment.unwrap_or_default();
+
+    rsx! {
+        DropdownMenuItem {
+            left_section: TablerIcon::Star,
+            style: {ITEM_HIGHLIGHT},
+            onclick: move || { songs.set_primary(song, attachment); },
+            "Set as primary"
+        }
+    }
+}
+
+#[component]
+fn RemoveChartItem(song: Option<SongId>, attachment: Option<AttachmentId>) -> NodeHandle {
+    let songs = use_store::<SongsStore>();
+    let song = song.unwrap_or_default();
+    let attachment = attachment.unwrap_or_default();
+
+    rsx! {
+        DropdownMenuItem {
+            left_section: TablerIcon::Trash,
+            style: {ITEM_DANGER},
+            onclick: move || { songs.detach(song, attachment); },
+            "Remove attachment"
         }
     }
 }

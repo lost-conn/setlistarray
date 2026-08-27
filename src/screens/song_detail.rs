@@ -217,9 +217,20 @@ pub fn SongDetail(id: Option<SongId>) -> NodeHandle {
                     }
                 }
 
+                // The one producer that exists (D2). `1j` draws three rows
+                // here — Pick a PDF · Save a webpage offline · Type lyrics /
+                // chords — and two of them are D3 and E2. Rather than draw
+                // three and wire one, this stays the hi-fi's single accent
+                // line and says underneath what it currently does; when a
+                // second producer lands it becomes the chooser `1j` asks for.
                 div {
-                    style: "color: var(--sla-accent); font-weight: 600; font-size: 15px; padding: 14px 0 22px;",
-                    "+ Add attachment"
+                    onclick: move || nav.go(Route::TypeChart { song: id, chart: None }),
+                    style: "padding: 14px 0 22px;",
+                    div {
+                        style: "color: var(--sla-accent); font-weight: 600; font-size: 15px;",
+                        "+ Add attachment"
+                    }
+                    div { style: {format!("{T_META_SMALL} margin-top: 3px;")}, "Type lyrics / chords" }
                 }
             }
 

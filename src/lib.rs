@@ -40,8 +40,8 @@ use rinch_tabler_icons::TablerIcon;
 use db::DataDir;
 use platform::SafeArea;
 use screens::{
-    AddToSetlistSheet, Library, SetlistDetail, SetlistPicker, Setlists, SongDetail, SongForm,
-    SortGroupSheet, Stub,
+    AddToSetlistSheet, ChartEditor, Library, SetlistDetail, SetlistPicker, Setlists, SongDetail,
+    SongForm, SortGroupSheet, Stub,
 };
 use store::{
     AttachmentsStore, LibraryViewStore, NavStore, PlaybackStore, Route, SettingsStore,
@@ -142,6 +142,13 @@ pub fn app() -> NodeHandle {
                 // carrying the song it is about to overwrite.
                 Route::AddSong => SongForm {},
                 Route::EditSong(song_id) => SongForm { editing: {song_id} },
+                // The typed-chart editor (D2). `chart` is `None` for a new
+                // one and `Some` for the chart being corrected — the same
+                // one-screen-two-doors shape as the form above it.
+                Route::TypeChart { song: song_id, chart } => ChartEditor {
+                    song: {song_id},
+                    chart: {chart},
+                },
                 Route::Performance(_) => Stub { title: "Performance", wireframe: "1o" },
             }
 
