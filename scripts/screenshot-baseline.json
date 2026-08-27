@@ -36,19 +36,19 @@
     },
     {
       "name": "fab_solid_accent",
-      "description": "The library FAB (bottom-right, add song) is filled solid with the accent colour.",
+      "description": "The library FAB (bottom-right, add song) is filled with the accent colour across its whole interior, so anything painting over it is caught.",
       "type": "solid_color",
       "region": {
         "anchor": "bottom-right",
-        "w": 28,
-        "h": 12,
-        "right": 36,
-        "bottom": 96
+        "w": 52,
+        "h": 46,
+        "right": 24,
+        "bottom": 100
       },
       "color": "#B54724",
       "fuzz_percent": 5,
-      "min_match_fraction": 0.97,
-      "note": "The FAB is `position: absolute; right: 20px; bottom: 16px; width: 60px; height: 60px` in src/screens/library.rs, so it hangs off the bottom-right corner and nothing else. Its `bottom: 16px` is measured from the Library screen box, which ends above the bottom nav, so the region's own `bottom: 96` is 16px plus the rendered height of the nav strip — a text metric, not a constant, and therefore measured rather than derived. Horizontally the region sits between `right: 36` and `right: 64`, which is inside the 20..80 the FAB occupies with room to spare on both sides. It is deliberately in the FAB's lower band: above it the plus glyph is drawn in the on-accent colour, and to its right the first visible song row's confidence dots can overlap the FAB entirely at narrower window widths — both are FAB pixels that are correctly not accent, and sampling either would make this check fail for the wrong reason. The 20px corner radius is cleared on all four sides."
+      "min_match_fraction": 0.94,
+      "note": "The FAB is `position: absolute; right: 20px; bottom: 16px; width: 60px; height: 60px` in src/screens/library.rs, so it hangs off the bottom-right corner and nothing else. Its `bottom: 16px` is measured from the Library screen box, which ends above the bottom nav, so this region's `bottom: 100` is that 16px plus the rendered height of the nav strip — a text metric, not a constant, and therefore measured rather than derived. The region is the FAB's interior with the 20px corner radius cleared on all four sides, and it deliberately INCLUDES the plus glyph rather than dodging it: the glyph is drawn in the on-accent colour and costs about 3% of the sampled pixels, which is why the threshold is 0.94 and not 0.97. That headroom is the check. Card K14 recorded a row's confidence dots painting on top of this button at a 491px window width and not at 550px — paint order varying with viewport width, which cannot happen now that joeleaver/rinch#292 derives paint order and hit-test order from one `(z_index, dom_order)` sequence with no viewport term in it. Until that PR landed this region sampled only the FAB's lower band, deliberately clear of the dots, which meant the net could not have caught the fault coming back. It samples the whole interior now: three dots cost roughly 4% of these pixels, enough to drop the match below the threshold. Checked by deleting the FAB's `z-index: 10` and rerunning this script: the measured fraction did not move, so the button now paints on top on its own and the workaround is no longer load-bearing for paint. What it still cannot promise is a dot landing outside this region — the overlapping row's position depends on scroll, so no fixed rectangle covers every case."
     },
     {
       "name": "group_header_accent",

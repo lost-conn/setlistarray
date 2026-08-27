@@ -316,7 +316,7 @@ if [[ "$MODE" == self-test ]]; then
   # below were first measured, and the size the app still asks for (393 x 1.25).
   at_size 491 1065
   expect_region thumb_painted            "40x50+30+330"
-  expect_region fab_solid_accent         "35x15+411+930"
+  expect_region fab_solid_accent         "65x58+396+882"
   expect_region group_header_accent      "55x20+20+290"
   expect_region bottom_nav_accent        "491x70+0+975"
   expect_region screen_background        "40x30+0+0"
@@ -327,7 +327,7 @@ if [[ "$MODE" == self-test ]]; then
   # and they move by exactly the 59px the compositor added.
   at_size 550 1065
   expect_region thumb_painted            "40x50+30+330"
-  expect_region fab_solid_accent         "35x15+470+930"
+  expect_region fab_solid_accent         "65x58+455+882"
   expect_region group_header_accent      "55x20+20+290"
   expect_region bottom_nav_accent        "550x70+0+975"
   expect_region screen_background        "40x30+0+0"
@@ -337,7 +337,7 @@ if [[ "$MODE" == self-test ]]; then
   # care that it is unreasonable.
   at_size 700 1065
   expect_region thumb_painted            "40x50+30+330"
-  expect_region fab_solid_accent         "35x15+620+930"
+  expect_region fab_solid_accent         "65x58+605+882"
   expect_region bottom_nav_accent        "700x70+0+975"
   expect_region background_has_no_accent "40x30+660+0"
 
@@ -345,7 +345,7 @@ if [[ "$MODE" == self-test ]]; then
   # offsets, which is what the height-derived scale factor is for.
   at_size 786 1704
   expect_region thumb_painted            "64x80+48+528"
-  expect_region fab_solid_accent         "56x24+658+1488"
+  expect_region fab_solid_accent         "104x92+634+1412"
   expect_region group_header_accent      "88x32+32+464"
   expect_region bottom_nav_accent        "786x112+0+1560"
   expect_region screen_background        "64x48+0+0"
@@ -355,7 +355,7 @@ if [[ "$MODE" == self-test ]]; then
   # thing and the numbers in the baseline should appear unchanged.
   at_size 393 852
   expect_region thumb_painted            "32x40+24+264"
-  expect_region fab_solid_accent         "28x12+329+744"
+  expect_region fab_solid_accent         "52x46+317+706"
   expect_region group_header_accent      "44x16+16+232"
   expect_region bottom_nav_accent        "393x56+0+780"
   expect_region screen_background        "32x24+0+0"
