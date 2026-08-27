@@ -62,6 +62,28 @@
 //! and are excluded along with it only because the scan walks `src/bin/` as
 //! a whole rather than naming files one at a time.
 //!
+//! ## What this guard is not
+//!
+//! It answers one question — *can Android deliver this handler at all* — and
+//! card K22 is the reminder that it is not the only way a screen can work on
+//! the desktop and be dead on a phone, nor even the most likely one.
+//!
+//! There, every menu item carried `onclick`, the one handler the table has
+//! always called reachable, and every tap on one closed the menu without
+//! running anything. The handler was never the problem: `DropdownMenu`'s
+//! dismiss backdrop was `position: fixed`, which Rinch treats as viewport-level
+//! content hoisted out of every ancestor clip and stacking context, so it sat
+//! *above* the panel whose `z-index` was supposed to outrank it and swallowed
+//! the tap before the item ever saw it. A handler that cannot be reached
+//! because of where its box ended up in the paint order is invisible to a scan
+//! over handler names, and no row here could have said so.
+//!
+//! It is also the reason there is no row: the fault was not a divergence.
+//! K22 reproduced identically on the desktop with a mouse — the phone was
+//! where it was noticed, not where it lived. The thing that would have caught
+//! it is the one that did: driving the real app and watching the item not
+//! fire.
+//!
 //! ## Why an unknown handler fails instead of passing by omission
 //!
 //! [`is_reachable`] returns `None` for a name that isn't in the table at

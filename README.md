@@ -379,6 +379,15 @@ reasoning, and the two options not taken, are in
   `↑`/`↓` (U+2191/2193, `SortDir::arrow`) and the density chip's `≣` (U+2263).
   `·` and `…` come through fine, so this is not "no Unicode" — it is two
   characters the fallback font does not carry. Card K13.
+- **A dropdown menu's items answer the tap aimed at them.** They did not, on
+  either platform: the menu opened, every tap inside it closed the menu, and
+  no item's handler ever ran. Not a touch fault and not a divergence — an
+  invisible `position: fixed` backdrop sitting above the panel it was written
+  to sit under. [joeleaver/rinch#317](https://github.com/joeleaver/rinch/pull/317),
+  and the paragraph under "The Rinch contributions" for the mechanism. On the
+  moto: **Duplicate** turned one song into two, **Delete song** turned them
+  back into one, and **Edit lyrics / chords…** off a long-pressed chart opened
+  the editor with the chart in it. Card K22.
 - **Touch, focus and the IME work.** Taps land where they are aimed, the search
   field focuses and raises the soft keyboard, and typed characters reach the
   store *and are drawn* — the last of those took rinch#270. Card K7 is no
@@ -416,6 +425,15 @@ reasoning, and the two options not taken, are in
   platforms. On the moto, `Songs` is Newsreader rather than Noto Serif (the
   title's ink is 196px wide where Noto Serif's was 226px) and the body is Karla
   rather than Roboto.
+- **No bottom sheet opens on Android.** Found while verifying K22 and unrelated
+  to it. **Add to setlist**, the sort chip and the **Filter** chip each set a
+  `NavStore` signal that a sheet reads, and on the phone nothing appears —
+  including from the song screen's own full-width **Add to setlist** button,
+  which is an ordinary tap on an ordinary element and never went near a menu.
+  So the handler is not the question: every one of the three works on the
+  desktop against the same build. Reproduced from a cold start with no menu
+  ever opened, so it is not a stuck overlay either. Undiagnosed; it wants a
+  card of its own.
 - **Keep-awake** does not exist in Rinch's Android backend at all. Card K5.
 - **`ClickContext`'s viewport is wrong by one scale factor on Android** — and
   it is no longer harmless. See below.
@@ -592,6 +610,7 @@ diff no longer needed; the rest are still waiting on review.
 - [joeleaver/rinch#292](https://github.com/joeleaver/rinch/pull/292) — one paint sequence for the painter and the finger, which is what made both FABs dead
 - [joeleaver/rinch#298](https://github.com/joeleaver/rinch/pull/298) — an app can tell Android its system bars sit over a light background, which is what made the clock invisible
 - [joeleaver/rinch#306](https://github.com/joeleaver/rinch/pull/306) — the two loose ends issue #300 named after the #268 review: an inline, unrounded viewport division `dispatch_oncontextmenu` still did, and an architecture doc that never named `window_size`'s unit
+- [joeleaver/rinch#317](https://github.com/joeleaver/rinch/pull/317) — a dropdown menu's dismiss backdrop sits under the panel it belongs to, which is what made every menu item dead. Based on #292's branch rather than `main`, because #292 is what makes the fault visible and #292 should not ship without it
 
 The `../rinch-fixes` integration branch carries the still-open fixes above
 (plus the already-landed and superseded ones it was built from), which is why
@@ -607,6 +626,23 @@ PR's readback test disproved that. The scrolling list painted *over* the FAB as
 well. It never looked wrong only because the `z-index: 10` workaround both FABs
 carry had been hiding the visual half from the day it was added. It is not
 Android-specific and it reproduces on the desktop.
+
+#317 is what #292 turned up next, and the same sentence covers it: it looked
+Android-only and it was not. Every dropdown menu in the app opened correctly
+and then swallowed the tap on its own items — the menu closed and nothing ran.
+`DropdownMenu`'s dismiss backdrop is `position: fixed`, which Rinch treats as
+viewport-level content hoisted out of every ancestor clip and, because an
+overflow clip *is* a stacking context there, out of every ancestor stacking
+context with it. The `z-index: 99` that was supposed to keep it under the
+panel's `100` was being compared across two stacking contexts, which is to say
+not compared at all, and behind this app's `overflow: hidden` root the backdrop
+was simply on top. Before #292 the painter hoisted fixed boxes and hit testing
+did not, so the backdrop painted over the panel invisibly while taps still
+found the item underneath; #292 makes one sequence answer both, and this idiom
+could not survive the answer it kept. `Select` had the identical fault. The fix
+puts the backdrop back in the panel's own stacking context, where the two
+z-indexes mean something. It reproduces on the desktop with a mouse — that is
+where it was diagnosed, driving the real app through rinch's debug IPC.
 
 ### The paint regression
 

@@ -53,8 +53,32 @@
 //! `ClickContext` believed the screen was 394px tall. Fixing one Android input
 //! fault revealed the next.
 //!
+//! ## And then the items were dead (K22)
+//!
+//! With the way in fixed and the placement fixed, every tap on an item closed
+//! the menu and ran nothing — both menus, every coordinate, and on the desktop
+//! with a mouse too, which is what said it was not a touch fault at all.
+//!
+//! `DropdownMenu` renders its dismiss backdrop as a `position: fixed`
+//! full-viewport box with a `z-index` one below the panel's, which is what
+//! anyone would write and what a browser would honour. Rinch does not: a fixed
+//! box is viewport-level content, hoisted to the body out of every ancestor
+//! clip — and since an overflow clip *is* a stacking context there, out of
+//! every ancestor stacking context with it. The panel is `position: absolute`
+//! and stays where the page put it, so behind this app's `overflow: hidden`
+//! root the 99 and the 100 were never compared with each other and the
+//! backdrop was simply on top, swallowing the tap and firing `on_close`.
+//!
+//! Fixed upstream in [#317] by making the backdrop `position: absolute`, in
+//! the panel's own stacking context. Nothing in this file changed. The one
+//! consequence worth knowing about here: the backdrop is now clipped by
+//! whatever clips the panel, so with a menu open on the library screen a tap
+//! in the header or the tab bar no longer dismisses it — a tap anywhere in the
+//! list still does, and so does picking an item.
+//!
 //! [joeleaver/rinch#266]: https://github.com/joeleaver/rinch/pull/266
 //! [#268]: https://github.com/joeleaver/rinch/pull/268
+//! [#317]: https://github.com/joeleaver/rinch/pull/317
 
 use rinch::prelude::*;
 use rinch_tabler_icons::TablerIcon;
