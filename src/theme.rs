@@ -108,47 +108,59 @@ pub const FONT_MONO: &str =
 /// Horizontal padding for every screen.
 pub const SCREEN_PAD: &str = "22px";
 
+/// The dark mode's neutral half, on its own.
+///
+/// Split out of [`tokens`] because one screen wants these without wanting the
+/// mode: the attachment viewer (`1k`, card D5) is dark chrome *regardless of
+/// theme*, so it re-declares this block on its own root and everything under it
+/// — including the `rinch-components` menu, which reads the same `var(--sla-*)`
+/// through `menu::MENU_SURFACE` — resolves to the dark values without a single
+/// hex being written twice. CSS custom properties inherit and a nested
+/// declaration wins, which is the whole mechanism.
+///
+/// fill-2 is not authored for dark in the handoff — derived one step below
+/// `fill` so the empty-thumb still reads as a hole, not a chip.
+///
+/// `--sla-danger` is not authored either — the handoff never reaches a screen
+/// with a destructive action. Added for the song/setlist overflow menus'
+/// "Delete" rows (C2/C7): a true red, clearly apart from every accent hue (all
+/// warm oranges/greens/blues/purples), each variant checked against its own
+/// paper for 4.5:1.
+pub const DARK_NEUTRALS: &str = "--sla-paper: #181512;\
+     --sla-card: #211C18;\
+     --sla-fill: #241F1A;\
+     --sla-fill-2: #1F1A16;\
+     --sla-hairline: #2C2620;\
+     --sla-hairline-soft: #241F1A;\
+     --sla-muted: #9B9188;\
+     --sla-ink-2: #D6CCC1;\
+     --sla-ink: #F5EFE6;\
+     --sla-skeleton: #2E2822;\
+     --sla-skeleton-2: #42392F;\
+     --sla-card-shadow: 0 0 0 1px rgba(255,255,255,.05);\
+     --sla-danger: #FFB4AB;";
+
+/// The light mode's neutral half. Only [`tokens`] wants this one — nothing in
+/// the app is light chrome regardless of theme.
+pub const LIGHT_NEUTRALS: &str = "--sla-paper: #FBF7F0;\
+     --sla-card: #FFFFFF;\
+     --sla-fill: #F1E9DC;\
+     --sla-fill-2: #F6F0E6;\
+     --sla-hairline: #E7DFD4;\
+     --sla-hairline-soft: #EFE8DD;\
+     --sla-muted: #6E645A;\
+     --sla-ink-2: #4A423B;\
+     --sla-ink: #1C1917;\
+     --sla-skeleton: #E4DACB;\
+     --sla-skeleton-2: #EFE8DD;\
+     --sla-card-shadow: 0 2px 10px -4px rgba(28,25,23,.14), 0 0 0 1px rgba(28,25,23,.06);\
+     --sla-danger: #BA1B1B;";
+
 /// The full token block, as an inline `style` value for the app root.
 ///
 /// Everything downstream reads `var(--sla-*)`; nothing hard-codes a hex.
 pub fn tokens(dark: bool, accent: Accent) -> String {
-    let neutrals = if dark {
-        // fill-2 is not authored for dark in the handoff — derived one step
-        // below `fill` so the empty-thumb still reads as a hole, not a chip.
-        //
-        // `--sla-danger` is not authored either — the handoff never reaches a
-        // screen with a destructive action. Added for the song/setlist
-        // overflow menus' "Delete" rows (C2/C7): a true red, clearly apart
-        // from every accent hue (all warm oranges/greens/blues/purples), each
-        // variant checked against its own paper for 4.5:1.
-        "--sla-paper: #181512;\
-         --sla-card: #211C18;\
-         --sla-fill: #241F1A;\
-         --sla-fill-2: #1F1A16;\
-         --sla-hairline: #2C2620;\
-         --sla-hairline-soft: #241F1A;\
-         --sla-muted: #9B9188;\
-         --sla-ink-2: #D6CCC1;\
-         --sla-ink: #F5EFE6;\
-         --sla-skeleton: #2E2822;\
-         --sla-skeleton-2: #42392F;\
-         --sla-card-shadow: 0 0 0 1px rgba(255,255,255,.05);\
-         --sla-danger: #FFB4AB;"
-    } else {
-        "--sla-paper: #FBF7F0;\
-         --sla-card: #FFFFFF;\
-         --sla-fill: #F1E9DC;\
-         --sla-fill-2: #F6F0E6;\
-         --sla-hairline: #E7DFD4;\
-         --sla-hairline-soft: #EFE8DD;\
-         --sla-muted: #6E645A;\
-         --sla-ink-2: #4A423B;\
-         --sla-ink: #1C1917;\
-         --sla-skeleton: #E4DACB;\
-         --sla-skeleton-2: #EFE8DD;\
-         --sla-card-shadow: 0 2px 10px -4px rgba(28,25,23,.14), 0 0 0 1px rgba(28,25,23,.06);\
-         --sla-danger: #BA1B1B;"
-    };
+    let neutrals = if dark { DARK_NEUTRALS } else { LIGHT_NEUTRALS };
 
     let (base, tint, on_tint, on_accent, dim) = if dark {
         (

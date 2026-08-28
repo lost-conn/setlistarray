@@ -732,6 +732,57 @@ B for the whole of hayro from a tree with no PDF code, D3 had already paid
 
 ---
 
+## 10. Question 3, answered by D5 (2026-08-28)
+
+The viewer asked it and the answer is **yes, on a thread — but a thread that is
+never waited on and never speaks to the UI.**
+
+`pdf::pages::prefetch` renders the pages either side of the one on screen on a
+detached worker while the reader is looking at the page they asked for. The page
+they asked for is still drawn **synchronously, in the tap handler**, exactly as
+it would be with no thread at all; the prefetch only ever changes whether that
+call finds a file or makes one. So correctness never depends on the worker
+having run, there is no cross-thread signal write, no `run_on_main_thread` hop,
+and nothing observable half-done. The one shared resource is the filesystem, and
+`cache_page`'s `.part`-then-rename — built for a different reason in D4 — is
+what makes two renders of the same page safe to race.
+
+### What it measures, on the moto g stylus 5G
+
+A cold six-page lead sheet (429 KB, US Letter, staff notation), imported through
+the real system picker, opened in the viewer, then `›` five times as fast as
+`adb shell input tap` can send them — about 205 ms apart, faster than a hand:
+
+| | ms |
+| --- | ---: |
+| **cold render, on the worker** | 43.0 · 47.2 · 48.6 · 52.1 · 49.9 |
+| **page turn, on the UI thread** | 0.31 · 0.16 · 0.16 · 0.16 |
+
+Two things to take from that. The cold cost is **43–52 ms**, a little worse than
+§9's 37.3/38.5 ms for a simpler page, so the earlier figure was not
+pessimistic — and without a prefetch it is what *every* turn through a fresh
+document would cost the thread that draws, on every page, for as long as the
+reader keeps going. And the prefetch stayed ahead of a machine tapping five
+times a second, which is the only thing that had to be true for the second row
+of that table to be the one a person feels.
+
+The single worker slot (`MAX_PREFETCH_THREADS`) is not a limit worth designing
+around: there is one viewer, on one screen, at a time. When it is busy the next
+prefetch is refused rather than queued, and a refusal costs one page's 48 ms on
+the main thread — the no-prefetch behaviour, which is the floor this is measured
+against.
+
+### What is still not answered
+
+Nothing here re-renders at a zoom level. D5 zooms the cached bitmap and goes
+soft above 100 %; the 1080 px cache is 1:1 with the phone at fit-width, so
+nothing is lost until the reader asks for magnification and accepts the trade.
+A sharp-when-zoomed cache would be a second render *and* a second file per
+viewed page, against a format chosen in §5 to keep 300 songs small. It is a card
+of its own.
+
+---
+
 ## Appendix: what was run
 
 Everything lives in the scratchpad, not the repository.

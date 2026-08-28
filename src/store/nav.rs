@@ -27,8 +27,31 @@ pub enum Route {
     /// carried because a chart cannot exist without one — `attach` needs it,
     /// and ✕ goes back to it.
     TypeChart { song: SongId, chart: Option<AttachmentId> },
+    /// The full-screen attachment viewer (`1k`, card D5). Carries the song as
+    /// well as the chart for two reasons, and neither is decoration: the top
+    /// bar prints the song's name under the file's, and ← has to land back on
+    /// the screen the viewer was opened from. A chart knows neither — the
+    /// ownership arrow runs songs → attachments and never back (see
+    /// `AttachmentsStore`'s header), so the only place that pairing exists is
+    /// the route.
+    ViewAttachment { song: SongId, attachment: AttachmentId },
     /// Wireframe screens still to be built out.
     Performance(SetlistId),
+}
+
+impl Route {
+    /// Whether this screen takes the whole window, bottom nav included.
+    ///
+    /// One route answers yes today. The viewer (`1k`) is drawn edge to edge in
+    /// dark chrome of its own, and a cream tab bar under it would be both the
+    /// wrong colour and 60 px of a chart somebody is reading off a music stand.
+    /// It is a method on `Route` rather than a flag the viewer sets, because
+    /// the two things that have to obey it — the bottom nav and the strip
+    /// behind the status bar — are drawn by `crate::app`, above the screen, and
+    /// the route is the only thing they and the viewer share.
+    pub fn full_screen(self) -> bool {
+        matches!(self, Route::ViewAttachment { .. })
+    }
 }
 
 #[derive(Clone, Copy)]

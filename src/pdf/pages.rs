@@ -236,6 +236,127 @@ pub fn ensure_page(directory: &Path, page: u32) -> Option<PathBuf> {
     cache_page(directory, Arc::new(bytes), page).ok()
 }
 
+/// Which pages are worth drawing before anybody asks for them, given that
+/// `page` of `count` is the one on screen.
+///
+/// Next first, then previous, and nothing else. A viewer's next move is a page
+/// turn in one of two directions and there is no third; going wider — the whole
+/// document, or a window of five — would spend a phone's battery rasterising a
+/// fake book somebody opened to check one chord.
+///
+/// Previous is included even though it is usually already drawn, because the
+/// one case where it is not is the one that matters: opening a chart at page 1,
+/// paging forward to 6 and then back is the *only* way to reach a page whose
+/// predecessor was never rendered, and it happens the moment a chart is opened
+/// twice.
+///
+/// Separate from [`prefetch`] and pure, so the policy can be tested without a
+/// thread, a disk or a PDF.
+pub fn neighbours(page: u32, count: u32) -> Vec<u32> {
+    [page.saturating_add(1), page.saturating_sub(1)]
+        .into_iter()
+        .filter(|n| *n >= 1 && *n <= count && *n != page)
+        .collect()
+}
+
+/// How many prefetch threads may be alive at once.
+///
+/// One. The work is a single 38 ms render and the queue behind it is at most
+/// two pages deep, so a second worker would not finish sooner — it would only
+/// contend for the same core as the thread that is drawing the screen. The
+/// counter's real job is the pathological case: holding `›` down, or a user
+/// tapping through a fake book faster than a page renders, must not leave one
+/// detached thread per tap.
+const MAX_PREFETCH_THREADS: usize = 1;
+
+static PREFETCH_IN_FLIGHT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Draw `pages` into the cache **on a thread of its own**, and tell nobody.
+///
+/// ## Why this is the answer to `docs/PDF.md` §9's question 3
+///
+/// That section closed the D4 write-up with "rasterising off the UI thread was
+/// **not** answered, because D4 does not do it. One page at 38 ms does not need
+/// a thread; a viewer that wants twenty in a row (D5) will have to ask this
+/// again." This is D5 asking it, and the answer is a thread — but a much
+/// smaller one than the question implies, because of what it is *not* allowed
+/// to do.
+///
+/// **It never touches the UI.** It renders a PNG and stops. There is no signal
+/// write, no `run_on_main_thread` hop, no callback, and therefore no way for it
+/// to be observed half-done or to write into a screen that has been left. The
+/// viewer's page turn calls [`ensure_page`] synchronously as it always would;
+/// if this thread got there first that call is one `stat`, and if it did not,
+/// the page is drawn on the main thread exactly as it would have been with no
+/// prefetch at all. **Correctness never depends on the thread having run** —
+/// which is why it can be this casual about being cancelled, outliving the
+/// screen, or losing a race.
+///
+/// **The race it can lose is already safe.** Two renders of the same page write
+/// `page-N.png.part` and rename it over `page-N.png`, and `rename(2)` within a
+/// directory is atomic — so a reader either sees the old file or the new one,
+/// never a half-written one, and since both renders produce the same bytes it
+/// does not matter which wins. That property was built into [`cache_page`] by
+/// D4 for a different reason (an interrupted import), and it is what makes this
+/// card's threading a nine-line function instead of a lock.
+///
+/// The measurement that says a thread is worth having at all: D4 timed the
+/// whole pipeline at **37.3 / 38.5 ms a page on the moto g stylus 5G**. A page
+/// turn that has to rasterise is therefore two and a half dropped frames, which
+/// is not an ANR and not even close — but it is a hitch on *every* turn through
+/// a document nobody has read yet, which is exactly the state a chart is in the
+/// first time it is opened on stage. Prefetching the neighbour moves that cost
+/// into the seconds the reader spends looking at the page they asked for.
+pub fn prefetch(directory: &Path, pages: &[u32]) {
+    use std::sync::atomic::Ordering;
+
+    let wanted: Vec<u32> = pages
+        .iter()
+        .copied()
+        .filter(|page| cached_page(directory, *page).is_none())
+        .collect();
+    if wanted.is_empty() {
+        return;
+    }
+
+    // Claim a slot, or give up entirely. Giving up costs nothing — the page is
+    // still drawn on demand by `ensure_page`, a frame later than it would have
+    // been. There is deliberately no queue behind this: the pages a *stale*
+    // worker was asked for are the neighbours of a page the reader has already
+    // moved on from.
+    if PREFETCH_IN_FLIGHT
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+            (n < MAX_PREFETCH_THREADS).then_some(n + 1)
+        })
+        .is_err()
+    {
+        return;
+    }
+
+    let directory = directory.to_path_buf();
+    let spawned = std::thread::Builder::new()
+        .name("sla-pdf-prefetch".into())
+        // Not the default 2 MB: `draw` allocates a 1080 x 8192 x 4 pixmap on
+        // the *heap*, so the stack only carries hayro's interpreter recursion
+        // over a content stream. 1 MB is what the platform with the smaller
+        // default (Android, 1 MB for a Java-created thread) already lives with.
+        .stack_size(1024 * 1024)
+        .spawn(move || {
+            for page in wanted {
+                ensure_page(&directory, page);
+            }
+            PREFETCH_IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
+        });
+
+    // A machine that cannot spawn a thread is a machine under real pressure,
+    // and the honest response is to want nothing from it. The slot has to come
+    // back or every later prefetch is refused for the life of the process.
+    if spawned.is_err() {
+        PREFETCH_IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 /// Draw one page of `data` and put the PNG in `directory`.
 ///
 /// Takes the bytes rather than reading them, because the one caller that
@@ -690,5 +811,131 @@ mod tests {
         assert_eq!(width, PAGE_WIDTH);
         assert_eq!(height, 1398);
         assert!((scale - 1080.0 / 612.0).abs() < 0.0001);
+    }
+
+    // -- What is drawn ahead of the reader (D5) -----------------------------
+
+    /// Run one prefetch test at a time, with no worker left over from the last.
+    ///
+    /// `PREFETCH_IN_FLIGHT` is a *process-wide* counter and `cargo test` runs a
+    /// module's tests on several threads at once, so without this the second
+    /// prefetch test to start is refused a worker slot by the first — and
+    /// refusal is not a failure in the app (the page is drawn on demand
+    /// instead), so it would show up here as a page that mysteriously never
+    /// appears. Draining the counter as well as taking the lock matters because
+    /// the slot is released *inside* the worker, a moment after the file lands.
+    ///
+    /// The single slot is not a limitation worth designing around in the app:
+    /// there is one viewer, on one screen, at a time.
+    fn alone() -> std::sync::MutexGuard<'static, ()> {
+        static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let guard = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+        let mut waited = 0;
+        while PREFETCH_IN_FLIGHT.load(std::sync::atomic::Ordering::SeqCst) > 0 && waited < 200 {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            waited += 1;
+        }
+        guard
+    }
+
+    /// Next first. A reader's next move is forward far more often than back,
+    /// and with one worker the order is the priority.
+    #[test]
+    fn the_page_after_this_one_is_drawn_before_the_page_before_it() {
+        assert_eq!(neighbours(3, 6), vec![4, 2]);
+    }
+
+    /// Neither end reaches outside the document. Page 0 does not exist —
+    /// `page_file` is one-based and `draw` rejects a zero — and a page past the
+    /// last is a render that would fail and cost 38 ms doing it.
+    #[test]
+    fn neither_cover_is_prefetched_past() {
+        assert_eq!(neighbours(1, 6), vec![2], "nothing before the front");
+        assert_eq!(neighbours(6, 6), vec![5], "nothing after the back");
+        assert!(neighbours(1, 1).is_empty(), "a one-page chart has no neighbours");
+    }
+
+    /// A count of zero is what a PDF hayro could not parse looks like by the
+    /// time the viewer has clamped it. Nothing to draw ahead, and no panic
+    /// working that out.
+    #[test]
+    fn a_document_of_no_pages_asks_for_nothing() {
+        assert!(neighbours(1, 0).is_empty());
+    }
+
+    /// The end-to-end promise of the prefetch, made without a timer: after it
+    /// has run, the page it was asked for is on disk and `ensure_page` finds it
+    /// with a `stat` rather than a render.
+    ///
+    /// Joined by polling rather than by a handle, because `prefetch` gives none
+    /// back on purpose — the viewer never waits on it, and a version that
+    /// returned something to wait on would be a version somebody could wait on.
+    #[test]
+    fn a_prefetched_page_is_on_disk_for_the_next_reader_to_find() {
+        let _one = alone();
+        let dir = empty("prefetched-page");
+        std::fs::write(dir.join(super::super::PDF_FILE), inked_pdf(3)).expect("the chart");
+
+        assert!(cached_page(&dir, 2).is_none(), "nothing is drawn yet");
+        prefetch(&dir, &neighbours(1, 3));
+
+        let mut waited = 0;
+        while cached_page(&dir, 2).is_none() && waited < 100 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            waited += 1;
+        }
+        assert!(
+            cached_page(&dir, 2).is_some(),
+            "page 2 was never drawn after {} ms",
+            waited * 50
+        );
+        // And the page it produced is a real one, not an empty file left by a
+        // worker that fell over: same check the synchronous path gets.
+        let (width, height, _, _, _) = decoded(&cached_page(&dir, 2).expect("page 2"));
+        assert_eq!((width, height), (PAGE_WIDTH, 1398));
+    }
+
+    /// Asking for a page that is already cached spawns nothing and, more to the
+    /// point, does not redraw it. `prefetch` filters before it claims a worker
+    /// slot, so a reader paging back and forth over two drawn pages costs
+    /// nothing at all.
+    #[test]
+    fn a_page_already_drawn_is_not_drawn_again() {
+        let _one = alone();
+        let dir = charted("prefetch-already-drawn");
+        let path = ensure_page(&dir, 1).expect("page one");
+        let first = std::fs::metadata(&path).expect("page one").modified().ok();
+
+        prefetch(&dir, &[1]);
+        std::thread::sleep(std::time::Duration::from_millis(150));
+
+        let again = std::fs::metadata(&path).expect("page one").modified().ok();
+        assert_eq!(first, again, "the cached page was rewritten");
+    }
+
+    /// The worker cannot take the process with it. A directory with no
+    /// `chart.pdf` is exactly what an attachment looks like between
+    /// `SongsStore::attach` minting the row and the import writing the bytes,
+    /// and a prefetch that landed in that window has to come back with nothing
+    /// rather than panic on a thread nobody is joining.
+    #[test]
+    fn a_prefetch_of_a_chart_that_is_not_there_yet_is_survivable() {
+        let _one = alone();
+        let dir = empty("prefetch-no-chart");
+        prefetch(&dir, &[1, 2]);
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        assert!(cached_page(&dir, 1).is_none());
+
+        // And the worker slot came back, so the *next* prefetch is not refused
+        // for the rest of the process — the failure mode this would have if the
+        // counter were only decremented on the happy path.
+        let charted = charted("prefetch-after-a-miss");
+        prefetch(&charted, &[1]);
+        let mut waited = 0;
+        while cached_page(&charted, 1).is_none() && waited < 100 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            waited += 1;
+        }
+        assert!(cached_page(&charted, 1).is_some(), "the slot was never released");
     }
 }

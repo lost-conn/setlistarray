@@ -679,6 +679,32 @@ diff no longer needed; the rest are still waiting on review.
   why the workaround is reliable rather than lucky, but a page whose size the
   app has to compute for itself is a page Rinch could have sized.
 
+- **A container stays scrolled after its content stops overflowing.** Found on
+  the phone building card D5. Zoom a page in the attachment viewer to 200 %,
+  drag it sideways to read the end of a staff, then zoom back to 100 %: the page
+  sits half off the left edge with no way to bring it back, because a drag on
+  content that no longer overflows does nothing. `scroll_offset` is clamped
+  against `scroll_width - client_width` when a *scroll event* arrives and never
+  when the content it is measured against shrinks, so the stale offset survives
+  a relayout. A browser clamps after layout. Worked around in the app —
+  `screens::attachment_viewer` puts the scrolling box inside a one-element `for`
+  keyed on `(page, zoom, rotation)`, so any change of geometry builds a new node
+  with a fresh offset — because nothing in an app can reach `set_scroll_left`:
+  the handle belongs to the node, not to the component that declared it.
+
+- **An open `DropdownMenu`'s target escapes an ancestor's `display: none`.**
+  Also D5. The viewer's chrome hides itself after four seconds, and once the
+  overflow menu had been opened, the ⋮ **stayed painted** in the corner of the
+  chart with a 40x40 layout box at the window origin — the same hoisting that
+  put the dismiss backdrop above its own panel in K22, seen from the other side.
+  Closing the menu first is not enough; the target stays hoisted. Unmounting the
+  bar is worse: remounted, the dropdown resolves `bottom-end` against a target
+  box it no longer has and draws its panel half off the right edge, tall enough
+  to push the bottom bar out of the `overflow: hidden` root. The app's answer is
+  that the ⋮ carries its own `display: none` — after the hoist it is the hoisted
+  node's own child rather than the hidden bar's descendant, so its own style
+  still reaches it.
+
 **Still open, unreviewed:**
 
 - [joeleaver/rinch#266](https://github.com/joeleaver/rinch/pull/266) — a long press on Android is a context menu, stage 1 of three

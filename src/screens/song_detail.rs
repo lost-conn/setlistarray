@@ -167,6 +167,26 @@ pub fn SongDetail(id: Option<SongId>) -> NodeHandle {
                             DropdownMenuTarget {
                                 style: {FULL_WIDTH_TARGET},
                                 div {
+                                    // "Tap primary attachment card → Attachment
+                                    // viewer", which is the handoff's own
+                                    // interaction table and what the card's
+                                    // own footer line has been promising since
+                                    // this screen was built. D5 is the screen
+                                    // that finally exists to be opened.
+                                    //
+                                    // On the whole card rather than on the ⤢
+                                    // glyph: the footer says "Tap to open full
+                                    // screen" without qualifying where, and a
+                                    // 17px icon is not the target a phone wants
+                                    // for the main action on the screen. The
+                                    // long-press menu still comes off the same
+                                    // box — `oncontextmenu` is dispatched
+                                    // separately from `onclick` and does not
+                                    // fire it (see `menu`'s header).
+                                    onclick: move || nav.go(Route::ViewAttachment {
+                                        song: id,
+                                        attachment: att.id,
+                                    }),
                                     style: "background: var(--sla-card); border-radius: 16px; \
                                             padding: 16px 18px; margin-top: 14px; \
                                             box-shadow: var(--sla-card-shadow);",

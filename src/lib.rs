@@ -45,14 +45,14 @@ use rinch_tabler_icons::TablerIcon;
 use db::DataDir;
 use platform::SafeArea;
 use screens::{
-    AddToSetlistSheet, ChartEditor, Library, SetlistDetail, SetlistPicker, Setlists, SongDetail,
-    SongForm, SortGroupSheet, Stub,
+    AddToSetlistSheet, AttachmentViewer, ChartEditor, Library, SetlistDetail, SetlistPicker,
+    Setlists, SongDetail, SongForm, SortGroupSheet, Stub,
 };
 use store::{
     AttachmentsStore, LibraryViewStore, NavStore, PlaybackStore, Route, SettingsStore,
     SetlistsStore, SongsStore, Storage, Tab,
 };
-use theme::{T_NAV_LABEL, tokens};
+use theme::{DARK_NEUTRALS, T_NAV_LABEL, tokens};
 use ui::icon;
 
 /// A phone in the hand: 393×852 is the Pixel-class viewport the designs assume.
@@ -136,14 +136,6 @@ pub fn app() -> NodeHandle {
 
     let settings = create_store(SettingsStore::restored(storage));
 
-    // The status bar and the gesture bar are the OS's to draw, but what they
-    // are drawn *over* is `--sla-paper`, and Android has no way to see it: its
-    // default is white glyphs, which on the light theme's cream is barely
-    // there. An effect rather than a call, because dark mode is flipped at
-    // runtime and the bars have to follow it, not just the mode the app
-    // launched in. Nothing platform-specific here — `platform` is where the
-    // desktop's version of this (nothing at all) lives.
-    Effect::new(move || platform::set_light_system_bars(!settings.dark_mode.get()));
     // Attachments first: a song owns its charts, so `SongsStore` is handed the
     // store it mutates them through. The dependency runs one way (see the note
     // on `SongsStore::attachments`), so there is no wiring-up step and no
@@ -154,6 +146,25 @@ pub fn app() -> NodeHandle {
     create_store(LibraryViewStore::restored(storage));
     create_store(PlaybackStore::new());
     let nav = create_store(NavStore::new());
+
+    // The status bar and the gesture bar are the OS's to draw, but what they
+    // are drawn *over* is `--sla-paper`, and Android has no way to see it: its
+    // default is white glyphs, which on the light theme's cream is barely
+    // there. An effect rather than a call, because dark mode is flipped at
+    // runtime and the bars have to follow it, not just the mode the app
+    // launched in. Nothing platform-specific here — `platform` is where the
+    // desktop's version of this (nothing at all) lives.
+    //
+    // It follows the *route* as well as the theme, and D5 is why. The
+    // attachment viewer is dark chrome regardless of the app's mode, so on a
+    // light-themed phone the clock and the gesture pill would stay dark and
+    // vanish into the viewer's own black bars the moment a chart was opened.
+    // Reading both signals in one effect is what makes them come back when the
+    // viewer is left again.
+    Effect::new(move || {
+        let light = !settings.dark_mode.get() && !nav.route.get().full_screen();
+        platform::set_light_system_bars(light);
+    });
 
     rsx! {
         div {
@@ -172,7 +183,28 @@ pub fn app() -> NodeHandle {
 
             // The OS draws the real status bar (and the notch); this is the
             // space it occupies.
-            div { style: {format!("height: {}px; flex-shrink: 0;", safe.top)} }
+            //
+            // It takes a background of its own rather than inheriting the
+            // root's, because of the one screen that is not the theme's colour:
+            // the attachment viewer (`1k`, D5) is dark chrome whatever the app
+            // is set to, and a cream strip above its black top bar would be a
+            // seam across the top of every full-screen chart in light mode.
+            div {
+                style: {move || format!(
+                    "height: {}px; flex-shrink: 0; {}",
+                    safe.top,
+                    // Re-declaring the dark neutrals here and then reading
+                    // `paper` back out of them keeps the rule that no hex is
+                    // written outside `theme` — this strip sits *above* the
+                    // viewer's own root, so it cannot inherit the override the
+                    // viewer makes for everything inside it.
+                    if nav.route.get().full_screen() {
+                        format!("{DARK_NEUTRALS} background: var(--sla-paper);")
+                    } else {
+                        "background: var(--sla-paper);".to_string()
+                    },
+                )}
+            }
 
             match nav.route.get() {
                 Route::Library => Library {},
@@ -190,6 +222,13 @@ pub fn app() -> NodeHandle {
                 Route::TypeChart { song: song_id, chart } => ChartEditor {
                     song: {song_id},
                     chart: {chart},
+                },
+                // The full-screen viewer (D5). Takes the song as well as the
+                // chart: the top bar prints one under the other, and ← lands
+                // back on the screen it was opened from.
+                Route::ViewAttachment { song: song_id, attachment } => AttachmentViewer {
+                    song: {song_id},
+                    attachment: {attachment},
                 },
                 Route::Performance(_) => Stub { title: "Performance", wireframe: "1o" },
             }
@@ -210,13 +249,26 @@ pub fn app() -> NodeHandle {
 ///
 /// `gap` is the room below the labels: the gesture bar's inset on Android, the
 /// design's own 22px on the desktop.
+///
+/// ## Why it takes itself off screen rather than not being mounted
+///
+/// One route is full-screen (`Route::full_screen` — the attachment viewer,
+/// D5), and this bar has to be gone for it. `display: none` in a reactive
+/// style, rather than wrapping the call site in an `if`, for the same reason
+/// the three bottom sheets stay mounted below the fold: the nav owns nothing
+/// worth tearing down, unmounting and remounting it on every trip into a chart
+/// would rebuild both tab items for nothing, and a style closure is the one
+/// mechanism in this file that is already known to work on both platforms.
 #[component]
 fn bottom_nav(gap: f32) -> NodeHandle {
+    let nav = use_store::<NavStore>();
+
     rsx! {
         div {
-            style: {format!(
-                "display: flex; border-top: 1px solid var(--sla-hairline); \
-                 padding: 10px 0 {gap}px; flex-shrink: 0;"
+            style: {move || format!(
+                "display: {}; border-top: 1px solid var(--sla-hairline); \
+                 padding: 10px 0 {gap}px; flex-shrink: 0;",
+                if nav.route.get().full_screen() { "none" } else { "flex" },
             )},
             {nav_item(__scope, Tab::Songs, "Songs", TablerIcon::Music)}
             {nav_item(__scope, Tab::Setlists, "Setlists", TablerIcon::List)}
