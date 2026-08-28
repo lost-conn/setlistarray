@@ -41,7 +41,7 @@ local path dependencies, so `Cargo.toml` expects three checkouts side by side:
 ```
 projects/personal/
 ├── setlistarray/     ← this
-├── rinch-fixes/      ← github.com/joeleaver/rinch, branch carrying #245, #246, #266, #267, #270, #274, #281, #286, #292, #298, #317, #342, #344
+├── rinch-fixes/      ← github.com/joeleaver/rinch, branch carrying #245, #246, #266, #267, #270, #274, #281, #286, #292, #298, #317, #342, #344, #353
 └── rhypedb-main/     ← github.com/joeleaver/rhypedb, main
 ```
 
@@ -663,7 +663,8 @@ diff no longer needed; the rest are still waiting on review.
      from `frame.pending_layout` — which a decode does not set either. It now
      also asks the new `RinchApp::has_pending_images`.
 
-  All four are in the working tree at `../rinch-fixes` and none has a PR yet.
+  All four are one commit on the `../rinch-fixes` branch, and upstream as
+  [joeleaver/rinch#353](https://github.com/joeleaver/rinch/pull/353).
   Anything drawing a local image will hit them; `docs/PDF.md` §7 listed
   "whether Rinch's `Image` will display a cached PNG from app-private storage at
   all" as the largest unknown in card D4 and it was right to.
@@ -689,6 +690,7 @@ diff no longer needed; the rest are still waiting on review.
 - [joeleaver/rinch#298](https://github.com/joeleaver/rinch/pull/298) — an app can tell Android its system bars sit over a light background, which is what made the clock invisible
 - [joeleaver/rinch#306](https://github.com/joeleaver/rinch/pull/306) — the two loose ends issue #300 named after the #268 review: an inline, unrounded viewport division `dispatch_oncontextmenu` still did, and an architecture doc that never named `window_size`'s unit
 - [joeleaver/rinch#317](https://github.com/joeleaver/rinch/pull/317) — a dropdown menu's dismiss backdrop sits under the panel it belongs to, which is what made every menu item dead. Based on #292's branch rather than `main`, because #292 is what makes the fault visible and #292 should not ship without it
+- [joeleaver/rinch#353](https://github.com/joeleaver/rinch/pull/353) — four gates between a finished image decode and the screen, each enough on its own to leave an `<img>` permanently blank: the loader never woke a `ControlFlow::Wait` loop, `resolve_and_repaint` returned early on an undirty tree, `resolve_layout` discarded `drain_pending_images`'s `bool`, and the Android loop gated on a `pending_layout` a decode never sets. Card D4; found showing a rasterised PDF page on the phone
 - [joeleaver/rinch#344](https://github.com/joeleaver/rinch/pull/344) — four things the software painter drew that could not be seen: an `opacity: 0` subtree painted in full, a fully transparent `background-color` rasterised as a fill, a clip mask intersected across the whole surface rather than the clip's own bounds, and a blurred `box-shadow` filled under the element instead of around it. Card K24; 316ms to 63ms on the device
 - [joeleaver/rinch#342](https://github.com/joeleaver/rinch/pull/342) — the double paint behind card K20: `PositionValue`'s `#[default]` in
   `crates/rinch-dom/src/computed_style/values.rs`, moved from `Relative` to the
