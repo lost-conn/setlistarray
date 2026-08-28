@@ -156,9 +156,9 @@ nothing in the UI code assumes either platform. See "Android" below.
 | `src/model.rs` | `Song`, `Setlist`, `Attachment`, `Confidence`, `Day`. Every field but id/title/artist/created_at is optional. |
 | `src/store/` | One `Copy` struct of Signals per store, registered in `app()`. Derived values are computed on read, never stored. Every mutation writes through `Storage` to the database before it reaches a signal. |
 | `src/ui.rs` | Shared pieces: chips, confidence dots, attachment thumbs, list rows. |
-| `src/screens/` | One file per screen. |
+| `src/screens/` | One file per screen, plus `captured_page.rs` — not a screen, but the one component the card and the full-screen viewer both mount to draw a saved page. |
 | `src/db/` | The rhypedb schema, the domain↔object conversion, and the repository every store writes through. |
-| `src/capture/` | Offline webpage capture: fetch, sanitise, rewrite images, judge what came back. No Signals, like `src/db/`. See [docs/CAPTURE.md](docs/CAPTURE.md). |
+| `src/capture/` | Offline webpage capture: fetch, sanitise, rewrite images, judge what came back, and rebuild a saved page as markup Rinch can lay out (`render.rs`). No Signals, like `src/db/`. See [docs/CAPTURE.md](docs/CAPTURE.md). |
 | `src/seed.rs` | Demo content, behind `--seed`. Not on the startup path. |
 | `src/platform.rs` | Safe-area insets: real ones on Android, the phone stand-in on desktop. |
 | `android/` | `AndroidManifest.xml`. One permission — INTERNET, for capture — and a test asserts nothing joins it. |
@@ -668,6 +668,22 @@ diff no longer needed; the rest are still waiting on review.
   Anything drawing a local image will hit them; `docs/PDF.md` §7 listed
   "whether Rinch's `Image` will display a cached PNG from app-private storage at
   all" as the largest unknown in card D4 and it was right to.
+
+- **An `<img>` inside an `<a>` never appears.** Found on card E5, showing a
+  captured web page — every site's logo and half its chord diagrams are wrapped
+  in an anchor, so hymnal.net's masthead was simply absent from the card and the
+  viewer. The image had the right `src`, a computed width and height from its
+  own style, and a **0x0 layout box**; the identical `<img>` as a direct child
+  of the block, or beside text inside a `<p>`, laid out correctly. Rinch does
+  support atomic inlines — `ifc.rs` pushes a Parley `InlineBox` for an
+  inline-block and measures it in `compute_inline_block_layouts` — but
+  `mark_inline_descendants` set `ifc_root` on an inline child and did not
+  recurse into it, so an inline-block *descendant* was never measured and the
+  `InlineBox` read a `layout` that was still zero. The fix is to recurse,
+  exactly as the `display: contents` branch beside it already does. One line
+  plus a regression test in `crates/rinch-dom/tests/layout_tests.rs`
+  (`test_inline_block_inside_an_inline_element_is_measured`), which fails
+  without it with `(0.0, 0.0)` where `(90.0, 30.0)` is expected.
 
 - **An `<img>` with a percentage width is laid out at its bitmap's height.**
   Not fixed, and worked around in the app instead — `song_detail::page_image`

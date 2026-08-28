@@ -616,3 +616,195 @@ They are two intentions and now have two controls.
   attachment directory** with no row. The panic above produced one. Nothing in
   this card introduced it — it is the shape `pdf::import` has had since D3 —
   but a sweep for directories with no row is worth a card.
+
+---
+
+## Card E5 — rendering a captured page, and what "render" turned out to mean
+
+Built 2026-08-28. The engine is `src/capture/render.rs`; the one component both
+screens mount is `src/screens/captured_page.rs`. The card body was a title and
+two dependencies, so the first half of the work was deciding what it meant.
+
+### Rinch can be handed markup. It cannot be handed the saved file.
+
+`sanitise.rs`'s header had already assumed the highest-fidelity reading — *"the
+captured page is opened later by E5 in the app's own renderer"* — and Rinch is a
+browser-grade stack, so the first question was whether `page.html` could simply
+be handed over. The mechanism exists: `NodeHandle::set_inner_html`
+(`rinch-core/src/dom/mod.rs`) parses a string into real DOM nodes under any
+element the app owns, and those nodes get real Stylo styling and real Taffy
+layout, in a subtree of an ordinary `rsx!` tree. Four measurements say the input
+cannot be the file:
+
+1. **Rinch's HTML parser is a hand-rolled scanner** — `rinch-dom/src/html_parser.rs`,
+   not html5ever. Run over the three sites the table above says the engine
+   actually captures, the first text node it produces on **every one of them** is
+   the string `!doctype html>`: a `<!…>` declaration is not a tag it knows and
+   the remainder falls through to the text branch. It decodes six named entities
+   and no numeric ones, and it has no implicit end tags, so the unclosed `<p>`
+   and `<li>` that html5ever exists to recover from nest instead of closing.
+2. **A `<style>` block in injected markup is loaded into the document's
+   stylist.** `append_child` calls `maybe_load_style_css`
+   (`rinch-dom/src/style_resolution/mod.rs`), which hands the CSS to
+   `load_stylo_css` and re-resolves every node in the tree. One stylist per
+   document, one document per window: a stranger's `p { margin: 0 }` would
+   restyle SetListArray, not just the attachment.
+3. **Most of the page's CSS is gone anyway, deliberately.** E1 drops every
+   `<link rel=stylesheet>`. Measured on the capture this was built against:
+   hymnal.net's saved page contains **zero** `<style>` blocks. Its chord display
+   is `<div class="chord-text">` boxes that the site's external sheet makes
+   `inline-block`, with the chord `block` above the syllable, and the class that
+   hides the whole scaffold is `hidden`. There is no fidelity left to preserve:
+   the "high-fidelity" render of that page is a column of one-syllable lines
+   that was never meant to be visible at all.
+4. **Rinch's UA stylesheet is small on purpose** (`rinch-dom/src/dom_impl/mod.rs`):
+   `display` for the usual tags, bold for `<strong>`, italic for `<em>`, list
+   indentation, and nothing else. No `<pre>` monospace, no `white-space: pre`,
+   no heading sizes. A chord chart handed over raw comes back proportional and
+   word-wrapped, which is the one thing a chart cannot survive.
+
+### So the app rebuilds the page and Rinch lays it out
+
+`page.html` is parsed with html5ever — already in the tree, already this
+module's parser, spec-correct on what chord sites really serve — walked, and
+re-emitted as a small well-formed fragment with the app's own typography inlined
+on it. That fragment goes to `set_inner_html`, and from there it is Stylo,
+Parley and Taffy: real inline flow, real `<pre>`, real tables, real images, real
+line breaking. Rinch's parser is then only ever fed markup this app generated,
+which is the one input it is reliable on.
+
+| Input | Output |
+| --- | --- |
+| `head`, `style`, `script`, `title`, `iframe`, `canvas`, `svg`, form controls | dropped, subtree and all |
+| a tag in `render::STYLED` | itself, with the app's inline style |
+| any other element | unwrapped — its children take its place |
+| an element with nothing visible under it | dropped |
+| `<img src="assets/000.png">` | an absolute path, both axes in pixels |
+| an image whose file is gone | its `alt`, in muted italic |
+| the site's own `style=` | dropped, except `display: none` |
+
+Two rules earned their place by being got wrong first:
+
+* **Empty containers are pruned.** Emitting every styled element produced 809
+  elements on the CifraClub capture, most of them empty `<div>`s — the
+  scaffolding for the sheet E1 threw away. Each is a Taffy node and a Stylo
+  resolution laying out nothing, and on the card the whole element budget was
+  spent on empty boxes before a word of the chart was reached.
+* **Inside a `<pre>`, block elements are unwrapped.** CifraClub writes one
+  `<div>` per line inside the `<pre>`, each ending in a newline — a block box
+  *and* a line break — so the first render came out double-spaced. Inside
+  preformatted text the line breaks are in the characters; only inline elements
+  (the `<b>` around each chord symbol) are kept.
+
+Every length in the fragment is in `em` except an image's two axes, which is
+what lets **one fragment serve both places**: the card renders at 12.5 px and
+the viewer at 14.5 px, and the viewer's `A−`/`A+` are a `font-size` on the host,
+so the whole document scales rather than only its prose. Images state both axes
+in pixels because of **K28**, exactly as `song_detail::page_image` does for a
+rasterised PDF page; their sizes come from `render::image_pixels`, which reads
+PNG, GIF, WebP and JPEG headers without decoding — the same argument
+`pdf::pages::page_pixels` makes for a PNG, applied to the four formats
+`assets::extension` can name.
+
+### The card and the viewer are one component
+
+A PDF gets that agreement for free: `pdf::pages` rasterises one PNG and both
+screens draw the same file. A captured page has no such artefact, so the
+agreement is `screens::captured_page::CapturedPageView` — `song_detail` mounts
+it in the card clipped to the height of the eight `T_CHART` lines it replaces,
+`attachment_viewer` mounts it full-screen, and the only thing they pass
+differently is how big it is. `song_detail::preview` and
+`attachment_viewer::empty_state` both return early for a captured page, so
+neither screen can say a second thing about one.
+
+### Failure
+
+| State | Shown |
+| --- | --- |
+| `page.html` renders | the page |
+| no `page.html`, extracted text in the row | that text, through the same renderer as a `<pre>`, under *"The saved page is no longer on this device."* |
+| the same in an in-memory library (`--seed`) | that text, and no complaint — there was never a file |
+| `page.html` there, nothing renderable in it | *"This saved page could not be read."* |
+| neither | whichever of the two sentences fits |
+| the element budget ran out | the page, then *"This page was too long to draw in full."* |
+
+The text fallback is the point rather than a consolation: `Attachment::body`
+lives in the database and `page.html` lives in a directory on a phone, so the
+two go missing independently, and a user whose library folder was deleted still
+has the words. The explaining note goes **above** the content and the truncation
+note **below** it, which was a correction: on `:99` the first one sat at the
+bottom of a two-thousand-pixel column of text, a footnote nobody reaches to a
+question they had at the top.
+
+`page.html` is never *unparseable* — html5ever recovers from anything — so
+"could not be read" means "nothing in it was a tag this app draws", which is a
+real state a page of pure `<head>` produces.
+
+### The thumbnail
+
+**Unchanged: the `WEB` badge.** The card asked "what a captured page's thumbnail
+is in the library row, where a PDF now shows page one", and a PDF does not show
+page one there — `ui::AttachmentThumb` draws a 38 px badge for all three kinds,
+and `library::primary_kind`'s own comment says why: *"it reads the kind and
+nothing else: the body stays on disk, which is what lets three hundred of these
+rows be built."* Rendering a page per row would be three hundred html5ever
+parses to draw a list. The place a PDF shows page one is the **card** on song
+detail, and there a captured page now shows the top of the page.
+
+### A Rinch bug this found
+
+**An `<img>` inside an `<a>` disappears.** Right `src`, a computed width and
+height from its own style, and a 0x0 layout box — while the same `<img>` as a
+direct child of the block, or beside text in a `<p>`, lays out correctly. Every
+site's logo and half its chord diagrams are wrapped in an anchor, so on the
+first end-to-end run hymnal.net's masthead was simply absent.
+
+`ifc.rs::mark_inline_descendants` marks an inline child with its `ifc_root` and
+does not recurse into it. That was enough for text, because
+`walk_inline_children` recurses either way — but it left any inline-block
+*descendant* with `ifc_root == None`, so `compute_inline_block_layouts` never
+measured it, and the Parley `InlineBox` pushed for it read a `layout` that was
+still zero. The fix is to recurse, exactly as the `display: contents` branch
+already does. Fixed in `../rinch-fixes`; see the README's PR list.
+
+### Verified
+
+* `cargo test`: **394** (366 before) — 21 in `capture::render`, 7 in
+  `screens::captured_page`, and two rewritten on the screens whose captured-page
+  branch moved.
+* `scripts/screenshot.sh`: 9/9.
+* **Desktop, on `:99`**, driven over Rinch's debug IPC (card C6's mechanism):
+  `hymnal.net/en/hymn/h/1` and `cifraclub.com/pink-floyd/wish-you-were-here/`
+  captured through the real capture screen and attached. The CifraClub chart
+  renders as one `<pre>` — computed `white_space: Pre`, `font-family:
+  DejaVu Sans Mono…`, 13.34 px, 5,703 px tall, chord symbols bold above their
+  syllables, single-spaced. `A+` twice took an `<h1>` from 27 px to 105 px and
+  rebuilt the node each time. hymnal.net's masthead PNG lays out at 276x80 from
+  `assets/000.png`. Deleting `page.html` and `assets/` underneath a live library
+  put *"The saved page is no longer on this device."* above the extracted text
+  in both the card and the viewer.
+* **On the phone (ZY22FD66GZ), in airplane mode**, cold-started: the page E2
+  captured renders in the card and full-screen with no network at all. That is
+  the whole promise of the feature and it is now a measurement rather than a
+  claim.
+
+### Found and not fixed
+
+* **A chart whose layout lived in an external stylesheet cannot be rebuilt.**
+  hymnal.net renders as clean lyrics followed by the chord scaffolding one
+  syllable per line, because the sheet that made `.chord-text` `inline-block`
+  was dropped at capture time and so was the `.hidden` that put the scaffold
+  away. Two cards' worth of possible answers, neither of them E5's: keep a
+  same-origin `<style>` and rewrite its selectors to a scoping prefix so it can
+  be loaded without escaping into the app, or extend E3's reader mode to
+  recognise the chord-span pattern and rebuild it. Sites whose chart is a
+  `<pre>` — CifraClub, guitaretab — are unaffected and come out right.
+* **The card still opens on the site's navigation.** Same note E2 left; the fix
+  is E3's, by capturing less rather than by drawing less.
+* **Rinch's `decode_html_entities` replaces `&amp;` first**, so text containing
+  the literal characters `&lt;` arrives on screen as `<`. Harmless here — it is
+  a text node by then, and there is no JS engine — but it is the classic
+  wrong-order double-decode and worth an upstream line.
+* **SVG, BMP and AVIF images fall back to their `alt`.** `image_pixels` reads
+  four formats; SVG has no pixel size to read and Rinch has no decoder for any
+  of the three. Rare on a chord site, and a caption is an honest answer.

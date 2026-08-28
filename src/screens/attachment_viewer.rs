@@ -127,9 +127,23 @@
 //! dimming as this app's way of saying "not from here" — and because a bar whose
 //! buttons move depending on what you opened is a bar you have to look at.
 //!
-//! A captured page (E1/E2) has an extracted body and no pages either, so it
-//! lands in the same branch and is drawn as its text. Rendering the captured
-//! *markup* is card E5's, and this screen will want revisiting when it exists.
+//! ## A captured page is drawn by the component the card draws it with
+//!
+//! Until E5 a captured page landed in the typed-text branch above and was drawn
+//! as its extracted body, and the note here said this screen would want
+//! revisiting. It does not any more: `captured_page::CapturedPageView` renders
+//! the saved `page.html` itself — headings, images, `<pre>` charts with their
+//! columns intact — and `song_detail`'s card mounts the *same component* at a
+//! smaller type size. That is what makes a captured page the same object in
+//! both places, the way one rasterised PNG makes a PDF the same object in both
+//! places.
+//!
+//! Two of this screen's controls therefore mean something slightly different on
+//! one. `A−` / `A+` set the type size the page's whole `em` ladder resolves
+//! against, so the page scales rather than only its text — the component is
+//! remounted by the zoom-keyed `for` below and simply drawn again at the new
+//! size. `⟲` stays dim, for the reason it is dim on a typed chart: a reflowable
+//! document has no orientation to correct.
 
 use rinch::prelude::*;
 use rinch_tabler_icons::TablerIcon;
@@ -139,6 +153,8 @@ use crate::model::{Attachment, AttachmentId, AttachmentKind, SongId};
 use crate::store::{AttachmentsStore, NavStore, Route, SongsStore};
 use crate::theme::{DARK_NEUTRALS, T_META, T_META_SMALL};
 use crate::ui::icon;
+
+use super::captured_page::CapturedPageView;
 
 /// How long the chrome stays up with nothing happening, in milliseconds.
 ///
@@ -424,7 +440,15 @@ pub fn nothing_to_show(kind: AttachmentKind, page: u32, span: u32) -> String {
         }
         AttachmentKind::Pdf => "This PDF could not be drawn.".to_string(),
         AttachmentKind::Text => "Nothing typed yet.".to_string(),
-        AttachmentKind::CapturedPage => "Saved on this device. No preview yet.".to_string(),
+        // Unreachable since E5, and left as a panic-free empty string rather
+        // than a sentence so that it stays that way: a captured page is drawn
+        // by `captured_page::CapturedPageView`, which owns the page, the text
+        // it falls back to when the files are gone, and both of the sentences
+        // for when there is neither. `empty_state` returns before it can get
+        // here. A fourth wording of the same state, chosen in a file that can
+        // no longer tell which of the two faults it is looking at, would be
+        // worse than none.
+        AttachmentKind::CapturedPage => String::new(),
     }
 }
 
@@ -503,10 +527,15 @@ pub fn AttachmentViewer(song: Option<SongId>, attachment: Option<AttachmentId>) 
     // doing this inside a reactive closure would repeat a megabyte-sized read
     // on every redraw — including every one caused by tapping the picture to
     // bring the chrome back.
-    let body = Signal::new(if pdf {
-        String::new()
-    } else {
+    // E5 narrowed this from "not a PDF" to "typed": a captured page's text is
+    // read by `CapturedPageView`, which needs it only as the fallback for a
+    // `page.html` that is not on the device, and reading it here as well would
+    // be a second megabyte-sized object read per mount for a string this
+    // screen no longer draws.
+    let body = Signal::new(if kind == AttachmentKind::Text {
         attachments.body(id).unwrap_or_default()
+    } else {
+        String::new()
     });
 
     let page = Signal::new(1u32);
@@ -761,6 +790,26 @@ pub fn AttachmentViewer(song: Option<SongId>, attachment: Option<AttachmentId>) 
                     }
                 }
 
+                // E5: the saved page itself, at the size the zoom ladder
+                // asks for. Mounted inside the keyed `for` above, so a zoom
+                // step rebuilds this node and the page is rendered again
+                // against the new `base_px` — which is what makes `A+` scale
+                // the images and the headings and not only the prose.
+                for captured in captured_of(kind, id) {
+                    CapturedPageView {
+                        key: {view.clone()},
+                        attachment: {captured},
+                        base_px: {CHART_BASE_PX * zoom.get() as f32 / 100.0},
+                        // The scrolling box pads itself by 16 px each side for
+                        // typed text (see the `padding` above), and that is
+                        // width an image inside the page genuinely does not
+                        // have.
+                        column_px: {column.saturating_sub(32).max(1)},
+                        budget: {crate::capture::render::VIEWER_ELEMENTS},
+                        style: "align-self: stretch;",
+                    }
+                }
+
                 for (index, line) in text_of(body, pdf) {
                     div {
                         key: {index},
@@ -914,7 +963,22 @@ fn page_spread(
     )]
 }
 
-/// The lines of a typed or captured chart, and nothing at all for a PDF.
+/// The attachment to hand `CapturedPageView`, or nothing — the nought-or-one
+/// shape everything reactive on this screen uses, because `rsx!`'s `for` is the
+/// only conditional the macro has.
+fn captured_of(kind: AttachmentKind, id: AttachmentId) -> Vec<AttachmentId> {
+    match kind {
+        AttachmentKind::CapturedPage => vec![id],
+        _ => Vec::new(),
+    }
+}
+
+/// The lines of a typed chart, and nothing at all for anything else.
+///
+/// A captured page used to come through here as its extracted text; since E5 it
+/// is drawn as the page by `captured_page::CapturedPageView`, which falls back
+/// to that same text itself when the saved file is gone. One of the two has to
+/// own it or the screen draws it twice.
 fn text_of(body: Signal<String>, pdf: bool) -> Vec<(usize, String)> {
     if pdf {
         return Vec::new();
@@ -936,6 +1000,14 @@ fn empty_state(
     page: Signal<u32>,
     span: u32,
 ) -> Vec<String> {
+    // A captured page answers this question for itself. `CapturedPageView`
+    // knows whether it found a `page.html`, whether it fell back to the text
+    // and whether the files were expected to be there, and it says the
+    // corresponding one of its own sentences — none of which this function can
+    // tell apart from out here.
+    if kind == AttachmentKind::CapturedPage {
+        return Vec::new();
+    }
     let shown = if pdf {
         attachments
             .directory(id)
@@ -1198,15 +1270,35 @@ mod tests {
         );
     }
 
-    /// The other two kinds have their own reasons for being empty and get their
-    /// own words, the same argument `song_detail::note` makes about the card.
+    /// A typed chart has its own reason for being empty and gets its own words,
+    /// the same argument `song_detail::note` makes about the card.
     #[test]
-    fn an_empty_chart_of_each_kind_says_why_it_is_empty() {
+    fn an_empty_typed_chart_says_why_it_is_empty() {
         assert_eq!(nothing_to_show(AttachmentKind::Text, 1, 1), "Nothing typed yet.");
-        assert_eq!(
-            nothing_to_show(AttachmentKind::CapturedPage, 1, 1),
-            "Saved on this device. No preview yet."
+    }
+
+    /// The third kind no longer answers here at all. E5 gave a captured page
+    /// its own component, and that component is the only thing that can tell a
+    /// deleted `assets/` directory apart from a `page.html` with nothing in it
+    /// — so it owns both sentences and this screen asks it nothing.
+    #[test]
+    fn a_captured_page_is_not_this_screen_s_empty_state_to_write() {
+        let attachments = AttachmentsStore::new(Vec::new());
+        let body = Signal::new(String::new());
+        assert!(
+            empty_state(
+                attachments,
+                1,
+                AttachmentKind::CapturedPage,
+                false,
+                body,
+                Signal::new(1),
+                1,
+            )
+            .is_empty()
         );
+        assert_eq!(captured_of(AttachmentKind::CapturedPage, 7), vec![7]);
+        assert!(captured_of(AttachmentKind::Text, 7).is_empty());
     }
 
     /// A blank line is a line. The gap between a verse and a chorus is part of

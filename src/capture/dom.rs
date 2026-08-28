@@ -83,6 +83,24 @@ pub fn attr(node: &Handle, name: &str) -> Option<String> {
     }
 }
 
+/// This node's own characters, if it is a text node — and nothing at all if it
+/// is anything else.
+///
+/// The difference from [`text_of`] is the whole reason it exists. `text_of`
+/// answers "what does this subtree *say*", collapsing whitespace and inserting
+/// newlines at block boundaries, which is right for the detector and for the
+/// `body` the app searches. [`super::render`] is rebuilding a document rather
+/// than reading one: it needs each text node's characters exactly as the site
+/// wrote them, because inside a `<pre>` the runs of spaces are the chart. It
+/// lives here rather than there because this file is the only one in the module
+/// that is allowed to name `NodeData` — see the header.
+pub fn text_content(node: &Handle) -> Option<String> {
+    match &node.data {
+        NodeData::Text { contents } => Some(contents.borrow().to_string()),
+        _ => None,
+    }
+}
+
 pub fn set_attr(node: &Handle, name: &str, value: &str) {
     let NodeData::Element { attrs, .. } = &node.data else {
         return;

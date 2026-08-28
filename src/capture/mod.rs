@@ -83,6 +83,10 @@ pub mod detect;
 pub mod dom;
 pub mod fetch;
 pub mod reader;
+// E5: turning a saved `page.html` back into something Rinch can lay out.
+// Reads the attachment directory rather than the network, so it is the one
+// file in here that runs long after a capture is over.
+pub mod render;
 pub mod sanitise;
 
 use std::io;

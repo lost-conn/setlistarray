@@ -12,6 +12,8 @@ use crate::store::{AttachmentsStore, NavStore, Route, SetlistsStore, SongsStore}
 use crate::theme::{SCREEN_PAD, T_BODY, T_CHART, T_DETAIL_TITLE, T_META, T_META_SMALL};
 use crate::ui::{AttachmentThumb, ConfidenceDots, IconButton, MetaChip, icon};
 
+use super::captured_page::CapturedPageView;
+
 /// One row of the add-attachment chooser: badge, what it does, chevron.
 ///
 /// `1j` draws these as bordered boxes; here they wear the card fill the rest of
@@ -225,6 +227,28 @@ pub fn SongDetail(id: Option<SongId>) -> NodeHandle {
                                                 style: {format!("width: {width}px; height: {height}px; border-radius: 6px;")},
                                             }
                                         }
+                                        // E5: a captured page, drawn as the
+                                        // page rather than as its text. The
+                                        // box is exactly as tall as the eight
+                                        // lines of `T_CHART` it replaces —
+                                        // `PREVIEW_LINES` at 12.5 px on a 1.5
+                                        // line — and clips, because a card is a
+                                        // look at the top of a chart and the
+                                        // whole of it is one tap away. The same
+                                        // component full-screen is what the tap
+                                        // opens.
+                                        for att_id in capture_of_primary(songs, attachments, id) {
+                                            CapturedPageView {
+                                                key: {att_id},
+                                                attachment: {att_id},
+                                                base_px: {CARD_BASE_PX},
+                                                column_px: {CARD_PAGE_WIDTH},
+                                                budget: {crate::capture::render::CARD_ELEMENTS},
+                                                style: {format!(
+                                                    "max-height: {CARD_PREVIEW_HEIGHT}px; overflow: hidden;"
+                                                )},
+                                            }
+                                        }
                                         for (index, line, note) in preview_of_primary(songs, attachments, id) {
                                             div {
                                                 key: {index},
@@ -282,6 +306,19 @@ pub fn SongDetail(id: Option<SongId>) -> NodeHandle {
                                         src: {src.clone()},
                                         style: {format!("width: {width}px; height: {height}px; \
                                                          border-radius: 6px; margin-bottom: 10px;")},
+                                    }
+                                }
+                                for att_id in capture_of_row(songs, attachments, id, index, expanded) {
+                                    CapturedPageView {
+                                        key: {att_id},
+                                        attachment: {att_id},
+                                        base_px: {CARD_BASE_PX},
+                                        column_px: {ROW_PAGE_WIDTH},
+                                        budget: {crate::capture::render::CARD_ELEMENTS},
+                                        style: {format!(
+                                            "max-height: {CARD_PREVIEW_HEIGHT}px; overflow: hidden; \
+                                             padding-bottom: 10px;"
+                                        )},
                                     }
                                 }
                                 for (line_index, line, note) in preview_of_row(songs, attachments, id, index, expanded) {
@@ -620,6 +657,15 @@ fn preview(attachments: AttachmentsStore, id: AttachmentId) -> Vec<(usize, Strin
     let Some(attachment) = attachments.get(id) else {
         return Vec::new();
     };
+    // E5: a captured page is not eight lines of its extracted text any more.
+    // `captured_page::CapturedPageView`, mounted beside this in the card, draws
+    // the saved markup itself — and owns the text fallback and all three of the
+    // sentences that go with it, so that the card and the full-screen viewer
+    // cannot say different things about the same chart. Returning early here is
+    // what stops the two of them drawing it twice.
+    if attachment.kind == AttachmentKind::CapturedPage {
+        return Vec::new();
+    }
     let body = attachments.body(id).unwrap_or_default();
 
     // Leading blank lines are an artefact of however the text was written and
@@ -669,6 +715,23 @@ fn preview(attachments: AttachmentsStore, id: AttachmentId) -> Vec<(usize, Strin
 /// A constant, rather than `100%`, because of [`page_image`] — see there.
 const CARD_PAGE_WIDTH: u32 = crate::WIDTH - 2 * SCREEN_PAD_PX - 2 * 18;
 const ROW_PAGE_WIDTH: u32 = crate::WIDTH - 2 * SCREEN_PAD_PX;
+
+/// The type size a captured page is drawn at inside a card.
+///
+/// The same 12.5 px `theme::T_CHART` gives the text preview this replaced, so
+/// that a captured page and a typed one still read at the same size on the same
+/// screen. Everything in the page's own fragment is in `em` and resolves against
+/// this — see `capture::render`'s header.
+const CARD_BASE_PX: f32 = 12.5;
+
+/// How tall the captured-page preview is, in CSS pixels.
+///
+/// [`PREVIEW_LINES`] lines of `T_CHART`, which is 12.5 px on a 1.5 line: the
+/// box is exactly the height of the eight lines of extracted text it replaced,
+/// so a song with a typed chart and a captured one still has two cards of the
+/// same shape. It clips rather than scrolls, because a card that scrolled would
+/// be a second place to read a chart competing with the one the tap opens.
+const CARD_PREVIEW_HEIGHT: u32 = (PREVIEW_LINES as f32 * CARD_BASE_PX * 1.5) as u32;
 
 /// `SCREEN_PAD` as a number. `crate::theme::SCREEN_PAD` is the string `"22px"`,
 /// because everything else that uses it is interpolating it into CSS; this is
@@ -726,6 +789,51 @@ fn page_image(
     // never leaves a hairline of card showing under its bottom edge.
     let height = (width as u64 * page_height as u64).div_ceil(page_width as u64) as u32;
     Some((path.to_string_lossy().into_owned(), width, height))
+}
+
+/// The primary chart's id, but only when it is a captured page.
+///
+/// Nought-or-one for the reason everything else on this screen is: `rsx!`'s
+/// `for` is the only reactive conditional the macro has. It is an id rather
+/// than a rendered page because the rendering happens inside
+/// `CapturedPageView`'s own body, which runs once per mount — this runs on
+/// every redraw of the card, and a full html5ever parse of somebody's saved
+/// page has no business on that path. It is the same division of labour
+/// `page_image` keeps for a PDF: the cheap question here, the expensive work
+/// somewhere that happens once.
+fn capture_of_primary(
+    songs: SongsStore,
+    attachments: AttachmentsStore,
+    id: SongId,
+) -> Vec<AttachmentId> {
+    songs
+        .get(id)
+        .and_then(|song| song.primary())
+        .filter(|primary| {
+            attachments.get(*primary).map(|a| a.kind) == Some(AttachmentKind::CapturedPage)
+        })
+        .into_iter()
+        .collect()
+}
+
+/// The same, for an expanded row.
+fn capture_of_row(
+    songs: SongsStore,
+    attachments: AttachmentsStore,
+    id: SongId,
+    index: usize,
+    expanded: Signal<Vec<AttachmentId>>,
+) -> Vec<AttachmentId> {
+    let Some(attachment) = other_id(songs, attachments, id, index) else {
+        return Vec::new();
+    };
+    if !expanded.get().contains(&attachment) {
+        return Vec::new();
+    }
+    if attachments.get(attachment).map(|a| a.kind) != Some(AttachmentKind::CapturedPage) {
+        return Vec::new();
+    }
+    vec![attachment]
 }
 
 /// The same thing as a nought-or-one vector, because `rsx!`'s `for` is the only
@@ -794,10 +902,14 @@ fn note(attachment: &Attachment, shown: usize, total: usize) -> Option<String> {
             // between them; telling them apart would need a marker file for a
             // difference the reader cannot act on either way.
             AttachmentKind::Pdf => "No page preview yet.",
-            // E2 writes `page.html` into the directory and extracts the text
-            // beside it. A capture made before that lands has the page and no
-            // extract, and rendering the page itself is E5.
-            AttachmentKind::CapturedPage => "Saved on this device. No preview yet.",
+            // Unreachable, and left as a `return` rather than a sentence so
+            // that it stays that way. E5 moved everything a captured page says
+            // about itself into `captured_page`, which owns the page, the text
+            // it falls back to and the two sentences for when there is neither;
+            // `preview` above returns before it can get here. A sentence in
+            // this arm would be a fourth wording of the same state, in a file
+            // that no longer knows enough to choose between them.
+            AttachmentKind::CapturedPage => return None,
         }
         .to_string(),
     )
@@ -934,7 +1046,6 @@ verse two"))]);
     fn a_kind_with_nothing_to_render_says_so_instead_of_faking_it() {
         for (kind, expected) in [
             (AttachmentKind::Pdf, "No page preview yet."),
-            (AttachmentKind::CapturedPage, "Saved on this device. No preview yet."),
             (AttachmentKind::Text, "Nothing typed yet."),
         ] {
             let (songs, attachments, id) = library(vec![of_kind(kind)]);
@@ -943,6 +1054,27 @@ verse two"))]);
             assert_eq!(lines[0].1, expected);
             assert!(lines[0].2, "and it is styled as a note, not as a chart");
         }
+    }
+
+    /// The third kind is deliberately not in the list above any more. E5 moved
+    /// a captured page out of this preview and into
+    /// `captured_page::CapturedPageView`, which draws the saved markup and owns
+    /// every sentence it can say instead — so a captured page contributing a
+    /// line here would be the card saying the same thing twice, in two
+    /// wordings, from two files.
+    #[test]
+    fn a_captured_page_draws_itself_and_leaves_this_preview_empty() {
+        let (songs, attachments, id) = library(vec![Attachment {
+            body: Some("Verse one".into()),
+            ..of_kind(AttachmentKind::CapturedPage)
+        }]);
+        assert!(preview_of_primary(songs, attachments, id).is_empty());
+        assert_eq!(capture_of_primary(songs, attachments, id).len(), 1);
+        assert_eq!(
+            note(&of_kind(AttachmentKind::CapturedPage), 0, 0),
+            None,
+            "and nothing reaches the sentence this file used to keep for it"
+        );
     }
 
     #[test]

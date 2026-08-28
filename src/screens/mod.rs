@@ -1,6 +1,11 @@
 mod add_to_setlist;
 mod attachment_viewer;
 mod capture;
+// Not a screen and has no route: the one component that draws a captured page,
+// mounted by `song_detail`'s card and by `attachment_viewer`. See its header —
+// a shared component is how those two are made to agree about what a captured
+// page looks like, the way one rasterised PNG makes them agree about a PDF.
+mod captured_page;
 mod chart_editor;
 mod library;
 mod setlist_detail;
