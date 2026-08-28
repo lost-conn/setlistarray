@@ -351,12 +351,24 @@ pub fn ChartEditor(song: Option<SongId>, chart: Option<AttachmentId>) -> NodeHan
                 }
 
                 if blank.get() {
+                    // Both of these name the control in words rather than
+                    // drawing it. The second used to read "tap \u{2715} to leave",
+                    // with the character itself sitting in the sentence — the
+                    // same fault K13 cleared out of the chips, where a glyph no
+                    // bundled face carries tofus on Android. K13's rule was
+                    // "use a Tabler glyph for an icon, spell the word for an
+                    // arrow", and prose pointing *at* an icon is a third case
+                    // neither half covers: the icon is real (`IconButton` with
+                    // `TablerIcon::X`, drawn as a path, above), it is the
+                    // sentence that cannot carry a picture. So the sentence
+                    // says what the control does, the way its sibling one
+                    // branch up already did. Card K21.
                     div {
                         style: {format!("{T_META_SMALL} color: var(--sla-danger); margin-top: 8px;")},
                         {if editing.is_some() {
                             "Nothing typed. To delete this chart, long-press it on the song and choose Remove attachment."
                         } else {
-                            "Nothing typed yet. Write a line, or tap ✕ to leave."
+                            "Nothing typed yet. Write a line, or close the editor to leave."
                         }}
                     }
                 }
