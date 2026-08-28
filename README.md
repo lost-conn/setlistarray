@@ -41,7 +41,7 @@ local path dependencies, so `Cargo.toml` expects three checkouts side by side:
 ```
 projects/personal/
 ├── setlistarray/     ← this
-├── rinch-fixes/      ← github.com/joeleaver/rinch, branch carrying #245, #246, #266, #267, #270, #274, #281, #286, #292, #298, #317, and the K20 double-paint fix (no PR yet)
+├── rinch-fixes/      ← github.com/joeleaver/rinch, branch carrying #245, #246, #266, #267, #270, #274, #281, #286, #292, #298, #317, #342
 └── rhypedb-main/     ← github.com/joeleaver/rhypedb, main
 ```
 
@@ -420,12 +420,13 @@ reasoning, and the two options not taken, are in
   twice in the same colour in the same place, so `group_header_accent` was green
   throughout, counting 156 accent pixels where it needed 40. The cause is one
   word in `rinch-dom`: `PositionValue` defaulted to `Relative` rather than the
-  `Static` CSS says is the initial value, and text
-  nodes never reach style resolution, so every text node in every document
-  looked positioned, was hoisted out of its parent into the nearest
+  `Static` CSS says is the initial value, and text nodes never reach style
+  resolution, so every text node in every document looked positioned, was
+  hoisted out of its parent into the nearest
   stacking-context ancestor, and landed where the guard against painting an IFC
-  root's children twice cannot see it. Fixed on the `rinch-fixes` branch and
-  wanting a PR; the check that would have caught it is
+  root's children twice cannot see it.
+  [joeleaver/rinch#342](https://github.com/joeleaver/rinch/pull/342); the check
+  that would have caught it is
   `group_header_double_paint` in `scripts/screenshot-baseline.json`.
 - **INTERNET really is invisible.** `dumpsys package` lists it under *install
   permissions*, `granted=true`, with no runtime permissions at all — which is
@@ -631,10 +632,7 @@ diff no longer needed; the rest are still waiting on review.
 - [joeleaver/rinch#298](https://github.com/joeleaver/rinch/pull/298) — an app can tell Android its system bars sit over a light background, which is what made the clock invisible
 - [joeleaver/rinch#306](https://github.com/joeleaver/rinch/pull/306) — the two loose ends issue #300 named after the #268 review: an inline, unrounded viewport division `dispatch_oncontextmenu` still did, and an architecture doc that never named `window_size`'s unit
 - [joeleaver/rinch#317](https://github.com/joeleaver/rinch/pull/317) — a dropdown menu's dismiss backdrop sits under the panel it belongs to, which is what made every menu item dead. Based on #292's branch rather than `main`, because #292 is what makes the fault visible and #292 should not ship without it
-
-**Fixed on the branch, no PR opened yet:**
-
-- The double paint behind card K20 — `PositionValue`'s `#[default]` in
+- [joeleaver/rinch#342](https://github.com/joeleaver/rinch/pull/342) — the double paint behind card K20: `PositionValue`'s `#[default]` in
   `crates/rinch-dom/src/computed_style/values.rs`, moved from `Relative` to the
   `Static` that CSS gives `position` as its initial value. Style resolution runs
   on elements only, so every text node in every Rinch document keeps
@@ -651,7 +649,10 @@ diff no longer needed; the rest are still waiting on review.
   `Relative` to the same Taffy position and `is_positioned_z_auto` is the only
   place in the tree that asks whether a position is non-static, so the change is
   one predicate wide. Two regression tests in
-  `crates/rinch-dom/tests/stacking_tests.rs` fail before and pass after.
+  `crates/rinch-dom/tests/stacking_tests.rs` fail before and pass after. Cut
+  from `main` rather than from the integration branch, because unlike #317 it
+  needs none of the others to be visible: every Rinch app has been painting its
+  text twice for as long as the default has been wrong.
 
 The `../rinch-fixes` integration branch carries the still-open fixes above
 (plus the already-landed and superseded ones it was built from), which is why
