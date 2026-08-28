@@ -17,7 +17,12 @@ scripts/with-display.sh --stop                       # tear the display down
 already safe to run as-is.
 
 **The wrapper is necessary and not sufficient.** It moves the app; it cannot
-move a dialog the app does not draw. `rfd` here is built on `xdg-portal`
+move a dialog the app does not draw. (It only moves the app because it launches
+with `env -u WAYLAND_DISPLAY` — this is a Wayland session, and winit ignores
+`DISPLAY` entirely when `WAYLAND_DISPLAY` is set. Card E3 found that hole the
+hard way; if you ever start the app without the wrapper, unset it yourself.)
+
+`rfd` here is built on `xdg-portal`
 (`Cargo.lock` has `ashpd` and no `gtk3`), so `pick_file` opens nothing itself —
 it asks `org.freedesktop.portal.Desktop`, and the chooser is drawn by
 `xdg-desktop-portal-gtk`, a process this app did not start and whose

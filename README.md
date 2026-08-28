@@ -870,6 +870,15 @@ seam every window-backed layout and paint site uses.
   (491×1065 here, not 393×852) after a `screenshot` command. Hit-test with the
   boxes from a `dom_tree` dump rather than with coordinates read off a picture,
   and take visual measurements from a build without the feature.
+- **Setting `DISPLAY` does not move a winit app on a Wayland desktop.** winit
+  prefers the Wayland backend whenever `WAYLAND_DISPLAY` is set and never looks
+  at `DISPLAY` at all, so a wrapper that exported `:99` and nothing else put the
+  window on the developer's real screen — the exact thing
+  `scripts/with-display.sh` exists to prevent. Found during card E3, by an agent
+  that had used the wrapper as instructed and then found `xwininfo -root -tree`
+  on `:99` reporting *0 children* while the app was plainly running. Both the
+  wrapper and `scripts/screenshot.sh` now launch with `env -u WAYLAND_DISPLAY`.
+  If you ever start the app by hand, do the same.
 - `pgrep -f setlistarray` matches your own shell's command line. Kill the app by
   the PID you started, never by pattern.
 - **`markup5ever_rcdom` empties nodes you are still holding.** Its hand-written

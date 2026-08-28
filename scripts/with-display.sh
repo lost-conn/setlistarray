@@ -15,6 +15,18 @@
 # `import`, `xwininfo` and `xprop` are as happy against it as against a screen
 # with a monitor attached.
 #
+# **Setting DISPLAY is not enough on a Wayland desktop, and this machine is
+# one.** winit prefers the Wayland backend whenever `WAYLAND_DISPLAY` is set
+# and never looks at `DISPLAY` at all, so a wrapper that exported `:99` and
+# nothing else handed the app straight back to the session compositor — the
+# window opened on the developer's real desktop, exactly what this script is
+# for. It was found on 2026-08-28 during card E3, by an agent that had used
+# this wrapper as instructed and then could not find the window it had just
+# driven anywhere on `:99`. `scripts/screenshot.sh` already knew — it launches
+# with `env -u WAYLAND_DISPLAY` and says why — so the knowledge existed and was
+# in the wrong file. It is here now, which is the only place that makes the
+# rule in CLAUDE.md true.
+#
 # Usage:
 #   scripts/with-display.sh cargo run --release        # run anything on :99
 #   scripts/with-display.sh scripts/screenshot.sh      # (screenshot.sh does
@@ -120,8 +132,10 @@ case "${1:-}" in
         start_display
         # For `eval "$(scripts/with-display.sh --export)"`, which is how a
         # human gets a shell pointed at the private display without wrapping
-        # every command in this script.
-        printf 'export DISPLAY=%s WINIT_X11_SCALE_FACTOR=%s SLA_HEADLESS_DISPLAY=1\n' \
+        # every command in this script. `unset WAYLAND_DISPLAY` for the reason
+        # in the header: a shell that still has it exported will put the next
+        # GUI app it starts on the real desktop, whatever DISPLAY says.
+        printf 'unset WAYLAND_DISPLAY; export DISPLAY=%s WINIT_X11_SCALE_FACTOR=%s SLA_HEADLESS_DISPLAY=1\n' \
             "$DISPLAY_NAME" "$SCALE_FACTOR"
         exit 0
         ;;
@@ -136,4 +150,9 @@ start_display
 # `SLA_HEADLESS_DISPLAY` is the flag that stops screenshot.sh re-entering this
 # script when it is already inside it. Without it the two would call each other
 # until the shell ran out of processes.
-DISPLAY="$DISPLAY_NAME" WINIT_X11_SCALE_FACTOR="$SCALE_FACTOR" SLA_HEADLESS_DISPLAY=1 exec "$@"
+# `env -u WAYLAND_DISPLAY` is load-bearing, not tidiness — see the header.
+exec env -u WAYLAND_DISPLAY \
+    DISPLAY="$DISPLAY_NAME" \
+    WINIT_X11_SCALE_FACTOR="$SCALE_FACTOR" \
+    SLA_HEADLESS_DISPLAY=1 \
+    "$@"
