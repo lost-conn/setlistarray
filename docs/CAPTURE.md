@@ -461,3 +461,158 @@ Two things Phase E should probably grow, neither of them in E2–E6 as written:
 - **A line in E2's copy that sets the expectation.** "Works with pages that are
   pages" is the honest framing, and it costs nothing to say before someone
   pastes a Cloudflare-protected URL.
+
+---
+
+## Card E2 — the capture screen, and the state machine E4 builds on
+
+Wireframe `1l`, built 2026-08-28. The screen is `src/screens/capture.rs`; the
+route is `Route::CaptureWebpage { song }`; the way in is the third row of song
+detail's **+ Add attachment** chooser. `Save as: Reader text ▾` is not on it —
+that row is E3, and a control that looked live and did nothing would be worse
+than the gap (the rule `song_form` set for the same section).
+
+### The states
+
+One enum, so that "running with a result in hand", "attaching a capture that
+failed" and "a cancelled capture still ticking a bar" cannot be constructed.
+
+| State | What it means | Attach? |
+| --- | --- | :-: |
+| `Waiting` | Nothing asked for. The URL field is the screen. | no |
+| `Running { run, url, step, stop }` | A worker is out. `step` is the last thing it reported. | no |
+| `Settled { run, url, outcome }` | The worker answered. All five outcomes live in `outcome`. | if there is a page |
+| `Attached { attachment }` | It is a chart on the song. The screen leaves. | no |
+| `NoWorker { url }` | The device would not give the app a thread. | no |
+
+`Settled` is where **E4's three screens go**: `outcome` is
+`Captured | Partial | Blocked | Failed | Cancelled`, each already carrying its
+own user-facing sentence (`Failure`'s `Display`, `BlockReason::explain`), so
+E4 is a `match` on one field and does not have to touch the machine.
+
+**Pruned, deliberately:**
+
+- **`Attaching`.** `write_into` is called straight from the Attach handler on
+  the UI thread and no frame is drawn while it runs, so the state would be
+  unobservable. Bounded by `max_page_bytes + max_total_asset_bytes` = 12 MiB,
+  less than `pdf::import` already writes synchronously. If that write ever
+  moves to a worker, this state comes back.
+- **`Cancelling`.** The screen does not wait for a worker to acknowledge. It
+  returns to `Waiting` at once and drops the late answer by run id.
+- **`Restoring`.** Nothing is persisted before Attach, so an app killed
+  mid-capture comes back with no capture and nothing on disk to reconcile.
+  That is also what makes Cancel free.
+
+### The transitions
+
+| From | Event | Guard | To | Side effect |
+| --- | --- | --- | --- | --- |
+| `Waiting` | Capture | URL not blank | `Running{run+1}` | spawn a worker |
+| `Waiting` | Capture | thread refused | `NoWorker` | — |
+| `Running` | `Step(run)` | run matches | `Running{step}` | — |
+| `Running` | `Done(run)` | run matches | `Settled` | — |
+| `Running` | Cancel | — | `Waiting`, URL kept | flag set by `Drop` |
+| `Running` | ← | — | leaves | flag set by scope disposal |
+| `Settled` | Attach | a page is present | `Attached` | row + `write_into` |
+| `Settled` | Attach | write failed | `Settled` (restored) | row detached again |
+| `Settled` | Capture ("Try again") | — | `Running{run+1}` | spawn a worker |
+| `Settled` | Cancel | — | leaves | — |
+| `NoWorker` | Capture | — | `Running` / `NoWorker` | spawn a worker |
+
+**Rejected edges**, each of them a test: a `Step` or `Done` for a superseded
+run; anything at all arriving after Cancel; a second `Done` from one worker;
+anything reaching `Attached`; Attach pressed twice; Attach over a state with no
+page.
+
+### External reality
+
+| What happens | What the machine does |
+| --- | --- |
+| App backgrounded mid-fetch | The worker keeps going; its `update_send` closures queue on the main-thread dispatcher and run when the loop pumps again. |
+| Process killed mid-fetch | Nothing was written. The screen comes back at the library, the capture is gone, and there is no half-state on disk. |
+| Network drops between the HTML and the images | Every image fetch fails, each becomes a `Missed`, the outcome is `Partial`, and Attach stays available — a chart with a missing photo is still the chart. |
+| Cancel while a request is in flight | The flag is honoured at the next checkpoint (between requests). The open socket is **not** aborted — `rinch-http` exposes no way — so one request runs to its timeout on a thread nobody is listening to. Nothing is written either way. |
+| Attach pressed twice | The first press takes the capture out of the state; the second finds `attachable() == None`. On a single-threaded UI the second tap cannot land *during* the first write. |
+| A redirect | ureq follows it and does not say where it went. `source_url` records what the user pasted, which is what E6 should re-fetch anyway. The **preview is the mitigation**: the spike's songsterr URL that redirected to a different song is visible in the preview before Attach. |
+| A 30 MB image | Downloaded in full (no mid-download abort), refused by `max_asset_bytes`, recorded as `Missed` → `Partial`. Costs transient heap, not disk. |
+| The screen is gone when the worker answers | A write to a disposed signal is a warn-once no-op. Usually the worker never gets that far, because the flag was set on the way out. |
+
+### Where the fetch runs
+
+**A thread per capture**, `sla-capture`, 4 MB of stack — four times D5's
+rasteriser thread, because `dom::walk` and `dom::collect_text` recurse once per
+level of nesting over markup from a stranger's server.
+
+* **UI → worker** is one `AtomicBool`, read at every checkpoint the engine
+  offers and answered as `Wanted::No`.
+* **worker → UI** is `Signal::update_send`, which hops a closure onto the main
+  thread and runs it against the live state. The *reduction happens on the main
+  thread*, inside `Flow::deliver`, which is what makes comparing run ids there
+  safe. A mailbox signal the worker `set` instead would lose a message whenever
+  two arrived between frames, and the lost one could be the final outcome.
+
+`StopOnDrop` lives *inside* `Flow::Running` and sets the flag in its `Drop`, so
+one mechanism covers Cancel, a second Capture, the worker finishing, and the
+screen being unmounted — every one of them is a way that value stops being
+reachable. Progress ticks mutate through `&mut Flow` so a running capture does
+not cancel itself with its own report. **Correctness never depends on the flag
+arriving**, which is D5's lesson kept: the run id is what keeps the screen
+right, the flag only stops work.
+
+### What the engine had to grow
+
+* `Progress::Stripping { bytes }` and `Progress::Images { done, total, bytes }`
+  — the counter under the bar has to be measured, and `fetched_bytes` was only
+  available after the capture finished.
+* `Wanted`, returned from the progress callback. It is the only place a
+  blocking capture hands control back, so it is the only place a Cancel can be
+  heard. The answer is latched, so a stale closure cannot un-cancel a run.
+* `Outcome::Cancelled`, carrying no page. Handing back half a capture as though
+  it were a result is the lie the variant exists to prevent.
+
+### Two faults found by running it
+
+**`RefCell already borrowed`, on Attach, on the real app, with every test
+green.** `Signal::with` holds the signal store borrowed for as long as its
+closure runs, and `attach_captured` writes to `SongsStore` — another signal,
+wanting `borrow_mut`. `flow.with(|state| attach_captured(…state.attachable()))`
+is a nested borrow of one `RefCell` and it panicked on the main thread of the
+first end-to-end run. It is the same fault `AttachmentsStore::update` records
+from card D2, met from the other side. The fix is structural rather than a
+comment: `Flow::take_settled` moves the capture *out* of the signal, and the
+store is written afterwards — which also saves copying twelve megabytes and
+*is* the double-tap guard, because after the take there is nothing to attach.
+
+**← and Cancel were the same handler**, which made "the user leaves the screen
+mid-capture" unreachable — a row of the cancel table with no way to get to it.
+They are two intentions and now have two controls.
+
+### Verified
+
+* `cargo test`: 366 (334 before), the state machine tested without a network,
+  a window or a thread.
+* `scripts/screenshot.sh`: 9/9.
+* **Desktop, on `:99`**: `hymnal.net/en/hymn/h/1` captured, cancelled
+  mid-flight and re-captured, and attached. `78 KB so far` while running,
+  `66 KB on this device` when settled, `Downloaded 1 image`. On disk:
+  `attachments/25/page.html` (56,248 B) + `assets/000.png` (8,830 B), zero
+  `<script>`, `src="assets/000.png"`, and no remote `img`/`link`/`script`
+  reference left but an inert `<link rel=canonical>`.
+* **On the phone (moto g stylus 5G, ZY22FD66GZ)**: the same page captured and
+  attached. **This is the first capture that has ever completed on Android** —
+  the permission section above says the socket opening was "a reading of the
+  documentation, not a measurement", and it is now a measurement.
+
+### Found and not fixed
+
+* **Full-page mode previews the site's navigation**, not the chart: hymnal.net
+  gives `Login · Sign up · Follow us:` before the hymn. Reader mode is what
+  fixes it and reader mode is E3.
+* **The soft keyboard covers the footer** on Android, so Capture cannot be
+  reached without dismissing it first. The same Rinch gap `chart_editor`
+  documents (no IME inset is exposed); this screen does not even have that
+  screen's scrollable padding, because its footer is pinned.
+* **A crash between `SongsStore::attach` and `write_into` leaves an empty
+  attachment directory** with no row. The panic above produced one. Nothing in
+  this card introduced it — it is the shape `pdf::import` has had since D3 —
+  but a sweep for directories with no row is worth a card.

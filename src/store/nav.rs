@@ -27,6 +27,17 @@ pub enum Route {
     /// carried because a chart cannot exist without one — `attach` needs it,
     /// and ✕ goes back to it.
     TypeChart { song: SongId, chart: Option<AttachmentId> },
+    /// Save a webpage offline (`1l`, card E2). Carries the song for the same
+    /// reason `TypeChart` does: a capture cannot exist without one — it is
+    /// `SongsStore::attach` that mints the row and the directory the page is
+    /// written into — and ← has to land back on the song that opened it.
+    ///
+    /// It does *not* carry an attachment. A capture screen only ever produces
+    /// a new chart; there is no "re-capture this one" way in, and if E6's
+    /// re-check grows one it will be a different operation with a different
+    /// question to answer (replace, or keep both?) rather than this route with
+    /// an `Option` on it.
+    CaptureWebpage { song: SongId },
     /// The full-screen attachment viewer (`1k`, card D5). Carries the song as
     /// well as the chart for two reasons, and neither is decoration: the top
     /// bar prints the song's name under the file's, and ← has to land back on

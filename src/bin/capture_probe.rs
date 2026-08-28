@@ -18,7 +18,7 @@
 use std::path::PathBuf;
 
 use setlistarray::capture::{
-    CaptureMode, HttpFetcher, Limits, Outcome, PAGE_FILE, Progress, capture, write_into,
+    CaptureMode, HttpFetcher, Limits, Outcome, PAGE_FILE, Progress, Wanted, capture, write_into,
 };
 
 fn main() {
@@ -65,11 +65,15 @@ fn main() {
     for (index, url) in urls.iter().enumerate() {
         let started = std::time::Instant::now();
         let outcome = capture(url, mode, &limits, &fetcher, |step| {
-            if let Progress::Images { done, total } = step {
+            if let Progress::Images { done, total, bytes } = step {
                 if total > 0 {
-                    eprint!("\r  images {done}/{total}   ");
+                    eprint!("\r  images {done}/{total} · {bytes} bytes   ");
                 }
             }
+            // The probe never cancels. It is a measuring harness with no user
+            // in it to change their mind, and a run that stopped early would
+            // not be the measurement `docs/CAPTURE.md` claims it is.
+            Wanted::Yes
         });
         eprint!("\r                        \r");
 
@@ -78,6 +82,11 @@ fn main() {
             Outcome::Partial(page) => format!("PARTIAL ({} missed)", page.missed.len()),
             Outcome::Blocked { reason, .. } => format!("BLOCKED {reason:?}"),
             Outcome::Failed(failure) => format!("FAILED {failure}"),
+            // Unreachable from here — this program answers `Wanted::Yes`
+            // forever — and spelled out anyway so that the day something in
+            // the engine learns to cancel itself, the harness says so instead
+            // of printing a row of dashes.
+            Outcome::Cancelled => "CANCELLED".to_string(),
         };
 
         match outcome.page() {

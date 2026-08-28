@@ -371,6 +371,20 @@ pub fn SongDetail(id: Option<SongId>) -> NodeHandle {
                                 }
                             }
 
+                            // E2. The screen it opens does the network work on
+                            // a thread of its own; nothing about pressing this
+                            // row blocks, and the capture cannot outlive the
+                            // screen it is drawn on — see `screens::capture`.
+                            div {
+                                onclick: move || nav.go(Route::CaptureWebpage { song: id }),
+                                style: {PRODUCER_ROW},
+                                AttachmentThumb { kind: {Some(AttachmentKind::CapturedPage)} }
+                                span { style: "flex: 1; font-weight: 500; font-size: 15px;", "Save a webpage offline" }
+                                span { style: "color: var(--sla-muted); display: flex;",
+                                    {icon(__scope, TablerIcon::ChevronRight, 17)}
+                                }
+                            }
+
                             // D2, which used to be what the accent line did on
                             // its own.
                             div {

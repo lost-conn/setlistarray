@@ -1,5 +1,6 @@
 mod add_to_setlist;
 mod attachment_viewer;
+mod capture;
 mod chart_editor;
 mod library;
 mod setlist_detail;
@@ -12,6 +13,7 @@ mod stub;
 
 pub use add_to_setlist::AddToSetlistSheet;
 pub use attachment_viewer::AttachmentViewer;
+pub use capture::CaptureScreen;
 pub use chart_editor::ChartEditor;
 pub use library::Library;
 pub use setlist_detail::SetlistDetail;

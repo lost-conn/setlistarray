@@ -33,10 +33,16 @@
 //! | [`Partial`](Outcome::Partial) | The page came down, some images did not | "partial capture" |
 //! | [`Blocked`](Outcome::Blocked) | The page came down and is not a chart | "paywalled / JS-only" |
 //! | [`Failed`](Outcome::Failed) | Nothing came down | "fetch failed" |
+//! | [`Cancelled`](Outcome::Cancelled) | The caller said stop | — |
 //!
 //! `Blocked` still carries the page where there is one, because the user may
 //! well want to keep a paywalled teaser — the app's job is to say what it got,
 //! not to decide for them.
+//!
+//! `Cancelled` came with card E2, which needed Cancel to stop the *work* and
+//! not merely stop the screen from watching. It is the answer to a
+//! [`Wanted::No`] from the progress callback, it carries no page, and it is the
+//! one outcome that is not a verdict on the site.
 //!
 //! ## Where the bytes go
 //!
@@ -251,6 +257,12 @@ pub enum Outcome {
         page: Option<Box<CapturedPage>>,
     },
     Failed(Failure),
+    /// The caller said stop, and it was heard between two requests. Carries no
+    /// page on purpose: the user asked for this not to happen, and half a
+    /// capture handed back as though it were a result is exactly the lie the
+    /// variant exists to prevent. Nothing is on disk either — a capture writes
+    /// nothing until [`write_into`], which is what makes cancelling free.
+    Cancelled,
 }
 
 impl Outcome {
@@ -260,17 +272,72 @@ impl Outcome {
         match self {
             Outcome::Captured(page) | Outcome::Partial(page) => Some(page),
             Outcome::Blocked { page, .. } => page.as_deref(),
-            Outcome::Failed(_) => None,
+            Outcome::Failed(_) | Outcome::Cancelled => None,
         }
     }
 }
 
+/// The answer the caller gives every time the engine reports progress:
+/// **is this capture still wanted?**
+///
+/// A blocking capture hands control back to its caller in exactly one place —
+/// the progress callback — so that callback is the only place a Cancel can
+/// possibly be heard. Card E2 wanted Cancel to mean something more than "the
+/// screen stops looking", and this is the whole of the mechanism: the screen
+/// answers [`Wanted::No`], the engine stops at its next checkpoint, and the
+/// outcome is [`Outcome::Cancelled`].
+///
+/// What it is **not** is an abort. The checkpoints sit *between* HTTP
+/// requests, because `rinch-http` exposes no way to stop one that is already
+/// open (see [`fetch`]) — so a Cancel pressed while a socket is waiting stops
+/// every request after this one and lets this one run to its timeout on a
+/// thread nobody is listening to. That is honest and it is cheap: the bytes go
+/// nowhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wanted {
+    Yes,
+    No,
+}
+
 /// Where a capture has got to. E2's checklist reads these in order.
+///
+/// Every number on this enum is measured rather than estimated, which is the
+/// point of it being here rather than on a timer in the screen: `done`/`total`
+/// is E2's "3 of 7" and `bytes` is its "1.2 MB so far". `total` is counted
+/// after the page has been walked for images that actually carry an address,
+/// so it is not a count of `<img>` elements — see [`assets::rewrite`].
+///
+/// `bytes` counts **what is being kept**, not what the request cost: the page
+/// as the site served it, plus every image that landed and was small enough to
+/// keep. An image fetched and then refused for being over
+/// [`Limits::max_asset_bytes`] spent the user's data and is not in this number,
+/// because the sentence it sits under is "will work with no signal" and that
+/// sentence is about the file, not the traffic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Progress {
+    /// The page has been asked for and nothing has come back. There is nothing
+    /// to count yet, which is why this variant carries no bytes.
     Fetching,
-    Stripping,
-    Images { done: usize, total: usize },
+    /// The page is in hand and is being made safe. `bytes` is exactly what the
+    /// site served, before anything was thrown away.
+    Stripping { bytes: u64 },
+    /// Images. `done` have landed of `total` worth fetching.
+    Images {
+        done: usize,
+        total: usize,
+        bytes: u64,
+    },
+}
+
+impl Progress {
+    /// The running total behind "1.2 MB so far". Zero while the page itself is
+    /// still in the air, because at that moment nothing has arrived.
+    pub fn bytes(self) -> u64 {
+        match self {
+            Progress::Fetching => 0,
+            Progress::Stripping { bytes } | Progress::Images { bytes, .. } => bytes,
+        }
+    }
 }
 
 /// Fetch a URL and turn it into something worth keeping.
@@ -279,12 +346,17 @@ pub enum Progress {
 /// [`Fetcher`] for why this is a loop rather than a chain of callbacks. The
 /// `progress` closure is called on that same thread, so E2 has to hop its
 /// signal updates back to the main thread itself.
+///
+/// `progress` answers [`Wanted`], and answering [`Wanted::No`] once stops the
+/// capture for good: the answer is latched here rather than asked again, so a
+/// screen that has gone away cannot be talked back into a capture by a stale
+/// closure returning `Yes` on the next call.
 pub fn capture(
     url: &str,
     mode: CaptureMode,
     limits: &Limits,
     fetcher: &dyn Fetcher,
-    mut progress: impl FnMut(Progress),
+    mut progress: impl FnMut(Progress) -> Wanted,
 ) -> Outcome {
     let url = url.trim();
     // A pasted URL rarely has a scheme on it. Assume https rather than
@@ -300,7 +372,29 @@ pub fn capture(
         return Outcome::Failed(Failure::NotAUrl(url));
     }
 
-    progress(Progress::Fetching);
+    // One latch for the whole capture. `report` is what every stage below
+    // calls instead of `progress` directly, and it does two things the raw
+    // closure cannot: it remembers a `No` so the caller is never asked twice
+    // (a screen that has been dropped should not get a second chance to
+    // change its mind), and it gives `assets::rewrite` — which reports from
+    // inside its own loop — somewhere to put the answer that this function can
+    // read afterwards. A `Cell` rather than a `bool` because the closure
+    // handed to `rewrite` borrows it while `report` is also live.
+    let stopped = std::cell::Cell::new(false);
+    let mut report = |step: Progress| -> Wanted {
+        if stopped.get() {
+            return Wanted::No;
+        }
+        let answer = progress(step);
+        if answer == Wanted::No {
+            stopped.set(true);
+        }
+        answer
+    };
+
+    if report(Progress::Fetching) == Wanted::No {
+        return Outcome::Cancelled;
+    }
     let response = match fetcher.get(&url) {
         Ok(response) => response,
         Err(failure) => return Outcome::Failed(failure),
@@ -329,7 +423,12 @@ pub fn capture(
 
     let fetched_bytes = response.body.len() as u64;
 
-    progress(Progress::Stripping);
+    if report(Progress::Stripping {
+        bytes: fetched_bytes,
+    }) == Wanted::No
+    {
+        return Outcome::Cancelled;
+    }
     let document = dom::parse(&response.body);
     let base = assets::base_url(&document, &url);
     let title = dom::title_of(&document).unwrap_or_else(|| url.clone());
@@ -350,14 +449,30 @@ pub fn capture(
     }
 
     let (downloaded, missed) = match &base {
-        Some(base) => assets::rewrite(&document, base, fetcher, limits, |done, total| {
-            progress(Progress::Images { done, total })
+        Some(base) => assets::rewrite(&document, base, fetcher, limits, |done, total, spent| {
+            // The page's own bytes are added here rather than inside `rewrite`,
+            // which has never seen them. What the screen shows is the size of
+            // the thing it is about to keep, and that is both halves.
+            report(Progress::Images {
+                done,
+                total,
+                bytes: fetched_bytes + spent,
+            })
         }),
         // No base means the URL did not parse, which `Url::parse` above has
         // already ruled out — but if it ever happens, a page with remote
         // images is a partial capture, not a crash.
         None => (Vec::new(), Vec::new()),
     };
+
+    // Asked *after* `rewrite` rather than inside it, because `rewrite` breaks
+    // its loop on a `No` and has no way to say so in a `(Vec, Vec)`. The images
+    // it did not attempt are deliberately not recorded as `Missed`: they were
+    // never tried, this page is being thrown away, and a list of things that
+    // did not happen to a capture nobody is keeping is noise.
+    if stopped.get() {
+        return Outcome::Cancelled;
+    }
 
     let page = CapturedPage {
         text: dom::text_of(&dom::root(&document)),
@@ -461,7 +576,7 @@ mod tests {
             mode,
             &Limits::default(),
             &net,
-            |_| {},
+            |_| Wanted::Yes,
         )
     }
 
@@ -618,7 +733,7 @@ mod tests {
             CaptureMode::FullPage,
             &Limits::default(),
             &PdfSite,
-            |_| {},
+            |_| Wanted::Yes,
         );
         let Outcome::Failed(Failure::NotHtml { content_type }) = outcome else {
             panic!("expected a NotHtml failure");
@@ -646,31 +761,142 @@ mod tests {
             CaptureMode::FullPage,
             &Limits::default(),
             &net,
-            |_| {},
+            |_| Wanted::Yes,
         );
         assert!(matches!(outcome, Outcome::Captured(_)), "{outcome:?}");
     }
 
-    #[test]
-    fn the_progress_checklist_reports_every_stage_in_order() {
+    /// Two images and a page, so that every number E2 prints has something to
+    /// be checked against.
+    fn two_image_site() -> (Canned, u64) {
+        let body = chart_html(r#"<img src="/a.png"><img src="/b.png">"#);
+        let bytes = body.len() as u64;
         let net = Canned::default()
-            .html(
-                "https://tabs.example/song/1",
-                &chart_html(r#"<img src="/a.png"><img src="/b.png">"#),
-            )
+            .html("https://tabs.example/song/1", &body)
             .image("https://tabs.example/a.png", PNG)
             .image("https://tabs.example/b.png", PNG);
+        (net, bytes)
+    }
 
-        let mut seen = Vec::new();
-        capture(
+    fn watch(net: &Canned, answer: impl FnMut(Progress) -> Wanted) -> (Outcome, Vec<Progress>) {
+        let seen = std::cell::RefCell::new(Vec::new());
+        let mut answer = answer;
+        let outcome = capture(
+            "https://tabs.example/song/1",
+            CaptureMode::FullPage,
+            &Limits::default(),
+            net,
+            |step| {
+                seen.borrow_mut().push(step);
+                answer(step)
+            },
+        );
+        (outcome, seen.into_inner())
+    }
+
+    #[test]
+    fn the_progress_checklist_reports_every_stage_in_order() {
+        let (net, page_bytes) = two_image_site();
+        let (_, seen) = watch(&net, |_| Wanted::Yes);
+
+        assert_eq!(seen[0], Progress::Fetching);
+        assert_eq!(seen[1], Progress::Stripping { bytes: page_bytes });
+        assert_eq!(
+            seen.last(),
+            Some(&Progress::Images {
+                done: 2,
+                total: 2,
+                bytes: page_bytes + 2 * PNG.len() as u64,
+            })
+        );
+    }
+
+    /// The whole argument for `Progress` carrying bytes rather than E2 running
+    /// a timer: "1.2 MB so far" has to be a measurement. Nothing before the
+    /// page lands counts anything, and from then on the figure only grows, by
+    /// exactly the size of each image that arrived.
+    #[test]
+    fn the_byte_counter_is_measured_and_never_goes_backwards() {
+        let (net, page_bytes) = two_image_site();
+        let (_, seen) = watch(&net, |_| Wanted::Yes);
+
+        assert_eq!(seen[0].bytes(), 0, "nothing has arrived yet");
+        let mut previous = 0;
+        for step in &seen {
+            assert!(step.bytes() >= previous, "{seen:?} went backwards");
+            previous = step.bytes();
+        }
+        assert_eq!(previous, page_bytes + 2 * PNG.len() as u64);
+
+        // And the figure the screen ends on is the figure the file takes,
+        // give or take what sanitising threw away — never larger.
+        let Outcome::Captured(page) = watch(&net, |_| Wanted::Yes).0 else {
+            panic!("expected a clean capture");
+        };
+        assert_eq!(page.fetched_bytes, page_bytes);
+    }
+
+    // ── cancelling ──────────────────────────────────────────────────────────
+
+    /// A Cancel during the images stops the remaining downloads and throws the
+    /// page away. It does *not* come back as `Partial`: the user did not get a
+    /// capture with holes in it, they got no capture, and E4 must not offer to
+    /// keep one.
+    #[test]
+    fn a_cancel_during_the_images_stops_the_downloads_and_keeps_nothing() {
+        let (net, _) = two_image_site();
+        let (outcome, seen) = watch(&net, |step| match step {
+            Progress::Images { done: 1, .. } => Wanted::No,
+            _ => Wanted::Yes,
+        });
+
+        assert!(matches!(outcome, Outcome::Cancelled), "{outcome:?}");
+        assert!(outcome.page().is_none(), "a cancelled capture has no page");
+        // The second image was never asked for: the last thing reported is the
+        // tick that was answered `No`.
+        assert_eq!(
+            seen.last(),
+            Some(&Progress::Images {
+                done: 1,
+                total: 2,
+                bytes: seen.last().unwrap().bytes(),
+            })
+        );
+    }
+
+    #[test]
+    fn a_cancel_before_the_page_lands_never_opens_the_socket() {
+        struct Loud(std::cell::Cell<usize>);
+        impl Fetcher for Loud {
+            fn get(&self, _url: &str) -> Result<Fetched, Failure> {
+                self.0.set(self.0.get() + 1);
+                Err(Failure::Unreachable("should never be asked".into()))
+            }
+        }
+        let net = Loud(std::cell::Cell::new(0));
+        let outcome = capture(
             "https://tabs.example/song/1",
             CaptureMode::FullPage,
             &Limits::default(),
             &net,
-            |p| seen.push(p),
+            |_| Wanted::No,
         );
-        assert_eq!(seen[0], Progress::Fetching);
-        assert_eq!(seen[1], Progress::Stripping);
-        assert_eq!(seen.last(), Some(&Progress::Images { done: 2, total: 2 }));
+        assert!(matches!(outcome, Outcome::Cancelled), "{outcome:?}");
+        assert_eq!(net.0.get(), 0, "the fetch was never attempted");
+    }
+
+    /// The latch. A screen that has gone away answers `No` once; a stale
+    /// closure that answered `Yes` afterwards must not be able to restart a
+    /// capture that has already been abandoned.
+    #[test]
+    fn saying_no_once_is_not_taken_back_by_a_later_yes() {
+        let (net, _) = two_image_site();
+        let mut answers = vec![Wanted::Yes, Wanted::No, Wanted::Yes, Wanted::Yes].into_iter();
+        let (outcome, seen) = watch(&net, move |_| answers.next().unwrap_or(Wanted::Yes));
+
+        assert!(matches!(outcome, Outcome::Cancelled), "{outcome:?}");
+        // Fetching was answered `Yes`, Stripping `No`, and nothing was asked
+        // after that — the engine never got as far as an image.
+        assert_eq!(seen.len(), 2, "{seen:?}");
     }
 }

@@ -45,8 +45,8 @@ use rinch_tabler_icons::TablerIcon;
 use db::DataDir;
 use platform::SafeArea;
 use screens::{
-    AddToSetlistSheet, AttachmentViewer, ChartEditor, Library, SetlistDetail, SetlistPicker,
-    Setlists, SongDetail, SongForm, SortGroupSheet, Stub,
+    AddToSetlistSheet, AttachmentViewer, CaptureScreen, ChartEditor, Library, SetlistDetail,
+    SetlistPicker, Setlists, SongDetail, SongForm, SortGroupSheet, Stub,
 };
 use store::{
     AttachmentsStore, LibraryViewStore, NavStore, PlaybackStore, Route, SettingsStore,
@@ -226,6 +226,7 @@ pub fn app() -> NodeHandle {
                 // The full-screen viewer (D5). Takes the song as well as the
                 // chart: the top bar prints one under the other, and ← lands
                 // back on the screen it was opened from.
+                Route::CaptureWebpage { song: song_id } => CaptureScreen { song: {song_id} },
                 Route::ViewAttachment { song: song_id, attachment } => AttachmentViewer {
                     song: {song_id},
                     attachment: {attachment},

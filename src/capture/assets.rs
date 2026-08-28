@@ -86,12 +86,25 @@ pub fn base_url(dom: &RcDom, requested: &str) -> Option<Url> {
 
 /// Download what the page points at, write local paths back into it, and
 /// report what did not come.
+///
+/// `progress` is called with *(images landed, images worth fetching, bytes
+/// kept so far)* before each download and once more at the end, and answers
+/// whether the capture is still wanted. Answering [`Wanted::No`] breaks the
+/// loop where it stands: the images not yet attempted are not recorded as
+/// [`Missed`], because they were never tried and the page is on its way to the
+/// bin — see [`super::capture`], which turns that answer into
+/// [`Outcome::Cancelled`](super::Outcome::Cancelled).
+///
+/// The byte figure is what is being **kept**: an image that arrived and was
+/// then refused for being over [`Limits::max_asset_bytes`] cost the user's data
+/// allowance and does not appear in it, because the sentence E2 puts it under
+/// is about the file that will work with no signal.
 pub fn rewrite(
     dom: &RcDom,
     base: &Url,
     fetcher: &dyn super::Fetcher,
     limits: &Limits,
-    mut progress: impl FnMut(usize, usize),
+    mut progress: impl FnMut(usize, usize, u64) -> super::Wanted,
 ) -> (Vec<Asset>, Vec<Missed>) {
     // Two passes. The first works out what there is to fetch and clears the
     // lazy-loading attributes; only then is the total in E2's "downloading
@@ -151,7 +164,12 @@ pub fn rewrite(
             continue;
         }
 
-        progress(assets.len(), total);
+        // Asked here, immediately before the one blocking call in this loop,
+        // so that a Cancel arriving during image four is acted on before image
+        // five's socket is opened rather than after it has closed.
+        if progress(assets.len(), total, spent) == super::Wanted::No {
+            return (assets, missed);
+        }
 
         match fetcher.get(absolute.as_str()) {
             Ok(response) if !(200..300).contains(&response.status) => {
@@ -195,7 +213,10 @@ pub fn rewrite(
         }
     }
 
-    progress(assets.len(), total);
+    // The closing tick, so the checklist reads "7 of 7" rather than freezing on
+    // "6 of 7" while the last image is written. Its answer is discarded: there
+    // is nothing left to stop.
+    let _ = progress(assets.len(), total, spent);
     (assets, missed)
 }
 
@@ -254,7 +275,7 @@ mod tests {
     fn run(html: &str, net: Canned, limits: Limits) -> (String, Vec<Asset>, Vec<Missed>) {
         let doc = dom::parse(html.as_bytes());
         let base = base_url(&doc, "https://tabs.example/song/1").unwrap();
-        let (assets, missed) = rewrite(&doc, &base, &net, &limits, |_, _| {});
+        let (assets, missed) = rewrite(&doc, &base, &net, &limits, |_, _, _| crate::capture::Wanted::Yes);
         (dom::to_html(&dom::root(&doc)), assets, missed)
     }
 
