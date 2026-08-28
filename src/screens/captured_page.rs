@@ -255,7 +255,14 @@ pub fn CapturedPageView(
 /// — the cascade, the layout, the inline flow — is what it does with any other
 /// node. An empty fragment is still injected, which is a no-op that clears
 /// nothing, so there is no branch here for the case with no page.
-fn injected(scope: &mut RenderScope, markup: String, style: String) -> NodeHandle {
+///
+/// Visible to the crate because card E3's capture screen previews a page that
+/// is not an attachment yet — there is no `AttachmentId` for it and no
+/// directory behind it — so it cannot mount [`CapturedPageView`] and reaches
+/// for the host instead. That keeps the "one place decides what a captured page
+/// looks like" rule the module header states: the preview and the library draw
+/// the same fragment through the same element.
+pub(crate) fn injected(scope: &mut RenderScope, markup: String, style: String) -> NodeHandle {
     let __scope = scope;
     let host = rsx! { div { style: {style.clone()} } };
     host.set_inner_html(&markup);

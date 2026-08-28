@@ -24,6 +24,7 @@
 
 use rhypedb_engine::object::{FieldMap, Value};
 
+use crate::capture::CaptureMode;
 use crate::store::{AccentChoice, Density, GroupBy, PerformanceTheme, SortDir, SortField};
 
 /// Everything `LibraryViewStore` and `SettingsStore` remember between launches.
@@ -41,6 +42,7 @@ pub struct Preferences {
     pub performance_theme: PerformanceTheme,
     pub keep_awake: bool,
     pub recheck_saved_pages: bool,
+    pub capture_mode: CaptureMode,
 }
 
 impl Default for Preferences {
@@ -60,6 +62,10 @@ impl Default for Preferences {
             performance_theme: PerformanceTheme::FollowApp,
             keep_awake: true,
             recheck_saved_pages: false,
+            // Reader text, and `CaptureMode`'s own docs carry the measurement
+            // that says so. `CaptureMode::default()` rather than the variant
+            // spelled out, so the app's default and the engine's cannot drift.
+            capture_mode: CaptureMode::default(),
         }
     }
 }
@@ -132,6 +138,10 @@ pub fn to_fields(preferences: &Preferences) -> FieldMap {
         "recheck_saved_pages",
         Value::Bool(preferences.recheck_saved_pages),
     );
+    put(
+        "capture_mode",
+        Value::String(preferences.capture_mode.name().into()),
+    );
     fields
 }
 
@@ -172,6 +182,9 @@ pub fn from_fields(fields: &FieldMap) -> Preferences {
             "recheck_saved_pages",
             fallback.recheck_saved_pages,
         ),
+        capture_mode: string(fields, "capture_mode")
+            .and_then(|n| CaptureMode::from_name(&n))
+            .unwrap_or(fallback.capture_mode),
     }
 }
 
@@ -193,6 +206,9 @@ mod tests {
             performance_theme: PerformanceTheme::AlwaysDark,
             keep_awake: false,
             recheck_saved_pages: true,
+            // The non-default one, so the round trip proves it is written and
+            // read rather than falling back to the same answer twice.
+            capture_mode: CaptureMode::FullPage,
         }
     }
 

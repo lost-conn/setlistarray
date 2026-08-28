@@ -366,3 +366,40 @@ pub fn append(parent: &Handle, child: &Handle) {
     child.parent.set(Some(Rc::downgrade(parent)));
     parent.children.borrow_mut().push(child.clone());
 }
+
+/// A fresh detached text node, for markup this module builds rather than reads.
+///
+/// Card E3 is the first thing in here that *writes* content instead of only
+/// deleting it: a chord chart whose alignment lived in a stylesheet the capture
+/// dropped is rebuilt as preformatted text, and that text has to become a node.
+/// Everything before it — the sanitiser, the extractor — could work by detaching
+/// what a site had already written.
+pub fn new_text(text: &str) -> Handle {
+    markup5ever_rcdom::Node::new(NodeData::Text {
+        contents: RefCell::new(text.into()),
+    })
+}
+
+/// Put `replacement` where `node` is, in the same parent at the same index.
+///
+/// Position matters, which is why this is not `append` plus `detach`: a
+/// rebuilt chord block has to land back between the verse number above it and
+/// the next verse below it, and appending would drop every one of them at the
+/// end of the parent in the order they happened to be rebuilt.
+///
+/// The detach of `replacement` happens **before** the parent's child list is
+/// borrowed. Doing it the other way round panics whenever the two nodes share a
+/// parent, because `detach` borrows the same `RefCell` this function is already
+/// holding — and "the replacement was already a sibling" is not a case worth
+/// discovering at run time on a phone.
+pub fn replace_with(node: &Handle, replacement: &Handle) {
+    let Some(parent) = parent(node) else { return };
+    detach(replacement);
+    let mut siblings = parent.children.borrow_mut();
+    let Some(index) = siblings.iter().position(|c| Rc::ptr_eq(c, node)) else {
+        return;
+    };
+    replacement.parent.set(Some(Rc::downgrade(&parent)));
+    siblings[index] = replacement.clone();
+    node.parent.set(None);
+}

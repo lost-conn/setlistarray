@@ -2,7 +2,7 @@
 //!
 //! ```bash
 //! cargo run --release --bin capture_probe -- https://example.com/song
-//! cargo run --release --bin capture_probe -- --reader --out /tmp/caps URL...
+//! cargo run --release --bin capture_probe -- --full-page --out /tmp/caps URL...
 //! cargo run --release --bin capture_probe -- --browser-ua URL...
 //! ```
 //!
@@ -22,7 +22,10 @@ use setlistarray::capture::{
 };
 
 fn main() {
-    let mut mode = CaptureMode::FullPage;
+    // The app's default, so a bare `capture_probe URL` measures what a user
+    // gets. `--full-page` is how the other column is measured now that reader
+    // text is the default rather than the flag.
+    let mut mode = CaptureMode::default();
     let mut limits = Limits::default();
     let mut out: Option<PathBuf> = None;
     let mut urls: Vec<String> = Vec::new();
@@ -30,7 +33,13 @@ fn main() {
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            // Since card E3 a capture holds *both* readings and this flag
+            // only says which one is selected — so which one `write_into`
+            // puts on disk and which one the `onDisk` column counts. Running
+            // the probe twice, with and without it, is how the two columns of
+            // `docs/CAPTURE.md`'s mode table are produced.
             "--reader" => mode = CaptureMode::Reader,
+            "--full-page" => mode = CaptureMode::FullPage,
             "--out" => out = args.next().map(PathBuf::from),
             // What the honest User-Agent costs is itself a spike result, so
             // the comparison has to be one flag apart.
@@ -40,7 +49,9 @@ fn main() {
                     .to_string()
             }
             "--help" | "-h" => {
-                eprintln!("usage: capture_probe [--reader] [--browser-ua] [--out DIR] URL...");
+                eprintln!(
+                    "usage: capture_probe [--reader|--full-page] [--browser-ua] [--out DIR] URL..."
+                );
                 return;
             }
             other => urls.push(other.to_string()),

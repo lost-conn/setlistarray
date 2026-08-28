@@ -282,6 +282,435 @@ fn link_density(node: &Handle) -> f32 {
     (linked as f32 / total as f32).min(0.95)
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// Charts whose alignment lived in a stylesheet — card E3's answer to E8
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Class and id fragments that mark a container as part of a chart.
+const CHART_MARKERS: &[&str] = &["chord", "tablature"];
+
+/// Elements that flow inside a line rather than starting a new one.
+///
+/// The list decides whether a chord block's element children are *lines* or the
+/// insides of one, which is the whole difference between a chart and a column
+/// of syllables. It is short on purpose: everything not on it is treated as a
+/// block, which is what a browser with no stylesheet would do and what the
+/// sites in question are relying on their stylesheet to override.
+const INLINE: &[&str] = &[
+    "span", "b", "i", "em", "strong", "a", "sup", "sub", "small", "u", "font", "code", "abbr",
+    "mark", "label",
+];
+
+/// The longest a run of characters can be and still be a chord symbol.
+///
+/// `Cmaj7(#11)/G#` is thirteen and is the longest thing anybody writes over a
+/// syllable; twelve covers everything seen on the sites in `docs/CAPTURE.md`
+/// and is short enough that a paragraph in a `class="chord-text"` wrapper is
+/// never mistaken for a chord. The rule that does most of the work is not the
+/// length but the absence of whitespace: a chord symbol is one token.
+const CHORD_SYMBOL_MAX: usize = 12;
+
+/// How many chord symbols a page needs before this rebuild is attempted at all.
+///
+/// One is an accident — a stray `class="chords"` on a link, a "Chord version"
+/// menu entry. Two in the same document is a chart. The gate is on the whole
+/// page rather than on each block so that a chart split across six verses,
+/// five of which are lyric-only, is rebuilt as six consistent blocks instead of
+/// one monospaced verse followed by five proportional ones.
+const MIN_CHORD_SYMBOLS: usize = 2;
+
+/// Rebuild every chord chart whose layout was a stylesheet, as preformatted
+/// text. Returns how many blocks were rebuilt.
+///
+/// ## The decision this function *is*
+///
+/// Card E5 found — and card E8 wrote up — that hymnal.net positions its chord
+/// symbols with a `<link>`ed stylesheet, which E1 drops at capture time because
+/// a stylesheet is a request that fails on a train. The saved page is therefore
+/// a run of `<div class="chord-text">` boxes that the missing sheet would have
+/// made `inline-block` with the chord `block` above the syllable — and without
+/// it every one of them is a block, so the chart renders **one syllable per
+/// line**. E8 offered two ways out and left the choice to E3:
+///
+/// 1. keep a same-origin `<style>` block and rewrite every selector in it to a
+///    scoping prefix, so a stranger's CSS cannot escape into the app's single
+///    Stylo stylist; or
+/// 2. recognise the chord-above-syllable pattern structurally and re-emit it as
+///    something that lays out on its own.
+///
+/// **This is the second, and the argument for it is not that the first is hard.**
+/// It is that the first cannot work here even if the scoping were airtight.
+/// Measured on the capture E5 was built against: hymnal.net's saved page
+/// contains **zero** `<style>` blocks, because all of its CSS was in the linked
+/// sheet that was dropped. Scoping preserves inline and same-document CSS; the
+/// layout that is actually missing is in neither. To get it back the capture
+/// would have to fetch and keep the site's stylesheets — which is a second
+/// class of remote request to make offline, a second thing to re-check in E6,
+/// and a bet that a sheet written for a 1200px desktop column degrades sanely
+/// on a phone. The class that hides hymnal's whole chord scaffold is
+/// `hidden`; the "high-fidelity" render of that page is a column of
+/// one-syllable lines that the site never intended anybody to see.
+///
+/// The app wants a readable chart, not a faithful screenshot of somebody's
+/// website. So the chart is *rebuilt*: each line is folded back into the two
+/// rows it was drawn as — chord symbols over the column of the syllable they
+/// belong to — and emitted as a `<pre>`. That is the same shape CifraClub and
+/// guitaretab already serve, which means one rendering path serves all three
+/// instead of two, and it is the shape `chart_editor` lets somebody type by
+/// hand. It also survives everything downstream for free: `dom::text_of` copies
+/// a `<pre>` verbatim, so the aligned chart is what lands in
+/// `Attachment::body` for card G2's search and for the text `render::from_text`
+/// falls back to.
+///
+/// ## Why only reader mode calls this
+///
+/// Because full-page mode's promise is *this is what the site served*, and a
+/// mode that quietly rewrote the markup would be lying about the one thing it
+/// exists to offer. The two modes now differ in kind rather than in size:
+/// full page is the site, reader text is the app's reading of it. That is also
+/// what makes reader the default — see [`super::CaptureMode`].
+pub fn rebuild_chord_blocks(root: &Handle) -> usize {
+    if count_symbols(root) < MIN_CHORD_SYMBOLS {
+        return 0;
+    }
+
+    // Collected first, rebuilt afterwards. The rebuild replaces nodes and
+    // detaches their siblings, and mutating a tree while walking it is how the
+    // `Drop` fault in `narrow_to` above was found the first time.
+    let mut blocks = Vec::new();
+    collect_blocks(root, &mut blocks);
+
+    let mut rebuilt = 0;
+    for block in blocks {
+        let Some(chart) = fold_block(&block) else {
+            continue;
+        };
+        drop_plain_twin(&block, &chart.lyrics_only);
+        let pre = dom::new_element("pre");
+        dom::append(&pre, &dom::new_text(&chart.text));
+        dom::replace_with(&block, &pre);
+        rebuilt += 1;
+    }
+    rebuilt
+}
+
+/// The chord symbol this element holds, if it is one.
+///
+/// Two rules, and the second is the one that does the work. A chord symbol is
+/// marked as a chord by the site — that is what the class is for — and it is a
+/// single token: `G`, `D7`, `A7(4)`, `Am/E`. Its wrapper is marked the same way
+/// on every site that does this (hymnal's `chord-text` sits inside
+/// `chord-container`), so without the token rule the wrapper, the container and
+/// the whole chart would all answer to "is this a chord".
+///
+/// `dom::text_of` rather than the raw text because the symbol is not always one
+/// text node: hymnal writes a seventh as `D<sup>7</sup>`, and the thing to put
+/// over the syllable is `D7`.
+///
+/// The third rule — **the symbol is the innermost chord-marked element** — is
+/// the one that had to be measured. Without it a wrapper whose syllable happens
+/// to be short is a chord: `<div class="chord-text"><span
+/// class="chord">D</span>Ev</div>` reads as the two-token-free string `DEv`,
+/// and the whole line comes out as `DEv D7er, G` over nothing. Length and
+/// whitespace cannot tell a wrapper from a symbol on their own, because a
+/// wrapper is only ever as long as the syllable inside it.
+fn chord_symbol(node: &Handle) -> Option<String> {
+    dom::tag(node)?;
+    let marker = dom::class_and_id(node);
+    if !CHART_MARKERS.iter().any(|m| marker.contains(m)) {
+        return None;
+    }
+    if holds_marked_element(node) {
+        return None;
+    }
+    let text = dom::text_of(node);
+    let symbol = text.trim();
+    if symbol.is_empty() || symbol.chars().count() > CHORD_SYMBOL_MAX {
+        return None;
+    }
+    if symbol.chars().any(char::is_whitespace) {
+        return None;
+    }
+    Some(symbol.to_string())
+}
+
+/// Whether anything beneath this node is itself marked as part of a chart.
+fn holds_marked_element(node: &Handle) -> bool {
+    dom::children(node).iter().any(|child| {
+        let marker = dom::class_and_id(child);
+        CHART_MARKERS.iter().any(|m| marker.contains(m)) || holds_marked_element(child)
+    })
+}
+
+fn count_symbols(root: &Handle) -> usize {
+    let mut total = 0;
+    dom::walk(root, &mut |node| {
+        // Nothing inside a `<pre>` is a candidate. A site that already ships a
+        // preformatted chart has done the alignment itself, and CifraClub marks
+        // every chord in its `<pre>` with a `data-chord-name` — the day one of
+        // them reaches for a class as well, this rule is what stops the chart
+        // being taken apart and rebuilt worse.
+        if dom::is(node, "pre") {
+            return Descend::No;
+        }
+        if chord_symbol(node).is_some() {
+            total += 1;
+            return Descend::No;
+        }
+        Descend::Yes
+    });
+    total
+}
+
+/// The outermost chart containers, one per verse on the sites that do this.
+///
+/// "Outermost" is what stops the same chart being rebuilt three times from the
+/// inside out: hymnal's `chord-container`, `chord-text` and `chord` all carry a
+/// marker, and only the first of them is a block worth folding.
+fn collect_blocks(node: &Handle, out: &mut Vec<Handle>) {
+    for child in dom::children(node) {
+        if dom::tag(&child).is_none() || dom::is(&child, "pre") {
+            continue;
+        }
+        // A block that holds a `<pre>` is a wrapper around a chart the site
+        // aligned itself. Leave it alone and keep looking underneath it.
+        let marker = dom::class_and_id(&child);
+        let marked = CHART_MARKERS.iter().any(|m| marker.contains(m));
+        if marked && chord_symbol(&child).is_none() && !holds_pre(&child) {
+            out.push(child);
+            continue;
+        }
+        collect_blocks(&child, out);
+    }
+}
+
+fn holds_pre(node: &Handle) -> bool {
+    let mut found = false;
+    dom::walk(node, &mut |candidate| {
+        if dom::is(candidate, "pre") {
+            found = true;
+            return Descend::No;
+        }
+        Descend::Yes
+    });
+    found
+}
+
+/// One line of a chart, as the two rows it was drawn as.
+#[derive(Default)]
+struct Rows {
+    chords: String,
+    lyrics: String,
+}
+
+/// A rebuilt block: the preformatted chart, and the lyrics on their own.
+struct Chart {
+    /// What goes into the `<pre>`.
+    text: String,
+    /// The same words without the chord rows, for [`drop_plain_twin`].
+    lyrics_only: String,
+}
+
+/// The lines of a chord block.
+///
+/// A line is an element child that starts a new one — anything not in
+/// [`INLINE`]. A block whose element children are all inline, or all chord
+/// symbols, is itself one line: that is the
+/// `<span class="chord">G</span>syllable` shape with no wrapper, and treating
+/// its two spans as two lines would produce exactly the one-syllable-per-line
+/// output this function exists to undo.
+fn lines_of(block: &Handle) -> Vec<Handle> {
+    let children: Vec<Handle> = dom::children(block)
+        .into_iter()
+        .filter(|c| dom::tag(c).is_some())
+        .collect();
+    let all_inline = children.iter().all(|c| {
+        chord_symbol(c).is_some()
+            || dom::tag(c).is_some_and(|t| INLINE.contains(&t.as_ref()))
+    });
+    if children.is_empty() || all_inline {
+        return vec![block.clone()];
+    }
+    children
+}
+
+fn fold_block(block: &Handle) -> Option<Chart> {
+    let mut text = String::new();
+    let mut lyrics_only = String::new();
+    let mut any = false;
+
+    for line in lines_of(block) {
+        let mut folded = vec![Rows::default()];
+        fold(&line, &mut folded);
+        for rows in folded {
+            let chords = rows.chords.trim_end();
+            let lyrics = rows.lyrics.trim_end();
+            if !chords.is_empty() {
+                text.push_str(chords);
+                text.push('\n');
+                any = true;
+            }
+            if !lyrics.is_empty() {
+                any = true;
+            }
+            text.push_str(lyrics);
+            text.push('\n');
+            lyrics_only.push_str(lyrics);
+            lyrics_only.push('\n');
+        }
+    }
+
+    // A block that folded to nothing is a wrapper the site left empty. Putting
+    // an empty `<pre>` in its place would trade an invisible div for a visible
+    // gap, and `render`'s own pruning would then have to throw it away again.
+    any.then_some(Chart { text, lyrics_only })
+}
+
+/// Fold one line's subtree into its chord row and its lyric row.
+///
+/// `out` is a list rather than a single pair because a `<br>` inside the line
+/// is a second line, and on a site that writes a whole verse as one `<div>`
+/// with `<br>`s in it that is the only thing separating the lines at all.
+fn fold(node: &Handle, out: &mut Vec<Rows>) {
+    for child in dom::children(node) {
+        if let Some(text) = dom::text_content(&child) {
+            push_lyric(&text, out.last_mut().expect("one row to start with"));
+            continue;
+        }
+        if dom::tag(&child).is_none() {
+            continue;
+        }
+        if dom::is(&child, "br") {
+            out.push(Rows::default());
+            continue;
+        }
+        if let Some(symbol) = chord_symbol(&child) {
+            place_chord(&symbol, out.last_mut().expect("one row to start with"));
+            continue;
+        }
+        fold(&child, out);
+    }
+}
+
+/// Add a run of a site's characters to the lyric row.
+///
+/// One rule, and it is the rule HTML itself already imposes: **a non-breaking
+/// space is content and every other kind of whitespace is markup.** A site
+/// cannot indent a chart with ordinary spaces, because the browser collapses
+/// them — which is precisely why these pages are full of `&nbsp;`. So the
+/// non-breaking spaces are kept one for one, and they are the only thing
+/// carrying the indent of a continuation line; everything else collapses to a
+/// single space the way a browser would collapse it.
+///
+/// Getting this wrong is not subtle and was found by writing the test fixture
+/// rather than by reading the site. The real hymnal.net markup pretty-prints
+/// with bare newlines, which an earlier version of this stripped outright — and
+/// that version passed against the live page and produced
+/// `               G                                         C` against a
+/// fixture indented with spaces, because eight spaces of somebody's HTML
+/// formatter had become eight spaces of chart.
+fn push_lyric(raw: &str, rows: &mut Rows) {
+    for ch in raw.chars() {
+        match ch {
+            '\u{a0}' => rows.lyrics.push(' '),
+            other if other.is_whitespace() => {
+                if !rows.lyrics.is_empty() && !rows.lyrics.ends_with(' ') {
+                    rows.lyrics.push(' ');
+                }
+            }
+            other => rows.lyrics.push(other),
+        }
+    }
+}
+
+/// Put a chord symbol over the column the words after it start at.
+///
+/// The one interesting case is a syllable shorter than the chord above it —
+/// `D` and `D7` over `Ev` / `er` in hymn 1. The chord row cannot simply be
+/// padded, because the second chord would start before the first had finished;
+/// so the *lyric* is pushed along instead, which is what every chord-chart
+/// renderer does and what somebody typing one by hand does. The alternative —
+/// letting the two chords run together — loses which syllable each belongs to,
+/// and that is the only information the chart carries.
+fn place_chord(symbol: &str, rows: &mut Rows) {
+    let mut column = rows.lyrics.chars().count();
+    let so_far = rows.chords.chars().count();
+    if so_far > 0 && so_far + 1 > column {
+        for _ in 0..(so_far + 1 - column) {
+            rows.lyrics.push(' ');
+        }
+        column = so_far + 1;
+    }
+    while rows.chords.chars().count() < column {
+        rows.chords.push(' ');
+    }
+    rows.chords.push_str(symbol);
+}
+
+/// Drop the plain copy of a verse the site keeps beside the chord copy.
+///
+/// hymnal.net ships every verse twice: a `text-container` of lyrics, and a
+/// `chord-container` of the same lyrics with the chords positioned over them,
+/// hidden behind a "show chords" toggle whose `hidden` class was in the
+/// stylesheet that went. Both are in the saved page, so without this every
+/// verse is read out twice — once without chords and once with.
+///
+/// The test is the text rather than the class, because `hidden` is the wrong
+/// signal in the worst possible way: the copy the site hides is the one this
+/// app wants. Two siblings that say the same words are one verse, and the copy
+/// that carries the chords is the one to keep.
+fn drop_plain_twin(block: &Handle, lyrics_only: &str) {
+    let wanted = normalised(lyrics_only);
+    if wanted.is_empty() {
+        return;
+    }
+    let Some(parent) = dom::parent(block) else {
+        return;
+    };
+    for sibling in dom::children(&parent) {
+        if Rc::ptr_eq(&sibling, block) || dom::tag(&sibling).is_none() {
+            continue;
+        }
+        if normalised(&dom::text_of(&sibling)) == wanted {
+            dom::detach(&sibling);
+        }
+    }
+}
+
+/// Two copies of a verse, reduced to the thing they have in common: their
+/// letters.
+///
+/// **Whitespace is removed rather than collapsed**, and the typographic
+/// punctuation is folded to ASCII. Both rules were written against the live
+/// page after a version that only collapsed whitespace failed to drop a single
+/// twin on hymnal.net, while passing against a fixture:
+///
+/// * The chord copy splits a word wherever the chord changes inside it —
+///   `Ever` is `Ev` under a `D` and `er` under a `D7`, so the rebuilt line
+///   says `Ev er` and the plain copy says `Ever`. Where the site broke the
+///   word is not part of what the words *are*.
+/// * The two copies do not even use the same apostrophe. The plain verse has
+///   `e’en` (U+2019) and the chord scaffold has `e'en`, because they were
+///   typed into different fields at different times.
+///
+/// What is left is strict enough that a collision would need two siblings of a
+/// chord block with the same letters in the same order and nothing else in
+/// them, which is a description of the duplicate this is looking for.
+fn normalised(text: &str) -> String {
+    text.chars()
+        .filter(|c| !c.is_whitespace())
+        .flat_map(|c| {
+            match c {
+                '\u{2018}' | '\u{2019}' => '\'',
+                '\u{201c}' | '\u{201d}' => '"',
+                '\u{2013}' | '\u{2014}' | '\u{2212}' => '-',
+                other => other,
+            }
+            .to_lowercase()
+        })
+        .collect()
+}
+
 /// Replace the document body with the extracted node.
 ///
 /// `<head>` is kept as it is, which keeps the `<style>` blocks the sanitiser
@@ -447,6 +876,199 @@ mod tests {
         let html = dom::to_html(&dom::root(&doc));
         assert!(html.contains("line 20"), "the chart is in the document: {html}");
         assert!(!html.contains("More by this artist"));
+    }
+
+    // ── rebuilding a chart whose alignment lived in a stylesheet (E3/E8) ────
+
+    /// hymnal.net's real shape, reduced: a plain copy of the verse, then the
+    /// same verse again with a chord symbol above each syllable group, every
+    /// piece of it a `<div>` that the site's linked stylesheet — the one E1
+    /// drops — would have made `inline-block`.
+    fn hymn() -> String {
+        r#"<body><div class="verse">
+             <div class="text-container">Glory be to God the Father,<br>&nbsp;&nbsp;And to Christ the Son,</div>
+             <div class="chord-container hidden"><div class="line">
+               <div class="chord-text"><span class="chord">G</span>
+               Glory&nbsp;be&nbsp;to&nbsp;</div>
+               <div class="chord-text"><span class="chord">C</span>
+               God&nbsp;the&nbsp;Father,</div>
+             </div><div class="line">&nbsp;
+               <div class="chord-text"><span class="chord">G</span>
+               And&nbsp;to&nbsp;Christ&nbsp;the&nbsp;</div>
+               <div class="chord-text"><span class="chord">D<sup>7</sup></span>
+               Son,</div>
+             </div></div>
+           </div></body>"#
+            .to_string()
+    }
+
+    fn rebuilt(html: &str) -> (usize, String) {
+        let doc = dom::parse(html.as_bytes());
+        let root = dom::root(&doc);
+        let count = rebuild_chord_blocks(&root);
+        (count, dom::to_html(&root))
+    }
+
+    #[test]
+    fn a_chart_positioned_in_a_dropped_stylesheet_is_rebuilt_as_preformatted_text() {
+        // Without this the saved page is one syllable per line, because every
+        // `chord-text` is a block and the sheet that made it `inline-block` is
+        // gone. That is card E8, and this is E3's answer to it.
+        let (count, html) = rebuilt(&hymn());
+        assert_eq!(count, 1, "one block, the chord container: {html}");
+        assert!(html.contains("<pre>"), "{html}");
+
+        let text = dom::text_of(&dom::root(&dom::parse(html.as_bytes())));
+        let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+        assert_eq!(
+            lines,
+            vec![
+                "G           C",
+                "Glory be to God the Father,",
+                " G                 D7",
+                " And to Christ the Son,",
+            ],
+            "the whole chart, in two rows a line: {text:?}"
+        );
+    }
+
+    /// The alignment is the only thing the chart carries, so it is asserted by
+    /// column rather than by eye: each chord has to sit over the first letter
+    /// of the syllable it belongs to.
+    #[test]
+    fn every_chord_lands_over_the_column_its_syllable_starts_at() {
+        let (_, html) = rebuilt(&hymn());
+        let text = dom::text_of(&dom::root(&dom::parse(html.as_bytes())));
+        let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+
+        assert_eq!(lines[0].find('C'), lines[1].find("God"), "C over God");
+        assert_eq!(lines[2].find('G'), lines[3].find("And"), "G over And");
+        assert_eq!(lines[2].find("D7"), lines[3].find("Son,"), "D7 over Son");
+    }
+
+    /// `D<sup>7</sup>` is one chord, not a `D` and a stray `7`.
+    #[test]
+    fn a_chord_split_across_elements_is_still_one_symbol() {
+        let (_, html) = rebuilt(&hymn());
+        assert!(html.contains("D7"), "{html}");
+        assert!(!html.contains("<sup>"), "the markup went with it: {html}");
+    }
+
+    /// hymnal ships every verse twice — plain, and again with the chords over
+    /// it behind a "show chords" toggle. Both are in the saved page, so without
+    /// this the reader gets the verse, and then the verse again.
+    #[test]
+    fn the_plain_copy_of_a_verse_the_site_ships_twice_is_dropped() {
+        let (_, html) = rebuilt(&hymn());
+        assert!(
+            !html.contains("text-container"),
+            "the copy without the chords went: {html}"
+        );
+        let text = dom::text_of(&dom::root(&dom::parse(html.as_bytes())));
+        assert_eq!(
+            text.matches("Glory be to God the Father,").count(),
+            1,
+            "and the words are there exactly once: {text:?}"
+        );
+    }
+
+    /// The version of the twin test that fixture-driven development missed.
+    ///
+    /// The plain copy and the chord copy on the live hymnal.net page are not
+    /// the same string: the chord scaffold breaks `Ever` across two chord
+    /// symbols, and the two copies were typed with two different apostrophes.
+    /// A comparison that only collapsed whitespace matched neither, so every
+    /// verse was read out twice on the private display while every test passed.
+    #[test]
+    fn a_twin_that_breaks_a_word_or_curls_an_apostrophe_is_still_a_twin() {
+        // The apostrophe is built rather than typed, so that this file stays
+        // ASCII the way card K26 wants the app's own prose to be.
+        let curly = char::from_u32(0x2019).expect("U+2019");
+        let html = format!(
+            r#"<body><div class="verse">
+              <div class="text-container">Ever, e{curly}en so.</div>
+              <div class="chord-container"><div class="line">
+                <div class="chord-text"><span class="chord">D</span>Ev</div>
+                <div class="chord-text"><span class="chord">D7</span>er,&nbsp;</div>
+                <div class="chord-text"><span class="chord">G</span>e'en&nbsp;so.</div>
+              </div></div>
+            </div></body>"#
+        );
+        let (count, out) = rebuilt(&html);
+        assert_eq!(count, 1);
+        assert!(
+            !out.contains("text-container"),
+            "the plain copy went even though it is not the same string: {out}"
+        );
+    }
+
+    /// The guard that keeps CifraClub and guitaretab out of this entirely.
+    /// Their charts are `<pre>` and the site did the alignment; taking one
+    /// apart and rebuilding it could only make it worse.
+    #[test]
+    fn a_chart_the_site_already_preformatted_is_left_alone() {
+        let chart: String = (1..=12)
+            .map(|n| format!("G       C\nline {n} of the words\n"))
+            .collect();
+        let html = format!(
+            r#"<body><div class="tab"><pre>{chart}<b class="chord">Em7</b>  <b class="chord">G</b>
+</pre></div></body>"#
+        );
+        let (count, out) = rebuilt(&html);
+        assert_eq!(count, 0, "nothing was rebuilt");
+        assert!(out.contains("line 12 of the words"), "{out}");
+        assert!(out.contains(r#"<b class="chord">Em7</b>"#), "{out}");
+    }
+
+    /// One `class="chords"` on a link is not a chart. Two symbols in the same
+    /// document is, which is the whole of the gate.
+    #[test]
+    fn a_single_stray_chord_marker_is_not_a_chart() {
+        let html = r#"<body><nav><a class="chords-link">Chords</a></nav>
+                      <p>Some prose about the song, at length, with commas.</p></body>"#;
+        let (count, out) = rebuilt(html);
+        assert_eq!(count, 0);
+        assert!(out.contains("chords-link"), "{out}");
+    }
+
+    /// A syllable shorter than the chord above it. Two chords cannot run
+    /// together — which of the two words each belonged to would be lost — so
+    /// the lyric is pushed along instead.
+    #[test]
+    fn a_syllable_shorter_than_its_chord_pushes_the_words_along() {
+        let html = r#"<body><div class="chord-sheet"><div class="line">
+              <span class="chord">Dmaj7</span><span class="lyric">Ev</span>
+              <span class="chord">G</span><span class="lyric">er</span>
+            </div></div></body>"#;
+        let (count, out) = rebuilt(html);
+        assert_eq!(count, 1);
+        let text = dom::text_of(&dom::root(&dom::parse(out.as_bytes())));
+        let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+        assert_eq!(lines[0].find('G'), lines[1].find("er"), "{lines:?}");
+        assert!(
+            lines[0].starts_with("Dmaj7 G"),
+            "the two symbols are separate: {lines:?}"
+        );
+    }
+
+    /// The spans-with-no-wrapper shape `extract` already had a test for. Its
+    /// chart survived extraction and still rendered one syllable per line,
+    /// because nothing had put the chords back over the words.
+    #[test]
+    fn a_span_marked_chart_with_no_wrapper_folds_into_lines_not_syllables() {
+        let sheet: String = (1..=8)
+            .map(|n| {
+                format!(
+                    r#"<div class="line"><span class="chord">G</span><span class="lyric">word{n} </span><span class="chord">C</span><span class="lyric">after{n}</span></div>"#
+                )
+            })
+            .collect();
+        let (count, out) = rebuilt(&format!(r#"<body><div id="chordsheet">{sheet}</div></body>"#));
+        assert_eq!(count, 1, "one block, not eight");
+        let text = dom::text_of(&dom::root(&dom::parse(out.as_bytes())));
+        let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+        assert_eq!(lines.len(), 16, "two rows for each of eight lines: {lines:?}");
+        assert_eq!(lines[0].find('C'), lines[1].find("after1"));
     }
 
     #[test]

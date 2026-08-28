@@ -1,5 +1,6 @@
 use rinch::prelude::*;
 
+use crate::capture::CaptureMode;
 use crate::store::Storage;
 use crate::theme::{ACCENTS, Accent, RUST};
 
@@ -56,6 +57,16 @@ pub struct SettingsStore {
     pub performance_theme: Signal<PerformanceTheme>,
     pub keep_awake: Signal<bool>,
     pub recheck_saved_pages: Signal<bool>,
+    /// Card E3's `Save as:`, remembered between captures.
+    ///
+    /// It is remembered because the choice is about the *user*, not about the
+    /// page: somebody whose chord site is CifraClub pastes CifraClub URLs, and
+    /// re-picking the same answer on every capture is a tax on the common case.
+    /// It is not remembered per site, which would be the next thing to reach
+    /// for and is worse — the app would then be silently deciding for a site
+    /// the user has captured once, on the strength of one decision that may
+    /// have been about that one page.
+    pub capture_mode: Signal<CaptureMode>,
     storage: Storage,
 }
 
@@ -75,6 +86,7 @@ impl SettingsStore {
             performance_theme: Signal::new(preferences.performance_theme),
             keep_awake: Signal::new(preferences.keep_awake),
             recheck_saved_pages: Signal::new(preferences.recheck_saved_pages),
+            capture_mode: Signal::new(preferences.capture_mode),
             storage,
         }
     }
@@ -110,6 +122,11 @@ impl SettingsStore {
     pub fn set_recheck_saved_pages(self, recheck: bool) {
         self.recheck_saved_pages.set(recheck);
         self.storage.remember(|p| p.recheck_saved_pages = recheck);
+    }
+
+    pub fn set_capture_mode(self, mode: CaptureMode) {
+        self.capture_mode.set(mode);
+        self.storage.remember(|p| p.capture_mode = mode);
     }
 }
 

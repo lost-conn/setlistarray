@@ -148,13 +148,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use rinch::prelude::*;
 use rinch_tabler_icons::TablerIcon;
 
+use crate::capture::render::{self, Page, Sizing};
 use crate::capture::{
     CaptureMode, CapturedPage, Limits, Outcome, Progress, Wanted, capture, write_into,
 };
+use crate::menu::MENU_SURFACE;
 use crate::model::{Attachment, AttachmentId, AttachmentKind, Day, SongId, fmt_bytes};
-use crate::store::{NavStore, Route, SongsStore};
-use crate::theme::{SCREEN_PAD, T_CHART, T_META, T_META_SMALL, T_ROW_TITLE};
+use crate::store::{NavStore, Route, SettingsStore, SongsStore};
+use crate::theme::{SCREEN_PAD, T_META, T_META_SMALL, T_ROW_TITLE};
 use crate::ui::{IconButton, icon};
+
+use super::captured_page::injected;
 
 /// Which capture a worker's message belongs to.
 ///
@@ -308,6 +312,13 @@ pub enum Flow {
     Running {
         run: RunId,
         url: String,
+        /// What `Save as:` said when this capture was started, and what it says
+        /// now — the control stays live while a capture runs, and the engine
+        /// produces both readings regardless, so a change mid-flight is applied
+        /// to the outcome when it lands rather than being refused. Without this
+        /// field it could not be: [`Flow::deliver`] is called from the worker's
+        /// closure, which was built before the user changed their mind.
+        mode: CaptureMode,
         /// The last thing the worker reported. Starts at
         /// [`Progress::Fetching`] because that is what the engine reports
         /// first, and the screen should not invent a stage the engine has not
@@ -341,10 +352,11 @@ impl Flow {
     /// new token by value rather than building it — the caller has to have
     /// handed the worker its `watch()` first, and threading it through here
     /// keeps the pairing in one place.
-    pub fn start(&mut self, run: RunId, url: String, stop: StopOnDrop) {
+    pub fn start(&mut self, run: RunId, url: String, mode: CaptureMode, stop: StopOnDrop) {
         *self = Flow::Running {
             run,
             url,
+            mode,
             step: Progress::Fetching,
             stop,
         };
@@ -368,7 +380,10 @@ impl Flow {
         // the two halves of "is this for me" — right state, right run — are
         // one condition and cannot drift apart.
         let Flow::Running {
-            run: current, url, ..
+            run: current,
+            url,
+            mode,
+            ..
         } = self
         else {
             return Delivery::Stale;
@@ -387,12 +402,61 @@ impl Flow {
                     *step = reported;
                 }
             }
-            Message::Done(outcome) => {
+            Message::Done(mut outcome) => {
+                // The `Save as:` the screen is showing *now*, not the one the
+                // worker was started with. The engine hands back both readings
+                // of the fetch, so a capture that finishes after the user
+                // changed their mind settles on the answer they can see rather
+                // than on the answer they abandoned — and the alternative is
+                // still there to switch back to.
+                let mode = *mode;
                 let url = std::mem::take(url);
+                if let Some(page) = outcome.page_mut() {
+                    page.select(mode);
+                }
                 *self = Flow::Settled { run, url, outcome };
             }
         }
         Delivery::Applied
+    }
+
+    /// What `Save as:` does, at whatever state the screen is in.
+    ///
+    /// One method rather than a branch in the handler, because the control has
+    /// to mean the same thing in all three of the states it is live in and the
+    /// only difference is *when* the choice takes effect: before a capture it
+    /// is what the next one asks for, during one it is what the outcome will
+    /// settle on, and after one it swaps the reading already in hand with no
+    /// second trip to the site.
+    ///
+    /// Returns `false` only when a settled capture does not have that reading —
+    /// reader extraction found nothing to narrow to — which is the one case the
+    /// screen has to say something about rather than silently obeying.
+    pub fn select_mode(&mut self, wanted: CaptureMode) -> bool {
+        match self {
+            Flow::Running { mode, .. } => {
+                *mode = wanted;
+                true
+            }
+            Flow::Settled { outcome, .. } => match outcome.page_mut() {
+                Some(page) => page.select(wanted),
+                // Nothing came down. The control is still live because the
+                // button under it is "Try again", and the mode it will try
+                // again in is worth being able to change first.
+                None => true,
+            },
+            _ => true,
+        }
+    }
+
+    /// Which reading is on offer here, if the state has one. `None` where the
+    /// screen's own signal is the only answer — nothing has been captured yet.
+    pub fn mode(&self) -> Option<CaptureMode> {
+        match self {
+            Flow::Running { mode, .. } => Some(*mode),
+            Flow::Settled { outcome, .. } => outcome.page().map(|page| page.mode),
+            _ => None,
+        }
     }
 
     /// What the footer's Cancel does here, and what the screen should do next.
@@ -671,6 +735,12 @@ pub fn page_title(page: &CapturedPage) -> String {
 /// song*, and `rinch-http` does not report where a redirect ended up — so the
 /// only thing standing between that and a chart filed under the wrong title is
 /// the user reading a few lines before pressing Attach.
+///
+/// Since E3 this is the *fallback* rather than the preview — see
+/// [`preview_page`], which draws the page itself. It is still here, and still
+/// tested, because a capture whose markup this app draws nothing out of can
+/// still have words in it, and a preview box with nothing in it under a live
+/// Attach button is the one thing the paragraph above says it must never be.
 pub fn preview_lines(page: &CapturedPage) -> Vec<String> {
     page.text
         .lines()
@@ -689,6 +759,63 @@ pub fn preview_lines(page: &CapturedPage) -> Vec<String> {
         })
         .collect()
 }
+
+/// What one mode would keep, drawn the way the library will draw it — card E3's
+/// "a preview of what each keeps".
+///
+/// It goes through `capture::render`, which is card E5's machinery for turning a
+/// saved `page.html` back into a fragment Rinch can lay out, and through the
+/// same `set_inner_html` host `captured_page` mounts. That is deliberate and it
+/// is the point of the control: the preview is not a *description* of what each
+/// mode keeps, it is the attachment, drawn before it exists. Switching `Save
+/// as:` and watching the site's navigation appear above the chart — which is
+/// exactly what happens on hymnal.net — is a thing somebody can act on. A list
+/// of two byte counts is not.
+///
+/// **Images draw as their `alt` text here and nowhere else.** `render` resolves
+/// an `<img src="assets/000.png">` against a directory on disk, and at preview
+/// time there is no directory: nothing is written until Attach, which is what
+/// makes Cancel free. The images a capture kept are counted on the checklist
+/// line above the preview, and on the three sites `docs/CAPTURE.md` measures
+/// every one of them was the site's own masthead — so what the preview cannot
+/// show is a logo, and it says `alt` where the logo would be rather than
+/// leaving a hole.
+///
+/// `None` when the markup drew nothing, which is the caller's cue to fall back
+/// to [`preview_lines`].
+pub fn preview_page(page: &CapturedPage, sizing: Sizing) -> Option<Page> {
+    let rendered = render::render(
+        &page.html,
+        std::path::Path::new(""),
+        sizing,
+        render::CARD_ELEMENTS,
+    );
+    (!rendered.is_empty()).then_some(rendered)
+}
+
+/// `Reader text · 43 KB` — the label on `Save as:`, and the same sentence for
+/// the mode it is not currently on.
+///
+/// The size is what makes the control a choice rather than a preference: it is
+/// this capture's two answers priced against each other, measured rather than
+/// estimated, and it is only ever shown once a capture has produced both.
+pub fn mode_label(page: Option<&CapturedPage>, mode: CaptureMode) -> String {
+    match page.and_then(|page| page.bytes_for(mode)) {
+        Some(bytes) => format!("{} · {}", mode.label(), fmt_bytes(bytes)),
+        None => mode.label().to_string(),
+    }
+}
+
+/// Said under `Save as:` when reader extraction found nothing to narrow to.
+///
+/// `CapturedPage::reader_fell_back` is the engine saying "you asked for reader
+/// text and this page has no article in it" — a JavaScript shell, an index of
+/// links, a chart spread across the whole body with no container to keep. The
+/// screen says so out loud rather than showing a control whose other half does
+/// nothing, because the alternative is a user tapping `Reader text` repeatedly
+/// on a page that has already given them the only answer it has.
+pub const NO_READER_VIEW: &str =
+    "There is no article on this page to narrow to, so the whole page was kept.";
 
 /// The sentence describing what came back, under the preview.
 ///
@@ -916,10 +1043,46 @@ const URL_FIELD: &str = "width: 100%; border: none; border-bottom: 2px solid var
     outline: none; background: transparent; border-radius: 0; padding: 6px 0 11px; \
     margin-top: 2px; font-size: 15px; color: var(--sla-ink); word-break: break-all;";
 
+/// The `Save as:` button. A chip with a chevron, which is what `1l`'s
+/// `Reader text ▾` is drawing.
+///
+/// The chevron is a Tabler path and not the character `▾`, and that is a rule
+/// rather than a preference here: card K13 found every Unicode glyph this app
+/// used as an icon rendering as a tofu box on the phone, because the bundled
+/// faces have no coverage for them. `icon()` draws an SVG path and cannot.
+const MODE_BUTTON: &str = "display: inline-flex; align-items: center; gap: 6px; \
+    background: var(--sla-fill); color: var(--sla-ink-2); border-radius: 999px; \
+    padding: 7px 12px 7px 14px; font-size: 14px; font-weight: 600; white-space: nowrap;";
+
+const MODE_ITEM: &str = "font-size: 15px; font-weight: 500; padding: 11px 14px; \
+    color: var(--sla-ink-2);";
+const MODE_ITEM_ON: &str = "font-size: 15px; font-weight: 600; padding: 11px 14px; \
+    background: var(--sla-accent-tint); color: var(--sla-accent-on-tint);";
+
+/// How tall the preview box is allowed to get before it scrolls inside itself.
+///
+/// The preview is a look, not a read: it exists so somebody can see *which page
+/// this is* and *which mode this is* before pressing Attach, and the whole
+/// chart is one tap away in the viewer afterwards. Two hundred and forty pixels
+/// is around a dozen lines at the size below — enough that a full-page capture's
+/// navigation and a reader capture's first verse are both unmistakable — and it
+/// leaves the footer's two buttons on screen on a 393x852 phone, which is what
+/// stops the preview pushing Capture off the bottom.
+const PREVIEW_MAX_PX: u32 = 240;
+
+/// The type size the preview draws at, in CSS pixels.
+///
+/// The same 12.5 `song_detail`'s card uses, for the same reason `render`'s
+/// header gives for every length in a fragment being in `em`: this is the small
+/// end of the one ladder, and the viewer is the large end. A preview at a size
+/// nothing else in the app uses would be a third rendering of the same object.
+const PREVIEW_BASE_PX: f32 = 12.5;
+
 #[component]
 pub fn CaptureScreen(song: Option<SongId>) -> NodeHandle {
     let nav = use_store::<NavStore>();
     let songs = use_store::<SongsStore>();
+    let settings = use_store::<SettingsStore>();
 
     let song = song.unwrap_or_default();
     if songs.get(song).is_none() {
@@ -940,8 +1103,29 @@ pub fn CaptureScreen(song: Option<SongId>) -> NodeHandle {
     // attempt, so a complaint never outlives the problem — `song_detail`'s
     // rule for the same strip.
     let trouble = Signal::new(Option::<String>::None);
+    // What `Save as:` says. Seeded from the remembered setting rather than from
+    // `CaptureMode::default()`, so a user who picked full page last week gets
+    // full page — and written straight back on every change, because the whole
+    // value of remembering it is that nothing has to be confirmed.
+    let mode = Signal::new(settings.capture_mode.get());
+    let mode_open = Signal::new(false);
 
     let leave = move || nav.go(Route::SongDetail(song));
+
+    // One handler for both entries. It writes in three places and all three are
+    // necessary: the signal is what the control draws itself from, the setting
+    // is what the next capture on the next day starts at, and the flow is where
+    // an already-finished capture keeps the reading that is about to be
+    // written. The third is a no-op before a capture and the whole point after
+    // one.
+    let choose = move |wanted: CaptureMode| {
+        mode.set(wanted);
+        settings.set_capture_mode(wanted);
+        mode_open.set(false);
+        flow.update(move |state| {
+            state.select_mode(wanted);
+        });
+    };
 
     let begin = move || {
         let url = draft.get().trim().to_string();
@@ -958,10 +1142,11 @@ pub fn CaptureScreen(song: Option<SongId>) -> NodeHandle {
         // run's flag is already set when the new worker's first checkpoint
         // comes round, and so that a spawn failure has somewhere to land.
         let started = url.clone();
-        flow.update(move |state| state.start(run, started, stop));
+        let asked = mode.get();
+        flow.update(move |state| state.start(run, started, asked, stop));
 
         #[cfg(not(target_arch = "wasm32"))]
-        if !spawn_capture(flow, run, url.clone(), CaptureMode::FullPage, watch) {
+        if !spawn_capture(flow, run, url.clone(), asked, watch) {
             // A machine that cannot spawn a thread is a machine under real
             // pressure. D5's prefetch could shrug and let the work happen
             // later; this one cannot, so it says so.
@@ -1068,6 +1253,92 @@ pub fn CaptureScreen(song: Option<SongId>) -> NodeHandle {
                     }
                 }
 
+                // `Save as: Reader text ▾` — card E3's control.
+                //
+                // It sits above the checklist rather than beside the footer's
+                // buttons because it is a property of the capture, read left to
+                // right with the address: *save this page, as this*. Down by
+                // Attach it would read as a property of the attaching, which is
+                // the one thing it is not — by then both readings are already
+                // in hand.
+                //
+                // It stays live in every state. Before a capture it says what
+                // the next one will ask for; during one the outcome settles on
+                // whatever it says when the worker lands; after one it swaps
+                // the two readings already fetched, with no second request. See
+                // `Flow::select_mode`.
+                div {
+                    style: "display: flex; align-items: center; gap: 10px; flex-wrap: wrap;",
+                    div { style: {T_META}, "Save as:" }
+                    DropdownMenu {
+                        opened_fn: move || mode_open.get(),
+                        on_close: move || mode_open.set(false),
+                        position: "bottom-start",
+                        DropdownMenuTarget {
+                            div {
+                                onclick: move || mode_open.update(|open| *open = !*open),
+                                style: {MODE_BUTTON},
+                                // `mode.get()` is read *before* `flow.with`,
+                                // not inside it. `Signal::with` holds the whole
+                                // signal store borrowed for as long as its
+                                // closure runs, and a read from inside a
+                                // reactive closure has to subscribe — which is
+                                // a `borrow_mut` of that same store. This
+                                // screen already carries one comment about
+                                // "RefCell already borrowed" killing it on the
+                                // private display (`Flow::take_settled`); this
+                                // is the same fault met from a third direction,
+                                // read against write instead of write against
+                                // write, and it killed the screen on mount.
+                                {move || {
+                                    let preference = mode.get();
+                                    flow.with(|state| {
+                                        mode_label(state.attachable(), shown_mode(state, preference))
+                                    })
+                                }}
+                                {icon(__scope, TablerIcon::ChevronDown, 15)}
+                            }
+                        }
+                        DropdownMenuDropdown {
+                            style: {MENU_SURFACE},
+                            for choice in [CaptureMode::Reader, CaptureMode::FullPage] {
+                                DropdownMenuItem {
+                                    key: {choice.name()},
+                                    style: {move || {
+                                        let preference = mode.get();
+                                        let on = flow.with(|state| shown_mode(state, preference)) == choice;
+                                        if on { MODE_ITEM_ON } else { MODE_ITEM }
+                                    }},
+                                    onclick: move || choose(choice),
+                                    div {
+                                        div {
+                                            {move || flow.with(|state| mode_label(state.attachable(), choice))}
+                                        }
+                                        // The one line saying what the mode
+                                        // does. It is on the menu item rather
+                                        // than under the button because the
+                                        // question it answers — "which of these
+                                        // do I want" — is only ever asked with
+                                        // the menu open.
+                                        div {
+                                            style: {format!("{T_META_SMALL} margin-top: 2px; \
+                                                             white-space: normal; max-width: 250px;")},
+                                            {choice.explain()}
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Reader text was asked for and this page had no article in it.
+                // Said here, next to the control that asked, because the control
+                // is otherwise showing an answer the engine could not give.
+                if flow.with(|state| state.attachable().is_some_and(|page| page.reader_fell_back)) {
+                    div { style: {format!("{T_META_SMALL} margin-top: -6px;")}, {NO_READER_VIEW} }
+                }
+
                 // The progress panel — `1l`'s checklist, bar and byte counter.
                 // Drawn from `Flow` on every redraw rather than from signals of
                 // its own, so there is exactly one thing that can be wrong.
@@ -1108,15 +1379,51 @@ pub fn CaptureScreen(song: Option<SongId>) -> NodeHandle {
                 // The preview. Only ever drawn over a real page — a box of
                 // skeleton lines with nothing behind it is the loading state
                 // `1l` sketches, and this screen has a checklist for that.
+                //
+                // Since E3 it draws the *page*, through card E5's renderer and
+                // the same `set_inner_html` host the library mounts, rather
+                // than seven lines of extracted text. That is what makes `Save
+                // as:` a choice somebody can make: switching it and watching
+                // `Login · Sign up · Follow us:` appear above the hymn is the
+                // whole of the argument for reader mode, and no wording of a
+                // byte count carries it.
+                //
+                // The keyed `for` is the remount. `render` is a full html5ever
+                // parse and a walk, so it must not run in a redraw closure —
+                // `pdf::pages`' rule, and `attachment_viewer`'s zoom uses the
+                // same trick for the same reason. Keying on the run *and* the
+                // mode means it is redone exactly when one of the two things it
+                // depends on changes, and on nothing else.
                 if flow.with(|state| state.attachable().is_some()) {
                     div {
                         div { style: {T_META}, "Preview" }
-                        div { style: {format!("{PANEL} gap: 4px; margin-top: 6px;")},
-                            div { style: {format!("{T_ROW_TITLE} font-size: 15px;")},
-                                {move || flow.with(|state| state.attachable().map(page_title).unwrap_or_default())}
-                            }
-                            for (index, line) in flow.with(preview) {
-                                div { key: {index}, style: {T_CHART}, {line.clone()} }
+                        // Keyed on the mode the state is actually in, not on
+                        // the preference — see `shown_mode`. Both signals are
+                        // read one after the other rather than one inside the
+                        // other, for the reason the button's label gives.
+                        for key in [{
+                            let preference = mode.get();
+                            flow.with(|state| {
+                                format!("{}:{}", state.url(), shown_mode(state, preference).name())
+                            })
+                        }] {
+                            div {
+                                key: {key.clone()},
+                                style: {format!("{PANEL} gap: 6px; margin-top: 6px;")},
+                                div { style: {format!("{T_ROW_TITLE} font-size: 15px;")},
+                                    {move || flow.with(|state| state.attachable().map(page_title).unwrap_or_default())}
+                                }
+                                div {
+                                    // The box scrolls inside itself rather than
+                                    // growing: a full-page capture of a chord
+                                    // site is a few thousand pixels of site
+                                    // before the chart, and a preview that
+                                    // pushed the footer off the screen would
+                                    // take Attach with it.
+                                    style: {format!("max-height: {PREVIEW_MAX_PX}px; overflow-y: auto; \
+                                                     overflow-x: auto; min-width: 0;")},
+                                    {preview_body(__scope, flow)}
+                                }
                             }
                         }
                     }
@@ -1204,11 +1511,64 @@ fn rows(state: &Flow) -> Vec<(usize, String, Tick)> {
         .collect()
 }
 
-fn preview(state: &Flow) -> Vec<(usize, String)> {
-    state
-        .attachable()
-        .map(|page| preview_lines(page).into_iter().enumerate().collect())
-        .unwrap_or_default()
+/// Which reading the control and the preview are showing.
+///
+/// **Not the same thing as the preference signal**, and the difference is a
+/// bug that was on the private display before it was in this comment: tapping
+/// `Full page` wrote the preference, remounted the preview on the new key, and
+/// drew the *reader* fragment, because the swap on the capture had not happened
+/// yet. Every visible thing therefore reads the mode off the state that owns
+/// the two readings, and falls back to the preference only where there is no
+/// capture to have a mode.
+///
+/// It also keeps the label honest in the one state where the two genuinely
+/// disagree. Asking for reader text on a page with no article in it leaves the
+/// capture on the full page — `Flow::select_mode` answers `false` — and the
+/// button goes on saying `Full page`, with [`NO_READER_VIEW`] underneath
+/// saying why, rather than naming a reading nobody has.
+fn shown_mode(state: &Flow, preference: CaptureMode) -> CaptureMode {
+    state.mode().unwrap_or(preference)
+}
+
+/// How wide the preview's content column is, in CSS pixels.
+///
+/// The screen's own padding either side, plus the panel's — 22 and 15 in the
+/// constants above. It is a number rather than a percentage because `Sizing`
+/// cannot take one: an image inside the fragment is stated in pixels on both
+/// axes (K28), and the only thing to cap it against is a width somebody has
+/// actually worked out. Wrong by a few pixels costs an image a few pixels of
+/// width; wrong by a percentage costs it its aspect ratio.
+fn preview_sizing() -> Sizing {
+    Sizing {
+        base_px: PREVIEW_BASE_PX,
+        column_px: crate::WIDTH.saturating_sub(2 * (22 + 15)),
+    }
+}
+
+/// The preview's content: the page as it would be drawn, or its words if the
+/// markup drew nothing.
+///
+/// Both branches end up in the same host through the same `set_inner_html`,
+/// because `render::from_text` returns a fragment too — so the fallback is a
+/// different *input* to the preview and not a different preview. That is the
+/// same argument `captured_page::decide` makes for the library's card, and it
+/// is why a capture with no drawable markup still previews as something the
+/// user can read before pressing Attach.
+fn preview_body(scope: &mut RenderScope, flow: Signal<Flow>) -> NodeHandle {
+    let markup = flow
+        .with(|state| {
+            state.attachable().map(|page| {
+                preview_page(page, preview_sizing())
+                    .unwrap_or_else(|| render::from_text(&preview_lines(page).join("\n")))
+                    .markup
+            })
+        })
+        .unwrap_or_default();
+    injected(
+        scope,
+        markup,
+        format!("font-size: {PREVIEW_BASE_PX:.2}px; line-height: 1.5; min-width: 0;"),
+    )
 }
 
 /// The bar's fill for whatever the state is. A settled capture is a full bar
@@ -1299,9 +1659,14 @@ mod tests {
         CapturedPage {
             url: url.to_string(),
             title: "A Song — Example Tabs".to_string(),
-            mode: CaptureMode::FullPage,
+            mode: CaptureMode::Reader,
             html: "<html></html>".repeat(10),
             text: "G       C\nCarolina in my mind\n\nsecond verse".to_string(),
+            alternate: Some(crate::capture::Alternate {
+                mode: CaptureMode::FullPage,
+                html: "<html></html>".repeat(30),
+                text: "Login Sign up\nG       C\nCarolina in my mind".to_string(),
+            }),
             assets: Vec::new(),
             missed: Vec::new(),
             stripped: Stripped::default(),
@@ -1313,7 +1678,12 @@ mod tests {
 
     fn running() -> Flow {
         let mut flow = Flow::Waiting;
-        flow.start(1, "https://tabs.example/song".to_string(), StopOnDrop::new());
+        flow.start(
+            1,
+            "https://tabs.example/song".to_string(),
+            CaptureMode::default(),
+            StopOnDrop::new(),
+        );
         flow
     }
 
@@ -1413,7 +1783,12 @@ mod tests {
     #[test]
     fn a_message_from_a_superseded_run_changes_nothing() {
         let mut flow = running();
-        flow.start(2, "https://tabs.example/other".to_string(), StopOnDrop::new());
+        flow.start(
+            2,
+            "https://tabs.example/other".to_string(),
+            CaptureMode::default(),
+            StopOnDrop::new(),
+        );
 
         assert_eq!(
             flow.deliver(1, Message::Step(Progress::Stripping { bytes: 99 })),
@@ -1511,7 +1886,7 @@ mod tests {
         let stop = StopOnDrop::new();
         let watch = stop.watch();
         let mut flow = Flow::Waiting;
-        flow.start(1, "u".into(), stop);
+        flow.start(1, "u".into(), CaptureMode::default(), stop);
         assert_eq!(watch.answer(), Wanted::Yes);
         flow.cancel();
         assert_eq!(watch.answer(), Wanted::No, "cancel stops the worker");
@@ -1520,15 +1895,15 @@ mod tests {
         let stop = StopOnDrop::new();
         let watch = stop.watch();
         let mut flow = Flow::Waiting;
-        flow.start(1, "u".into(), stop);
-        flow.start(2, "v".into(), StopOnDrop::new());
+        flow.start(1, "u".into(), CaptureMode::default(), stop);
+        flow.start(2, "v".into(), CaptureMode::default(), StopOnDrop::new());
         assert_eq!(watch.answer(), Wanted::No, "the first run is abandoned");
 
         // The worker finishing.
         let stop = StopOnDrop::new();
         let watch = stop.watch();
         let mut flow = Flow::Waiting;
-        flow.start(1, "u".into(), stop);
+        flow.start(1, "u".into(), CaptureMode::default(), stop);
         flow.deliver(1, Message::Done(Outcome::Captured(page("https://x/1"))));
         assert_eq!(watch.answer(), Wanted::No);
 
@@ -1537,7 +1912,7 @@ mod tests {
         let stop = StopOnDrop::new();
         let watch = stop.watch();
         let mut flow = Flow::Waiting;
-        flow.start(1, "u".into(), stop);
+        flow.start(1, "u".into(), CaptureMode::default(), stop);
         drop(flow);
         assert_eq!(watch.answer(), Wanted::No);
     }
@@ -1551,7 +1926,7 @@ mod tests {
         let stop = StopOnDrop::new();
         let watch = stop.watch();
         let mut flow = Flow::Waiting;
-        flow.start(1, "u".into(), stop);
+        flow.start(1, "u".into(), CaptureMode::default(), stop);
 
         for step in [
             Progress::Stripping { bytes: 1_000 },
@@ -1692,6 +2067,139 @@ mod tests {
         // stands for does not collapse away.
         assert_eq!(lines[2], " ");
         assert!(lines.len() <= PREVIEW_LINES);
+    }
+
+    // ── `Save as:` (E3) ─────────────────────────────────────────────────────
+
+    #[test]
+    fn the_preview_draws_the_page_rather_than_its_words() {
+        // The card asks for a preview of what each mode keeps, and the thing
+        // that makes it one is that it goes through E5's renderer: the same
+        // fragment the library will draw, at the card's size.
+        let mut p = page("https://x/1");
+        p.html = "<body><h1>Carolina</h1><pre>G       C\nCarolina in my mind</pre></body>".into();
+        let drawn = preview_page(&p, preview_sizing()).expect("something was drawn");
+        assert!(drawn.markup.contains("<pre"), "{}", drawn.markup);
+        assert!(drawn.markup.contains("Carolina in my mind"));
+        assert!(drawn.elements >= 2);
+    }
+
+    /// A capture whose markup this app draws nothing out of still has to
+    /// preview as something — an empty box under a live Attach button is the
+    /// one thing the preview exists to prevent.
+    #[test]
+    fn a_page_that_draws_nothing_still_has_a_preview_to_fall_back_on() {
+        let mut p = page("https://x/1");
+        p.html = "<html><head><title>only a head</title></head></html>".into();
+        assert!(preview_page(&p, preview_sizing()).is_none());
+        assert_eq!(preview_lines(&p)[1], "Carolina in my mind");
+    }
+
+    /// The label is the choice: two readings of one fetch, priced against each
+    /// other. Before a capture there is nothing to price and it is the name.
+    #[test]
+    fn the_control_prices_both_readings_once_there_is_a_capture() {
+        assert_eq!(mode_label(None, CaptureMode::Reader), "Reader text");
+        let p = page("https://x/1");
+        assert_eq!(
+            mode_label(Some(&p), CaptureMode::Reader),
+            format!("Reader text · {}", fmt_bytes(p.bytes_on_disk()))
+        );
+        assert!(
+            mode_label(Some(&p), CaptureMode::FullPage).starts_with("Full page · "),
+            "and the other one, without a second fetch"
+        );
+    }
+
+    /// The control is live in every state and means the same thing in each —
+    /// only *when* it takes effect changes. The state machine is what makes
+    /// that checkable without a window.
+    #[test]
+    fn save_as_is_answerable_at_every_state_the_screen_can_be_in() {
+        // Nothing captured: the choice is what the next capture will ask for,
+        // and the machine has nothing to do with it.
+        let mut flow = Flow::Waiting;
+        assert!(flow.select_mode(CaptureMode::FullPage));
+        assert_eq!(flow.mode(), None, "nothing has been captured to have a mode");
+
+        // Running: remembered, and applied when the worker lands.
+        let mut flow = running();
+        assert!(flow.select_mode(CaptureMode::FullPage));
+        assert_eq!(flow.mode(), Some(CaptureMode::FullPage));
+
+        // Settled: the reading already in hand is swapped, with no second fetch.
+        let mut flow = running();
+        flow.deliver(1, Message::Done(Outcome::Captured(page("https://x/1"))));
+        assert_eq!(flow.mode(), Some(CaptureMode::Reader));
+        assert!(flow.select_mode(CaptureMode::FullPage));
+        assert_eq!(flow.mode(), Some(CaptureMode::FullPage));
+        assert!(
+            flow.attachable().unwrap().html.len() > 200,
+            "and it is the other reading that is now on offer"
+        );
+    }
+
+    /// Changed mid-flight. The engine builds both readings whatever it was
+    /// asked for, so the capture settles on the answer the user can see rather
+    /// than the one they abandoned — which is why `Running` carries the mode at
+    /// all, and why the worker's closure cannot be the thing that decides.
+    #[test]
+    fn a_mode_changed_while_a_capture_runs_is_what_it_settles_on() {
+        let mut flow = running();
+        assert_eq!(flow.mode(), Some(CaptureMode::Reader));
+        flow.select_mode(CaptureMode::FullPage);
+        flow.deliver(1, Message::Done(Outcome::Captured(page("https://x/1"))));
+
+        let settled = flow.attachable().expect("a page to attach");
+        assert_eq!(settled.mode, CaptureMode::FullPage);
+        assert!(settled.text.starts_with("Login Sign up"));
+    }
+
+    /// The bug that was on the private display: `Save as:` was tapped, the
+    /// preference signal changed, the preview remounted on the new key — and
+    /// drew the reading the capture had not switched to yet. Everything visible
+    /// reads the mode off the state that owns both readings, for that reason.
+    #[test]
+    fn the_label_and_the_preview_follow_the_capture_rather_than_the_preference() {
+        let mut flow = running();
+        flow.deliver(1, Message::Done(Outcome::Captured(page("https://x/1"))));
+
+        // The preference says full page and the capture has not been switched.
+        // What the screen must show is the capture.
+        assert_eq!(shown_mode(&flow, CaptureMode::FullPage), CaptureMode::Reader);
+        flow.select_mode(CaptureMode::FullPage);
+        assert_eq!(shown_mode(&flow, CaptureMode::FullPage), CaptureMode::FullPage);
+
+        // Nothing captured: there is no capture to have a mode, so the
+        // preference is the only answer there is.
+        assert_eq!(
+            shown_mode(&Flow::Waiting, CaptureMode::FullPage),
+            CaptureMode::FullPage
+        );
+    }
+
+    /// Reader text asked for on a page with no article. The engine says so, the
+    /// screen has one sentence for it, and the control does not pretend to have
+    /// an answer it was not given.
+    #[test]
+    fn a_page_with_no_reader_view_says_so_rather_than_offering_one() {
+        let mut p = page("https://x/1");
+        p.mode = CaptureMode::FullPage;
+        p.alternate = None;
+        p.reader_fell_back = true;
+        assert!(!p.select(CaptureMode::Reader), "there is nothing to switch to");
+
+        let mut flow = running();
+        flow.deliver(1, Message::Done(Outcome::Captured(p)));
+        assert!(!flow.select_mode(CaptureMode::Reader));
+        assert!(flow.attachable().unwrap().reader_fell_back);
+        assert!(NO_READER_VIEW.ends_with("the whole page was kept."));
+        // And the control goes on naming the reading that exists rather than
+        // the one that was asked for.
+        assert_eq!(
+            shown_mode(&flow, CaptureMode::Reader),
+            CaptureMode::FullPage
+        );
     }
 
     /// "Downloaded 1 images" is what the finished screen said out loud the

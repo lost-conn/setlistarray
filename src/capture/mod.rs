@@ -11,9 +11,10 @@
 //! ## The shape of a capture
 //!
 //! ```text
-//!   fetch ──▶ parse ──▶ sanitise ──▶ judge ──▶ [narrow] ──▶ images ──▶ write
-//!     │                     │           │                     │
-//!  Failure              Stripped    Outcome              Partial/Missed
+//!   fetch ──▶ parse ──▶ sanitise ──▶ judge ──▶ images ──▶ narrow ──▶ write
+//!     │                     │           │         │         │
+//!  Failure              Stripped    Outcome   Partial/   both readings
+//!                                             Missed
 //! ```
 //!
 //! **Judging happens before narrowing**, and that ordering is deliberate. The
@@ -22,6 +23,15 @@
 //! chose to keep. A paywall notice sits in a banner that reader extraction
 //! throws away; judging afterwards would lose it and save the teaser as though
 //! it were the song.
+//!
+//! **Narrowing happens last, and produces a second reading rather than
+//! replacing the first.** That is card E3's doing. The card asks for a preview
+//! of what each mode keeps *before* anything is written, which is only
+//! answerable if one fetch yields both — so `capture` serialises the full page,
+//! re-parses it, narrows the copy, and hands back a [`CapturedPage`] carrying
+//! one reading with the other in [`CapturedPage::alternate`]. E1 narrowed
+//! before the images, which was cheaper by one masthead and made the second
+//! reading impossible.
 //!
 //! ## The three failures E4 has to draw
 //!
@@ -103,17 +113,100 @@ pub use fetch::HttpFetcher;
 /// The file the page itself is written to, inside the attachment directory.
 pub const PAGE_FILE: &str = "page.html";
 
-/// What the user asked to keep.
+/// What the user asked to keep — card E3's `Save as:`.
+///
+/// ## Reader is the default, and the measurement says so
+///
+/// E1 shipped this enum with `FullPage` as the default on the reasonable
+/// assumption that fidelity is the safe choice: keep everything, decide later.
+/// E3 captured the three sites `docs/CAPTURE.md` says the engine actually
+/// works on, in both modes, and read what came out. The assumption does not
+/// survive it.
+///
+/// The first words of a **full-page** capture, on all three:
+///
+/// | Site | What the saved page opens on |
+/// | --- | --- |
+/// | hymnal.net | `Login · Sign up · Follow us: · Classic · New Tunes · …` |
+/// | cifraclub.com | `Skip to content · Home page · Search the website · Main menu` |
+/// | guitaretab.com | `Add new tab · Help us to improve GuitareTab.com · Take our survey!` |
+///
+/// The same three in **reader** mode open on the hymn, on `[Intro] Em7 G`, and
+/// on the first chord line of the tab. The only images full-page mode keeps on
+/// any of them is the site's masthead — `hymnal.net/images/logo.png` and
+/// `guitaretab.com/static/images/head.png` — so reader mode's zero images is
+/// not a loss, it is the logo not being downloaded.
+///
+/// A user pasting a chord-site URL is the overwhelmingly common case, and for
+/// that user full-page mode is a worse capture of the same fetch. So the
+/// default is the one that answers the common case, and full page is the escape
+/// hatch for when reader extraction picks the wrong node — which it can, it is
+/// a heuristic, and it is why the screen previews both before anything is
+/// written.
+///
+/// **A capture keeps both**, from one fetch: see [`CapturedPage::select`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CaptureMode {
-    /// The page as the site built it, minus everything that executes or
-    /// phones home. Fidelity: the chart looks like it did in the browser.
+    /// Just the chart, as this app reads the page: the article node, with any
+    /// chord chart whose alignment lived in a dropped stylesheet rebuilt as
+    /// preformatted text (see [`reader::rebuild_chord_blocks`]).
+    ///
+    /// Smaller, cleaner, and occasionally wrong — reader extraction is a
+    /// heuristic, which is why E3 shows a preview before committing.
     #[default]
-    FullPage,
-    /// Just the article. Smaller, cleaner, and occasionally wrong — reader
-    /// extraction is a heuristic, which is why E3 shows a preview before
-    /// committing.
     Reader,
+    /// The page as the site built it, minus everything that executes or phones
+    /// home. Nothing is rewritten and nothing is chosen for the reader, which
+    /// is the whole of what it offers over [`Reader`](CaptureMode::Reader) —
+    /// and on a site whose chart was positioned in a linked stylesheet it is
+    /// the honest answer that there is no fidelity left to keep.
+    FullPage,
+}
+
+impl CaptureMode {
+    /// The label on E3's `Save as:` control, and the words in the provenance
+    /// comment at the top of a saved page. One list, so a saved file and the
+    /// screen that saved it cannot come to call the same thing two names.
+    pub fn label(self) -> &'static str {
+        match self {
+            CaptureMode::Reader => "Reader text",
+            CaptureMode::FullPage => "Full page",
+        }
+    }
+
+    /// What each mode keeps, in one line, for the control that offers it.
+    pub fn explain(self) -> &'static str {
+        match self {
+            CaptureMode::Reader => "Just the chart. The site's menus and logo are dropped.",
+            CaptureMode::FullPage => "The whole page, navigation and all, exactly as served.",
+        }
+    }
+
+    /// The stable name that survives a restart. Written into
+    /// `Preferences::capture_mode` and into a saved page's provenance comment.
+    pub fn name(self) -> &'static str {
+        match self {
+            CaptureMode::Reader => "Reader",
+            CaptureMode::FullPage => "FullPage",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "Reader" => Some(CaptureMode::Reader),
+            "FullPage" => Some(CaptureMode::FullPage),
+            _ => None,
+        }
+    }
+
+    /// The other one. There are two, and every control that offers them is a
+    /// toggle underneath.
+    pub fn other(self) -> Self {
+        match self {
+            CaptureMode::Reader => CaptureMode::FullPage,
+            CaptureMode::FullPage => CaptureMode::Reader,
+        }
+    }
 }
 
 /// The ceilings a capture will not go past.
@@ -217,19 +310,59 @@ impl Missed {
     }
 }
 
+/// The reading of a fetch that is not currently selected.
+///
+/// It exists so that E3's `Save as:` can be changed *after* the capture with no
+/// second download. Only the two strings differ between the modes; the images,
+/// the verdict and the byte count of what came off the wire are the fetch's,
+/// not the reading's.
+#[derive(Debug, Clone)]
+pub struct Alternate {
+    pub mode: CaptureMode,
+    pub html: String,
+    pub text: String,
+}
+
 /// A capture, complete, in memory, and not yet on disk.
+///
+/// ## One fetch, both readings
+///
+/// `html`/`text` are whichever mode is *selected*; [`alternate`] is the other
+/// one, and [`select`] swaps them. That is the shape card E3 needs and the
+/// reason it is not "capture again in the other mode": the card asks for a
+/// preview of what each mode keeps **before** committing, and a preview that
+/// cost a second trip to the site would be a preview nobody looked at on a
+/// train. Both readings come out of the same parsed document, so the second one
+/// costs a re-parse and a serialise of bytes already in memory — measured at a
+/// few milliseconds against the hundreds the fetch takes.
+///
+/// The price is paid in images rather than in requests: the assets are
+/// downloaded for the full page, so a reader-mode capture fetches a masthead it
+/// then does not keep. That is bounded by `Limits::max_total_asset_bytes`, it
+/// was 8.8 KB on hymnal.net and 9.6 KB on guitaretab, and it is what buys the
+/// user the ability to look at both answers. **Only the selected reading's
+/// assets are written** — see [`write_into`] — so nothing unreferenced reaches
+/// the library.
+///
+/// [`alternate`]: CapturedPage::alternate
+/// [`select`]: CapturedPage::select
 #[derive(Debug, Clone)]
 pub struct CapturedPage {
     /// The URL the user pasted. Goes into `Attachment::source_url`.
     pub url: String,
     /// `<title>`, or the first `<h1>`. Goes into `Attachment::title`.
     pub title: String,
+    /// Which reading `html` and `text` currently hold.
     pub mode: CaptureMode,
     /// Sanitised HTML with local asset paths. Written to [`PAGE_FILE`].
     pub html: String,
     /// Visible text. Goes into `Attachment::body`, which is what card G2's
     /// search inside attachments reads.
     pub text: String,
+    /// The other reading of the same fetch, or `None` when there is only one —
+    /// which is what reader extraction finding nothing to narrow to looks like.
+    pub alternate: Option<Alternate>,
+    /// Every image that came down, whichever reading references it.
     pub assets: Vec<Asset>,
     pub missed: Vec<Missed>,
     pub stripped: Stripped,
@@ -238,15 +371,80 @@ pub struct CapturedPage {
     /// number E2's "1.2 MB so far" counts up to.
     pub fetched_bytes: u64,
     /// Reader mode was asked for and found nothing to narrow to, so the full
-    /// page was kept instead. E3 should say so rather than quietly obliging.
+    /// page was kept instead. E3 says so rather than quietly obliging.
     pub reader_fell_back: bool,
 }
 
 impl CapturedPage {
-    /// What [`write_into`] will put on disk. Goes into
+    /// Switch which reading this capture is. `false` if the mode is not one
+    /// this capture has — a page with no reader view asked for reader text.
+    ///
+    /// A swap rather than a clone, because the two strings are the largest
+    /// things in the struct and there is no moment at which both need to be
+    /// the selected one.
+    pub fn select(&mut self, mode: CaptureMode) -> bool {
+        if self.mode == mode {
+            return true;
+        }
+        let Some(alternate) = self.alternate.as_mut() else {
+            return false;
+        };
+        if alternate.mode != mode {
+            return false;
+        }
+        std::mem::swap(&mut self.html, &mut alternate.html);
+        std::mem::swap(&mut self.text, &mut alternate.text);
+        alternate.mode = self.mode;
+        self.mode = mode;
+        true
+    }
+
+    /// Whether the other reading is there to switch to.
+    pub fn has(&self, mode: CaptureMode) -> bool {
+        self.mode == mode || self.alternate.as_ref().is_some_and(|a| a.mode == mode)
+    }
+
+    /// The markup a given mode would save, without switching to it. What E3's
+    /// preview renders when the user opens the control to look.
+    pub fn html_for(&self, mode: CaptureMode) -> Option<&str> {
+        if self.mode == mode {
+            return Some(&self.html);
+        }
+        self.alternate
+            .as_ref()
+            .filter(|a| a.mode == mode)
+            .map(|a| a.html.as_str())
+    }
+
+    /// The images the selected reading actually references.
+    ///
+    /// Matching on the path rather than remembering which walk produced which
+    /// image, because the path is what is *in* the markup: `assets::rewrite`
+    /// wrote `assets/000.png` into the `src`, and a reading that dropped the
+    /// element dropped the only mention of the file.
+    pub fn kept_assets(&self) -> impl Iterator<Item = &Asset> {
+        self.assets
+            .iter()
+            .filter(|asset| self.html.contains(&asset.path))
+    }
+
+    /// What [`write_into`] will put on disk **for the selected mode**. Goes into
     /// `Attachment::bytes_on_disk`.
     pub fn bytes_on_disk(&self) -> u64 {
-        self.html.len() as u64 + self.assets.iter().map(|a| a.bytes.len() as u64).sum::<u64>()
+        self.html.len() as u64 + self.kept_assets().map(|a| a.bytes.len() as u64).sum::<u64>()
+    }
+
+    /// What the *other* mode would take, so the control can price both. `None`
+    /// when there is no other mode.
+    pub fn bytes_for(&self, mode: CaptureMode) -> Option<u64> {
+        let html = self.html_for(mode)?;
+        let assets: u64 = self
+            .assets
+            .iter()
+            .filter(|asset| html.contains(&asset.path))
+            .map(|a| a.bytes.len() as u64)
+            .sum();
+        Some(html.len() as u64 + assets)
     }
 }
 
@@ -276,6 +474,18 @@ impl Outcome {
         match self {
             Outcome::Captured(page) | Outcome::Partial(page) => Some(page),
             Outcome::Blocked { page, .. } => page.as_deref(),
+            Outcome::Failed(_) | Outcome::Cancelled => None,
+        }
+    }
+
+    /// The same page, to switch its mode through. E3's `Save as:` is the only
+    /// caller: it changes which reading of an already-finished capture is the
+    /// one that would be written, which is a change to the capture and not to
+    /// the verdict wrapped around it.
+    pub fn page_mut(&mut self) -> Option<&mut CapturedPage> {
+        match self {
+            Outcome::Captured(page) | Outcome::Partial(page) => Some(page),
+            Outcome::Blocked { page, .. } => page.as_deref_mut(),
             Outcome::Failed(_) | Outcome::Cancelled => None,
         }
     }
@@ -444,14 +654,6 @@ pub fn capture(
     let signals = detect::signals(&document, &full_text, &stripped);
     let verdict = detect::verdict(response.status, &signals, &full_text);
 
-    let mut reader_fell_back = false;
-    if mode == CaptureMode::Reader {
-        match reader::extract(&document) {
-            Some(chosen) => reader::narrow_to(&document, &chosen),
-            None => reader_fell_back = true,
-        }
-    }
-
     let (downloaded, missed) = match &base {
         Some(base) => assets::rewrite(&document, base, fetcher, limits, |done, total, spent| {
             // The page's own bytes are added here rather than inside `rewrite`,
@@ -478,12 +680,56 @@ pub fn capture(
         return Outcome::Cancelled;
     }
 
-    let page = CapturedPage {
+    // Both readings, out of one fetch. The order matters: **narrowing happens
+    // after the images are in hand**, which is a reversal of what E1 did and
+    // the one cost of offering a preview of both.
+    //
+    // E1 narrowed first, so a reader capture never downloaded the site's
+    // masthead. That is cheaper and it makes the second reading impossible: the
+    // document has been gutted by the time anybody could ask what the full page
+    // looked like, and there is no way back short of fetching the site again.
+    // Card E3's whole point is that the user chooses *after* seeing both, so
+    // the extra images are the price — 8.8 KB on hymnal.net, 9.6 KB on
+    // guitaretab, nothing at all on CifraClub, and in every one of those three
+    // cases the image was the site's own logo. `write_into` then keeps only
+    // what the chosen reading references, so the phone's disk pays nothing.
+    //
+    // The reader reading is built on a **re-parse of the serialised full page**
+    // rather than on a second `dom::parse` of the response body. Two reasons:
+    // the sanitiser and `assets::rewrite` have both already run over this tree
+    // and re-running them would download every image twice, and re-parsing what
+    // will actually be written is the closest thing to a check that the two
+    // readings are readings of the same document.
+    let full_html = dom::to_html(&dom::root(&document));
+    let full = Alternate {
+        mode: CaptureMode::FullPage,
         text: dom::text_of(&dom::root(&document)),
-        html: render(&document, &url, mode),
+        html: framed(&full_html, &url, CaptureMode::FullPage),
+    };
+    // `document` is dropped here on purpose: `RcDom`'s `Drop` empties the
+    // children of everything it reaches (see `reader::narrow_to`), and holding
+    // a gutted tree alive next to the one being narrowed is exactly the fault
+    // that cost the E1 spike an afternoon.
+    drop(document);
+
+    let reader = read_narrowed(&full_html, &url);
+    let reader_fell_back = mode == CaptureMode::Reader && reader.is_none();
+
+    // The requested mode if it exists, and the full page if it does not. There
+    // is no third state: a page with no reader view still has a full page.
+    let (selected, alternate) = match (mode, reader) {
+        (CaptureMode::Reader, Some(reader)) => (reader, Some(full)),
+        (CaptureMode::Reader, None) => (full, None),
+        (CaptureMode::FullPage, reader) => (full, reader),
+    };
+
+    let page = CapturedPage {
+        mode: selected.mode,
+        html: selected.html,
+        text: selected.text,
+        alternate,
         url,
         title,
-        mode,
         assets: downloaded,
         missed,
         stripped,
@@ -502,24 +748,69 @@ pub fn capture(
     }
 }
 
+/// The reader reading of a page, from the markup the full page would save.
+///
+/// `None` means reader extraction found nothing to narrow to — a JavaScript
+/// shell, a directory page, a chart spread across the whole body — and the
+/// caller keeps the full page instead.
+///
+/// The rebuild in the middle is card E3's answer to card E8, and
+/// [`reader::rebuild_chord_blocks`] carries the argument for it. In one
+/// sentence: a chart whose alignment lived in a stylesheet this app dropped is
+/// re-emitted as preformatted text rather than having somebody else's CSS
+/// preserved and scoped, because the app wants a readable chart and not a
+/// screenshot of a website.
+fn read_narrowed(full_html: &str, url: &str) -> Option<Alternate> {
+    let document = dom::parse(full_html.as_bytes());
+    let chosen = reader::extract(&document)?;
+    reader::narrow_to(&document, &chosen);
+    reader::rebuild_chord_blocks(&dom::root(&document));
+    Some(Alternate {
+        mode: CaptureMode::Reader,
+        text: dom::text_of(&dom::root(&document)),
+        html: framed(&dom::to_html(&dom::root(&document)), url, CaptureMode::Reader),
+    })
+}
+
 /// The saved file: a doctype, a comment saying where it came from, the tree.
 ///
 /// The provenance comment is not decoration. Somebody will find one of these
 /// files in a backup in three years, and a saved page that does not say what
 /// it is or what was done to it is a mystery. It is also what card E6's
-/// re-check would read to know what to re-fetch.
-fn render(document: &markup5ever_rcdom::RcDom, url: &str, mode: CaptureMode) -> String {
-    let mode = match mode {
-        CaptureMode::FullPage => "full page",
-        CaptureMode::Reader => "reader text",
-    };
+/// re-check would read to know what to re-fetch — and, since E3, **it is the
+/// only place the mode is recorded**: see [`mode_of`].
+fn framed(body_html: &str, url: &str, mode: CaptureMode) -> String {
     format!(
-        "<!doctype html>\n<!-- Captured by SetListArray ({mode}) from {}.\n     \
+        "<!doctype html>\n<!-- Captured by SetListArray ({}) from {}.\n     \
          Scripts, frames and remote references were removed; images were \
-         rewritten to local files. -->\n{}\n",
+         rewritten to local files. -->\n{body_html}\n",
+        mode.name(),
         url.replace("--", "&#45;&#45;"),
-        dom::to_html(&dom::root(document))
     )
+}
+
+/// Which mode a saved page was written in, read back off the file.
+///
+/// ## What the mode means once a page is captured
+///
+/// It is **a decision taken once and baked into what was saved**, not a
+/// property that can be re-derived later. A saved attachment is one `page.html`
+/// and one `Attachment::body`; the other reading needed the fetched bytes, and
+/// those are gone the moment the capture screen leaves. Switching an existing
+/// attachment from reader text to full page is therefore not a re-render, it is
+/// a re-capture — which is card E6's territory, not a viewer control.
+///
+/// That is also why the mode is recorded in the file rather than in the
+/// database row. `Attachment` is the library's schema and every column on it is
+/// something the library queries, sorts or counts; the mode is none of those,
+/// it is provenance, and provenance belongs with the artefact so that a
+/// `page.html` recovered from a backup still says what it is. E6 re-fetching a
+/// page reads this to know which reading to produce again, so that a re-check
+/// diffs like against like.
+pub fn mode_of(saved: &str) -> Option<CaptureMode> {
+    let comment = saved.split_once("Captured by SetListArray (")?.1;
+    let name = comment.split_once(')')?.0;
+    CaptureMode::from_name(name)
 }
 
 /// Write a capture into an attachment directory, returning the bytes it took.
@@ -529,13 +820,21 @@ fn render(document: &markup5ever_rcdom::RcDom, url: &str, mode: CaptureMode) -> 
 /// a directory no row points at. Assets go first: a `page.html` that exists is
 /// the app's signal that the capture is complete, so it must not appear before
 /// the files it references.
+///
+/// **Only the selected reading's images are written.** A capture holds every
+/// image the full page referenced, because card E3 needs both readings out of
+/// one fetch — but a reader capture that put the site's masthead in the library
+/// would be storing a file nothing on disk mentions, and card E6's re-check
+/// would then have an image to re-fetch that no saved page asks for. See
+/// [`CapturedPage::kept_assets`].
 pub fn write_into(directory: &Path, page: &CapturedPage) -> io::Result<u64> {
     let mut written = 0u64;
 
-    if !page.assets.is_empty() {
+    let keeping: Vec<&Asset> = page.kept_assets().collect();
+    if !keeping.is_empty() {
         std::fs::create_dir_all(directory.join("assets"))?;
     }
-    for asset in &page.assets {
+    for asset in keeping {
         // `path` is built by this module as `assets/NNN.ext` and never comes
         // from the page, so it cannot traverse — but a capture writes into the
         // user's library, and the check costs a comparison.
@@ -715,6 +1014,179 @@ mod tests {
     fn capture_full_len() -> usize {
         let net = Canned::default().html("https://tabs.example/song/1", &chart_html(""));
         run(net, CaptureMode::FullPage).page().unwrap().html.len()
+    }
+
+    // ── one fetch, two readings (E3) ────────────────────────────────────────
+
+    #[test]
+    fn the_default_mode_is_reader_text() {
+        // The measurement behind it is in `CaptureMode`'s own docs: on all
+        // three sites this engine actually captures, a full-page save opens on
+        // the site's login links and a reader save opens on the chart.
+        assert_eq!(CaptureMode::default(), CaptureMode::Reader);
+    }
+
+    #[test]
+    fn a_capture_carries_both_readings_of_one_fetch() {
+        let net = Canned::default().html("https://tabs.example/song/1", &chart_html(""));
+        let Outcome::Captured(page) = run(net, CaptureMode::Reader) else {
+            panic!("expected a clean capture");
+        };
+        assert_eq!(page.mode, CaptureMode::Reader);
+        assert!(page.has(CaptureMode::FullPage), "the other one is there too");
+        assert!(!page.html.contains("<nav"), "reader dropped the navigation");
+        assert!(
+            page.html_for(CaptureMode::FullPage)
+                .is_some_and(|html| html.contains("<nav")),
+            "and full page kept it, without a second fetch"
+        );
+    }
+
+    /// The control the card asks for. Switching it after the capture must not
+    /// go back to the site — that is the whole reason both readings are built.
+    #[test]
+    fn switching_the_mode_swaps_the_reading_and_the_size() {
+        let net = Canned::default().html("https://tabs.example/song/1", &chart_html(""));
+        let Outcome::Captured(mut page) = run(net, CaptureMode::Reader) else {
+            panic!("expected a clean capture");
+        };
+        let reader_bytes = page.bytes_on_disk();
+        let full_bytes = page
+            .bytes_for(CaptureMode::FullPage)
+            .expect("the full page is priced too");
+        assert!(reader_bytes < full_bytes, "{reader_bytes} < {full_bytes}");
+
+        assert!(page.select(CaptureMode::FullPage));
+        assert_eq!(page.mode, CaptureMode::FullPage);
+        assert_eq!(page.bytes_on_disk(), full_bytes);
+        assert!(page.html.contains("<nav"));
+
+        // And back again, with both still in hand.
+        assert!(page.select(CaptureMode::Reader));
+        assert_eq!(page.bytes_on_disk(), reader_bytes);
+    }
+
+    /// A capture holds every image the full page referenced, because both
+    /// readings come out of one fetch. Only the chosen one's images are put in
+    /// the library — otherwise a reader capture files the site's masthead where
+    /// nothing on disk mentions it, and card E6 has an image to re-check that
+    /// no saved page asks for.
+    #[test]
+    fn only_the_selected_readings_images_are_written() {
+        let dir = std::env::temp_dir().join(format!("sla-modes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // A masthead in the navigation, a chord box inside the chart. Reader
+        // mode keeps the second and drops the first — which is exactly what
+        // hymnal.net and guitaretab do in real life.
+        let body = chart_html("").replace(
+            r#"<nav><a href="/x">Songs</a></nav>"#,
+            r#"<nav><a href="/x">Songs</a><img src="/logo.png"></nav>"#,
+        );
+        let body = body.replace("</pre>", r#"</pre><img src="/shape.png">"#);
+        let net = Canned::default()
+            .html("https://tabs.example/song/1", &body)
+            .image("https://tabs.example/logo.png", PNG)
+            .image("https://tabs.example/shape.png", PNG);
+
+        let Outcome::Captured(mut page) = run(net, CaptureMode::Reader) else {
+            panic!("expected a clean capture");
+        };
+        assert_eq!(page.assets.len(), 2, "both came down");
+        assert_eq!(page.kept_assets().count(), 1, "one is referenced");
+
+        let written = write_into(&dir, &page).unwrap();
+        assert_eq!(written, page.bytes_on_disk());
+        assert_eq!(
+            std::fs::read_dir(dir.join("assets")).unwrap().count(),
+            1,
+            "and only one is on disk"
+        );
+
+        // Switching to the full page before attaching writes the other one too.
+        assert!(page.select(CaptureMode::FullPage));
+        write_into(&dir, &page).unwrap();
+        assert_eq!(std::fs::read_dir(dir.join("assets")).unwrap().count(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The mode is not in the database row. It is in the file, which is what
+    /// makes a `page.html` recovered from a backup still say what it is — and
+    /// what card E6 reads to know which reading to produce when it re-fetches.
+    #[test]
+    fn the_saved_file_records_which_mode_it_was_written_in() {
+        let net = Canned::default().html("https://tabs.example/song/1", &chart_html(""));
+        let Outcome::Captured(mut page) = run(net, CaptureMode::Reader) else {
+            panic!("expected a clean capture");
+        };
+        assert_eq!(mode_of(&page.html), Some(CaptureMode::Reader));
+        page.select(CaptureMode::FullPage);
+        assert_eq!(mode_of(&page.html), Some(CaptureMode::FullPage));
+        assert_eq!(mode_of("<!doctype html><p>somebody else's file</p>"), None);
+    }
+
+    /// Reader text asked for on a page with no article in it. The full page is
+    /// kept, there is no second reading to switch to, and the screen is told so
+    /// rather than being left with a control whose other half does nothing.
+    #[test]
+    fn a_page_with_no_article_has_one_reading_and_says_so() {
+        // A chart spread across `<body>` itself: `reader::extract` returns
+        // `None` because there is no smaller node that holds it.
+        let sheet: String = (1..=30)
+            .map(|n| format!(r#"<span class="chord">C</span><span class="lyric">l{n}</span>"#))
+            .collect();
+        let net = Canned::default().html(
+            "https://tabs.example/song/1",
+            &format!("<html><body>{sheet}</body></html>"),
+        );
+        let page = run(net, CaptureMode::Reader)
+            .page()
+            .expect("something was kept")
+            .clone();
+        assert!(page.reader_fell_back);
+        assert_eq!(page.mode, CaptureMode::FullPage);
+        assert!(!page.has(CaptureMode::Reader));
+        assert!(page.bytes_for(CaptureMode::Reader).is_none());
+    }
+
+    /// The E8 fault, end to end: a chart positioned by a stylesheet the capture
+    /// drops comes back as preformatted text in reader mode — and full-page
+    /// mode leaves it exactly as the site served it, because that is the only
+    /// thing full page promises.
+    #[test]
+    fn reader_mode_rebuilds_a_stylesheet_positioned_chart_and_full_page_does_not() {
+        let verse: String = (1..=8)
+            .map(|n| {
+                format!(
+                    r#"<div class="line"><div class="chord-text"><span class="chord">G</span>Line&nbsp;{n}&nbsp;</div><div class="chord-text"><span class="chord">C</span>of&nbsp;the&nbsp;words</div></div>"#
+                )
+            })
+            .collect();
+        let net = Canned::default().html(
+            "https://tabs.example/song/1",
+            &format!(
+                r#"<html><head><link rel="stylesheet" href="/chart.css"></head>
+                   <body><nav><a href="/x">Songs</a></nav>
+                   <div class="chord-container">{verse}</div></body></html>"#
+            ),
+        );
+        let Outcome::Captured(mut page) = run(net, CaptureMode::Reader) else {
+            panic!("expected a clean capture");
+        };
+        assert!(page.html.contains("<pre>"), "rebuilt: {}", page.html);
+        assert!(
+            page.text.contains("G      C\nLine 1 of the words"),
+            "the chords are over their words: {:?}",
+            page.text
+        );
+
+        page.select(CaptureMode::FullPage);
+        assert!(
+            !page.html.contains("<pre>"),
+            "full page is the site's markup, untouched"
+        );
+        assert!(page.html.contains("chord-text"));
     }
 
     #[test]

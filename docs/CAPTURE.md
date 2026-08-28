@@ -118,7 +118,7 @@ it was what caught the `chord_markup` false positive described below.
 Reproduce any row with:
 
 ```bash
-cargo run --release --bin capture_probe -- [--reader] [--browser-ua] URL...
+cargo run --release --bin capture_probe -- [--reader|--full-page] [--browser-ua] URL...
 ```
 
 It prints counts and byte totals only. What comes down is somebody's
@@ -139,6 +139,10 @@ Same four capturable pages, both modes, comparing `page.html` alone:
 Reader mode keeps the chart on every page that has one, and saves a fifth to
 two fifths of the bytes. The saving is real but not dramatic, because on a
 chord site the chart container *is* most of the page.
+
+**Card E3 re-measured this and concluded the bytes are the least of it** — see
+"Card E3" below. The difference that matters is what the two modes put at the
+top of the saved page.
 
 ---
 
@@ -799,8 +803,10 @@ already does. Fixed in `../rinch-fixes`; see the README's PR list.
   be loaded without escaping into the app, or extend E3's reader mode to
   recognise the chord-span pattern and rebuild it. Sites whose chart is a
   `<pre>` — CifraClub, guitaretab — are unaffected and come out right.
+  **Answered by E3, which took the second option — see "Card E3" below.**
 * **The card still opens on the site's navigation.** Same note E2 left; the fix
-  is E3's, by capturing less rather than by drawing less.
+  is E3's, by capturing less rather than by drawing less. **Fixed by E3**,
+  which made reader text the default.
 * **Rinch's `decode_html_entities` replaces `&amp;` first**, so text containing
   the literal characters `&lt;` arrives on screen as `<`. Harmless here — it is
   a text node by then, and there is no JS engine — but it is the classic
@@ -808,3 +814,219 @@ already does. Fixed in `../rinch-fixes`; see the README's PR list.
 * **SVG, BMP and AVIF images fall back to their `alt`.** `image_pixels` reads
   four formats; SVG has no pixel size to read and Rinch has no decoder for any
   of the three. Rare on a chord site, and a caption is an honest answer.
+
+---
+
+## Card E3 — reader text against full page, and the decision E8 handed over
+
+Built 2026-08-28. The control is in `src/screens/capture.rs`; the rebuild that
+makes reader mode worth choosing is in `src/capture/reader.rs`; both readings
+come out of one fetch in `src/capture/mod.rs`.
+
+### The measurement the default rests on
+
+Three sites, both modes, live, on 2026-08-28. **What each saved page opens
+on**:
+
+| Site | Full page opens on | Reader text opens on |
+| --- | --- | --- |
+| hymnal.net | `hymnal.net · Login · Sign up · Follow us: · Classic · New Tunes · New Songs · Children · Scripture · More · Recently Commented Songs · FAQ · Links` | `Glory be to God the Father` |
+| cifraclub.com | `Skip to content · Home page · Search the website · Search · Main menu · Key · Tuner · Metronome` | `[Intro] Em7 G Em7 G` |
+| guitaretab.com | `Add new tab · Help us to improve GuitareTab.com · Take our survey! · Collections · …` | `Em Bm Em Bm` over `T'was down by the Genside` |
+
+And what each keeps, from the same fetches:
+
+| Site | full page | reader | images kept (full) | images kept (reader) |
+| --- | ---: | ---: | --- | --- |
+| hymnal.net | 65,198 | 40,525 | 1 — `hymnal.net/images/logo.png` | 0 |
+| cifraclub.com | 163,943 | 124,995 | 0 | 0 |
+| guitaretab.com | 61,748 | 36,659 | 1 — `static/images/head.png` | 0 |
+
+Reproduce with `capture_probe URL` and `capture_probe --full-page URL`; the
+byte figures move by a few hundred between fetches, because these pages carry a
+session token and a rotating "recently commented" list.
+
+Every image full-page mode keeps on any of the three is the site's own
+masthead. So reader mode's "zero images" is not a loss; it is the logo not
+being saved.
+
+**The default is Reader text.** A user pasting a chord-site URL is the
+overwhelmingly common case, and for that user full-page mode is a worse capture
+of the same fetch: a screen and a half of somebody's navigation before the
+song, and — on hymnal.net — the verse printed twice. Full page is the escape
+hatch for when reader extraction picks the wrong node, which it can, because it
+is a heuristic. That is what the preview is for.
+
+The choice is **remembered**, in `Preferences::capture_mode`
+(`src/db/prefs.rs`, `schema.rhype`), read into `SettingsStore::capture_mode` and
+written on every pick. It is remembered per *user*, not per site: someone whose
+chord site is CifraClub pastes CifraClub URLs, and re-answering the same
+question on every capture is a tax on the common case. Per-site would be worse
+— the app would silently decide for a site on the strength of one choice that
+may have been about one page.
+
+### One fetch, both readings
+
+The card asks for "a preview of what each keeps", which is only answerable
+before committing if one fetch produces both. So `capture()` now serialises the
+full page, re-parses it, narrows the copy, and returns a `CapturedPage` holding
+one reading with the other in `alternate`. `Save as:` swaps them with
+`CapturedPage::select` — no second request, which was confirmed on the phone by
+switching a settled capture from `Full page · 66 KB` to `Reader text · 41 KB`
+and watching the preview redraw.
+
+The cost is one reordering: **the images are downloaded before narrowing**,
+where E1 narrowed first. A reader capture therefore fetches a masthead it will
+not keep — 8.8 KB on hymnal.net, 9.6 KB on guitaretab, nothing on CifraClub.
+`write_into` writes only the images the *chosen* reading references, so the
+phone's disk pays nothing and card E6 never has an image to re-check that no
+saved page mentions.
+
+### The E8 decision: rebuild the chart, do not preserve the CSS
+
+Card E8 wrote up the fault E5 found — hymnal.net positions its chord symbols
+with a `<link>`ed stylesheet, so the saved page is a run of `<div
+class="chord-text">` blocks and the chart renders **one syllable per line** —
+and left the choice to E3. The two options were:
+
+1. keep a same-origin `<style>` block and rewrite every selector to a scoping
+   prefix, so a stranger's CSS cannot escape into the app's one Stylo stylist;
+2. recognise the chord-above-syllable pattern structurally and re-emit it as
+   something that lays out on its own.
+
+**E3 chose the second, and the argument is not that the first is hard.** It is
+that the first cannot work on this page even done perfectly: hymnal.net's saved
+page contains **zero** `<style>` blocks, because all of its CSS was in the
+linked sheet E1 drops. Scoping preserves inline and same-document CSS; what is
+missing is in neither. Getting it back would mean fetching and keeping the
+site's stylesheets — a second class of remote request to make work offline, a
+second thing for E6 to re-check, and a bet that a sheet written for a 1200px
+desktop column degrades sanely on a phone. The class that hides hymnal's chord
+scaffold is `hidden`: the "high-fidelity" render of that page is a column of
+one-syllable lines the site never meant anybody to see.
+
+So `reader::rebuild_chord_blocks` folds each line back into the two rows it was
+drawn as and emits a `<pre>`:
+
+```
+G           C
+Glory be to God the Father,
+ G                 D
+ And to Christ the Son,
+G            C
+Glory to the Holy Spirit—
+ D  D7 G
+ Ev er One.
+```
+
+That is the same shape CifraClub and guitaretab already serve, so one rendering
+path serves all three, and it is the shape `chart_editor` lets somebody type by
+hand. `dom::text_of` copies a `<pre>` verbatim, so the aligned chart is also
+what lands in `Attachment::body` for G2's search.
+
+**`<pre>`-based sites are untouched.** Nothing inside a `<pre>`, and no
+container holding one, is a candidate — CifraClub marks every chord in its
+`<pre>` with `data-chord-name`, and the day one of them reaches for a `class`
+as well is the day that guard earns its keep. Verified by diffing the reader
+capture of CifraClub and guitaretab before and after the rebuild landed: **zero
+lines of difference on both.**
+
+Only **reader** mode rebuilds. Full page's promise is *this is what the site
+served*, and a mode that quietly rewrote the markup would be lying about the
+one thing it exists to offer. The two modes now differ in kind rather than in
+size.
+
+**E8 is answered by this card** and does not need the CSS-scoping route.
+
+### Three things the rebuild got wrong first, all found against the live page
+
+* **Ordinary whitespace is markup; `&nbsp;` is content.** The first version
+  stripped newlines and kept everything else, which passed against the live
+  page (hymnal pretty-prints with bare newlines) and turned a fixture's
+  eight-space HTML indent into eight spaces of chart. A site *cannot* indent
+  with ordinary spaces, because the browser collapses them — which is exactly
+  why these pages are full of `&nbsp;`.
+* **A chord symbol is the innermost chord-marked element.** Length and
+  whitespace cannot tell a wrapper from a symbol, because a wrapper is only as
+  long as the syllable inside it: `<div class="chord-text"><span
+  class="chord">D</span>Ev</div>` reads as the single token `DEv`, and a whole
+  line came out as `DEv D7er, G` over nothing.
+* **The duplicate verse is not the same string as its twin.** hymnal ships every
+  verse twice — plain, and again with the chords over it behind a "show chords"
+  toggle whose `hidden` class is in the missing sheet — so without dropping one
+  the reader gets each verse read out twice. A comparison that collapsed
+  whitespace matched *neither* copy on the live page: the chord copy breaks
+  `Ever` across two symbols as `Ev er`, and the two copies were typed with two
+  different apostrophes (`e’en` against `e'en`). The comparison now removes
+  whitespace entirely and folds curly punctuation to ASCII.
+
+### What the mode means once a page is captured
+
+**A decision taken once and baked into what was saved.** A saved attachment is
+one `page.html` and one `Attachment::body`; the other reading needed the fetched
+bytes, and those are gone the moment the capture screen leaves. Switching an
+existing attachment from reader text to full page is not a re-render, it is a
+re-capture — **card E6's territory, not a viewer control**.
+
+The mode is recorded in the provenance comment at the top of the file:
+
+```html
+<!-- Captured by SetListArray (Reader) from https://www.hymnal.net/en/hymn/h/1. -->
+```
+
+`capture::mode_of` reads it back, and E6 should use it so that a re-check
+produces the same reading and diffs like against like. It is deliberately *not*
+a column on `Attachment`: every field on that row is something the library
+queries, sorts or counts, and the mode is none of those. It is provenance, and
+provenance belongs with the artefact — a `page.html` recovered from a backup
+still says what it is.
+
+### Verified
+
+* `cargo test`: **417** (394 before).
+* `scripts/screenshot.sh`: 9/9.
+* **Live captures**, hymnal.net + cifraclub.com + guitaretab.com, both modes,
+  through `capture_probe` — the tables above are that run.
+* **Desktop, on `:99`**: hymnal.net captured through the real screen; `Save
+  as:` switched to `Full page · 66 KB` and back to `Reader text · 41 KB` with
+  the preview redrawing each time; attached, landing as
+  `attachments/26/page.html` (40,260 B) with **no `assets/` directory** and
+  `Captured by SetListArray (Reader)` at the top. The choice survived a restart
+  of the app against the same library.
+* **On the phone (ZY22FD66GZ)**: the control renders with a real chevron and no
+  tofu, the dropdown opens and its items are live, a real capture of
+  hymnal.net priced both readings, switching to reader text redrew the preview
+  as the rebuilt chart with no second request, and the attachment renders in
+  the song's card.
+
+### Found and not fixed
+
+* **A flat sign in captured content is a tofu box on the phone.** hymnal.net's
+  key line is `A♭ Major`, and U+266D has no coverage in the bundled faces, so
+  the phone draws a box. K13 and K26 are about the app's *own* prose; this is a
+  site's text, which the app cannot rewrite — the answer is a fallback face in
+  the stack, and it is a card of its own.
+* **`scripts/with-display.sh` did not actually isolate the display, and this
+  card found out by violating the rule it is there to enforce.** See below.
+* **The checklist says "Downloaded 1 image" in reader mode** even though the
+  reader reading keeps none. It is true — the image was downloaded, that line
+  is about the fetch — but somebody reading it beside `41 KB on this device`
+  may not connect the two. Left alone rather than made conditional, because
+  every alternative wording read as a failure ("Downloaded 0 of 1 image").
+
+### The display rule had a hole in it, and this card fell through it
+
+`scripts/with-display.sh` exported `DISPLAY=:99` and left `WAYLAND_DISPLAY`
+alone. **winit prefers the Wayland backend whenever `WAYLAND_DISPLAY` is set
+and never looks at `DISPLAY`**, so on this machine — a Wayland session — the
+wrapper handed the app straight back to the session compositor and the window
+opened on the developer's real desktop. Three times, for a couple of minutes
+each, before it was noticed: the giveaway was `xwininfo -root -tree` on `:99`
+reporting *0 children* while the app was plainly running and answering the
+debug IPC.
+
+`scripts/screenshot.sh` already knew — it launches with `env -u
+WAYLAND_DISPLAY` and says why in a comment — so the knowledge existed in the
+repository and was in the wrong file. The wrapper now launches with `env -u
+WAYLAND_DISPLAY` and `--export` emits `unset WAYLAND_DISPLAY`, which is what
+makes the rule in `CLAUDE.md` true rather than merely stated.

@@ -67,8 +67,17 @@
 //! Narrowing a page to its chart is **E3**, it is implemented in `reader.rs`,
 //! and it happens at capture time. This file renders whatever was saved. A
 //! full-page capture therefore still opens on the site's navigation — the
-//! "found and not fixed" note E2 left — and that is E3's to fix by capturing
+//! "found and not fixed" note E2 left — and that was E3's to fix by capturing
 //! less, not this file's to fix by drawing less.
+//!
+//! E3 has since landed and fixed it in both of the ways that were open to it.
+//! Reader text is now the default, so the common case never saves the
+//! navigation at all; and point 3 above — hymnal.net's chord scaffold, which
+//! renders one syllable per line because the stylesheet that positioned it was
+//! dropped — is answered in `reader::rebuild_chord_blocks` by rebuilding the
+//! chart as a `<pre>` rather than by preserving a stranger's CSS. So this file
+//! draws the same shape on hymnal.net that it already drew correctly on
+//! CifraClub, and card **E8** is answered rather than still open.
 //!
 //! ## The rules, in one table
 //!

@@ -89,4 +89,7 @@ type Preferences {
     performance_theme: String
     keep_awake: Bool
     recheck_saved_pages: Bool
+    // "Reader" | "FullPage" — card E3's `Save as:`, remembered because a
+    // player's chord site is the same chord site every time.
+    capture_mode: String
 }
