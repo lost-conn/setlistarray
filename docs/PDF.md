@@ -28,10 +28,17 @@ collected at the end.
 
 | | APK (`arm64-v8a`) | Δ | Blob to ship | Licence |
 | --- | ---: | ---: | --- | --- |
-| **Today** | 6,799,883 B | — | — | — |
+| **Today** (2026-08-26) | 6,799,883 B | — | — | — |
 | **pdfium-render** | 10,920,555 B | **+4,120,672 B (+3.93 MiB, +61%)** | 6.4 MB third-party `libpdfium.so` | BSD-3 + 15 permissive notices |
 | **hayro** (pure Rust) | 9,413,131 B | **+2,613,248 B (+2.49 MiB, +38%)** | none | MIT / Apache-2.0 |
 | **Defer to system viewer** | 6,799,883 B | 0 | none | — |
+
+**The `Today` row is a measurement from 2026-08-26 and has since gone stale.**
+The same build at `98ae4eb` is 7,823,883 B — a megabyte of cards that landed in
+between, none of it a renderer. Anyone pricing a dependency against the number
+above will read other people's work as their own cost; measure a baseline build
+on the day. Card D3 did that and cost +167,936 B for `hayro-syntax`, the parser
+half of the choice below.
 
 Both renderers were built into this app, packaged into a real signed APK, and
 the APKs measured. Both cross-compile under `cargo-ndk` for

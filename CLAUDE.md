@@ -16,6 +16,17 @@ scripts/with-display.sh --stop                       # tear the display down
 `scripts/screenshot.sh` re-enters that wrapper itself, so the visual net is
 already safe to run as-is.
 
+**The wrapper is necessary and not sufficient.** It moves the app; it cannot
+move a dialog the app does not draw. `rfd` here is built on `xdg-portal`
+(`Cargo.lock` has `ashpd` and no `gtk3`), so `pick_file` opens nothing itself —
+it asks `org.freedesktop.portal.Desktop`, and the chooser is drawn by
+`xdg-desktop-portal-gtk`, a process this app did not start and whose
+environment says `DISPLAY=:0`. **So never trigger a real file dialog.** Set
+`SLA_PICK_FILE` to the path the dialog would have returned (empty means
+"cancelled") — see `PICK_OVERRIDE` in `src/picker.rs`. The same caution applies
+to anything else that hands work to a session service rather than drawing it:
+portals, notifications, `xdg-open`.
+
 Why the rule exists: on 2026-08-28 an agent verifying the file picker (card D3)
 launched the app on the real desktop and opened native file dialogs on it,
 repeatedly, while the machine's owner was working. Focus theft is not a neutral
