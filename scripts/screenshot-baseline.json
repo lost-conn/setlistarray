@@ -66,6 +66,26 @@
       "min_matched": 40
     },
     {
+      "name": "group_header_double_paint",
+      "description": "The first library group header's label ('SOLID') is drawn once. Card K20: it was drawn twice, 'SOLID' with 'Solid' struck through it, and no colour check could see it.",
+      "type": "ink_extent",
+      "region": {
+        "anchor": "top-left",
+        "w": 44,
+        "h": 20,
+        "left": 16,
+        "top": 228
+      },
+      "threshold_percent": 50,
+      "ink_width_fraction": 0.6909,
+      "ink_width_tolerance": 0.03,
+      "ink_height_fraction": 0.36,
+      "ink_height_tolerance": 0.06,
+      "ink_pixel_fraction": 0.0618,
+      "ink_pixel_tolerance": 0.012,
+      "note": "The net had a group-header check already — group_header_accent, which counts accent pixels — and it was green through the whole of the K20 fault, because a run painted twice in the accent colour is still the accent colour and there are simply more of them than the min_matched floor of 40 asks for. Every other check here samples colour and none of them could have caught it either; the fault was found on a phone, by eye, in a screenshot taken for a different card. This check is the one that would have. Why this header and not any other text: T_LABEL_CAPS (src/theme.rs) styles it 'text-transform: uppercase; letter-spacing: 0.16em', and those two properties live in the IFC text builder and nowhere else. The correct copy is therefore 'SOLID', tracked; the duplicate the paint walk drew was the raw DOM string 'Solid', untracked and untransformed, at a different width and a different set of glyph shapes. Two copies that disagree that strongly leave far more ink in the same rectangle than one does — 0.1025 against the 0.0618 recorded here, a 66% difference against a 0.012 tolerance — which is what makes an ink_extent check the right instrument. Text with no transform and no tracking in a root with no padding double-paints exactly on top of itself and is invisible even to this, which is why the region is pointed here rather than at a song title. The trimmed ink box does not move between the two renders (38x9 either way): the duplicate starts at the same x and is narrower, so it adds density, not extent. Width and height are recorded anyway because they catch a different failure — the same region under the DejaVu fallback reads 0.7636 / 0.4000 / 0.0669, so this check happens to police the app's own typefaces here too, on all three axes. Top-left anchored: the group header sits in the content column at SCREEN_PAD, which starts at the left edge and does not move when the window manager grants a different width. The region stops at 44 CSS px wide so that the count ('5') to the right of the label, and the hairline after it, stay out of the crop — the label's ink ends around 37 CSS px in and the count begins around 48."
+    },
+    {
       "name": "bottom_nav_accent",
       "description": "The bottom nav strip carries the accent colour: the active item (Songs, selected by default) has its icon and its label painted in it, and it is the only thing in the strip that is ever accent — the inactive item is muted grey and the hairline and the paper are neither.",
       "type": "accent_presence",
@@ -109,12 +129,12 @@
       },
       "threshold_percent": 50,
       "ink_width_fraction": 0.495,
-      "ink_width_tolerance": 0.03,
-      "ink_height_fraction": 0.7736,
+      "ink_width_tolerance": 0.02,
+      "ink_height_fraction": 0.7547,
       "ink_height_tolerance": 0.08,
-      "ink_pixel_fraction": 0.0863,
-      "ink_pixel_tolerance": 0.012,
-      "note": "Region: top-left anchored (the content column starts at the left edge, same reasoning as thumb_painted) over the 'Songs' title — SCREEN_PAD (22px) in from the left, past the phone-standin status bar (44px) and most of the title block's own top padding (6px). Sized generously (160x42 CSS) so the crop holds the whole word with margin on every side and stops short of the meta line ('N in your book...') below it, which is a different, smaller face at a different weight and would muddy the measurement if it leaked in. Threshold 50%: ink is #1C1917 on #FBF7F0 paper in light mode, nowhere near each other in lightness, so the exact cut point does not matter. Baseline numbers are real measurements (see the note on `ink_extent` in scripts/screenshot.sh for how they were taken and what forcing the DejaVu Serif fallback does to them: 0.56 / 0.75 / 0.113 against the 0.495 / 0.774 / 0.086 here). Width and ink-pixel tolerances are tight enough that the DejaVu numbers trip them with room to spare; the height tolerance is deliberately loose because these two particular faces happen to share a cap-height at this size, and a real regression would have to be a much larger typographic change — or a blank title — to be worth failing the build over on that axis alone."
+      "ink_pixel_fraction": 0.0717,
+      "ink_pixel_tolerance": 0.006,
+      "note": "Region: top-left anchored (the content column starts at the left edge, same reasoning as thumb_painted) over the 'Songs' title — SCREEN_PAD (22px) in from the left, past the phone-standin status bar (44px) and most of the title block's own top padding (6px). Sized generously (160x42 CSS) so the crop holds the whole word with margin on every side and stops short of the meta line ('N in your book...') below it, which is a different, smaller face at a different weight and would muddy the measurement if it leaked in. Threshold 50%: ink is #1C1917 on #FBF7F0 paper in light mode, nowhere near each other in lightness, so the exact cut point does not matter. Card K20 moved every number here and is the reason they are what they are. Until that fix, every run of text in an inline formatting context was painted twice — once by its IFC root and once again by the standalone text path, which draws the raw string with none of the styling — so this region was measuring 'Songs' struck through with a second, differently-shaped 'Songs'. That is what the old 0.0863 ink fraction and 0.7736 height fraction were measurements of. The single copy this check now samples reads 0.4950 / 0.7547 / 0.0717. Worth knowing that this check is what caught the change: the five colour checks above it did not move by a pixel, because removing a duplicate paint of the same colour in the same place changes no hue anywhere. The tolerances were re-derived at the same time, because the fix narrowed the gap this check exists to see. Forcing the DejaVu Serif fallback (drop the serif and sans-serif entries from `crate::FONTS`, rebuild, capture) used to read 0.56 / 0.75 / 0.113 — but the 0.113 was mostly the double paint, whose two copies diverge much further in a face the app never chose. On a single-copy render DejaVu reads 0.4500 / 0.7547 / 0.0626, so the honest separations are 0.045 on width and 0.0091 on ink pixels, and the tolerances below (0.02 and 0.006) leave margins of 0.025 and 0.0031 respectively. Both axes still trip on the wrong face, which is the whole point; neither has room to spare, and a capture is byte-deterministic on this machine (two consecutive runs differ in 0 pixels), so tight is affordable here in a way it would not be against a noisy source. The height tolerance stays deliberately loose at 0.08: these two faces share a cap-height at this size — post-fix they measure the *same* 0.7547 — so that axis discriminates nothing between them and is only guarding against a blank title or a wholesale typographic change."
     },
     {
       "name": "background_has_no_accent",

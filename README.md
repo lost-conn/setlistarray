@@ -41,7 +41,7 @@ local path dependencies, so `Cargo.toml` expects three checkouts side by side:
 ```
 projects/personal/
 ├── setlistarray/     ← this
-├── rinch-fixes/      ← github.com/joeleaver/rinch, branch carrying #245, #246, #266, #267, #270, #274, #281, #286, #292, #298
+├── rinch-fixes/      ← github.com/joeleaver/rinch, branch carrying #245, #246, #266, #267, #270, #274, #281, #286, #292, #298, #317, and the K20 double-paint fix (no PR yet)
 └── rhypedb-main/     ← github.com/joeleaver/rhypedb, main
 ```
 
@@ -407,6 +407,26 @@ reasoning, and the two options not taken, are in
   self-heals within a frame, because filtering the list as you type is a
   structural change that re-runs the pass — which is why it looked like an
   Android fault, and was not one. [joeleaver/rinch#270](https://github.com/joeleaver/rinch/pull/270).
+- **Every run of text in the app was being painted twice.** Card K20, found in
+  the screenshots taken to verify K12 and not caused by it. The visible damage
+  was in the two places the two copies disagree: a group header styled
+  `text-transform: uppercase; letter-spacing: 0.16em` drew "SOLID" with "Solid"
+  struck through it, at two widths; a chip with `padding: 6px 12px` drew its
+  label twice, a line and a padding apart. Everywhere else the copies landed on
+  top of each other and read as slightly heavy antialiasing. It looked
+  Android-only and was not: the desktop had been doing it since long before the
+  phone, and the visual net never caught it although one of its regions sat
+  squarely on the fault: a check that samples *colour* cannot see a run painted
+  twice in the same colour in the same place, so `group_header_accent` was green
+  throughout, counting 156 accent pixels where it needed 40. The cause is one
+  word in `rinch-dom`: `PositionValue` defaulted to `Relative` rather than the
+  `Static` CSS says is the initial value, and text
+  nodes never reach style resolution, so every text node in every document
+  looked positioned, was hoisted out of its parent into the nearest
+  stacking-context ancestor, and landed where the guard against painting an IFC
+  root's children twice cannot see it. Fixed on the `rinch-fixes` branch and
+  wanting a PR; the check that would have caught it is
+  `group_header_double_paint` in `scripts/screenshot-baseline.json`.
 - **INTERNET really is invisible.** `dumpsys package` lists it under *install
   permissions*, `granted=true`, with no runtime permissions at all — which is
   why there is nothing for the app's permission screen to show. The claim under
@@ -611,6 +631,27 @@ diff no longer needed; the rest are still waiting on review.
 - [joeleaver/rinch#298](https://github.com/joeleaver/rinch/pull/298) — an app can tell Android its system bars sit over a light background, which is what made the clock invisible
 - [joeleaver/rinch#306](https://github.com/joeleaver/rinch/pull/306) — the two loose ends issue #300 named after the #268 review: an inline, unrounded viewport division `dispatch_oncontextmenu` still did, and an architecture doc that never named `window_size`'s unit
 - [joeleaver/rinch#317](https://github.com/joeleaver/rinch/pull/317) — a dropdown menu's dismiss backdrop sits under the panel it belongs to, which is what made every menu item dead. Based on #292's branch rather than `main`, because #292 is what makes the fault visible and #292 should not ship without it
+
+**Fixed on the branch, no PR opened yet:**
+
+- The double paint behind card K20 — `PositionValue`'s `#[default]` in
+  `crates/rinch-dom/src/computed_style/values.rs`, moved from `Relative` to the
+  `Static` that CSS gives `position` as its initial value. Style resolution runs
+  on elements only, so every text node in every Rinch document keeps
+  `ComputedStyle::default()` for its whole life; with `Relative` there,
+  `stacking::is_positioned_z_auto` answered `true` for all of them and each one
+  was hoisted out of its parent into the nearest stacking-context ancestor's
+  paint sequence. The guard that stops an inline formatting context's children
+  being drawn a second time only recognises a child of the node it is called on,
+  so a hoisted text node arrived somewhere it could not be skipped and was drawn
+  again — this time by the standalone text path, which knows nothing of
+  `text-transform`, `letter-spacing` or any inline styling and draws the raw DOM
+  string at the IFC root's own box origin. Two copies of every run in the
+  framework, at two widths and two offsets. `to_taffy` maps `Static` and
+  `Relative` to the same Taffy position and `is_positioned_z_auto` is the only
+  place in the tree that asks whether a position is non-static, so the change is
+  one predicate wide. Two regression tests in
+  `crates/rinch-dom/tests/stacking_tests.rs` fail before and pass after.
 
 The `../rinch-fixes` integration branch carries the still-open fixes above
 (plus the already-landed and superseded ones it was built from), which is why
