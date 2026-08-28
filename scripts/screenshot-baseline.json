@@ -97,6 +97,26 @@
       "note": "The safe-area strip the OS status bar sits in. It is empty across the full width at every window size, so the top-left corner of it is background under any grant the window manager can make."
     },
     {
+      "name": "screen_title_glyph",
+      "description": "The library screen title ('Songs') is drawn in the app's own display face, not whatever serif the platform happened to have lying around. Card A4: every check above this one samples colour, and colour cannot tell Newsreader from DejaVu Serif — the accent, the paper and the fill are the same hex codes under either face. This one looks at the letters themselves.",
+      "type": "ink_extent",
+      "region": {
+        "anchor": "top-left",
+        "w": 160,
+        "h": 42,
+        "left": 22,
+        "top": 48
+      },
+      "threshold_percent": 50,
+      "ink_width_fraction": 0.495,
+      "ink_width_tolerance": 0.03,
+      "ink_height_fraction": 0.7736,
+      "ink_height_tolerance": 0.08,
+      "ink_pixel_fraction": 0.0863,
+      "ink_pixel_tolerance": 0.012,
+      "note": "Region: top-left anchored (the content column starts at the left edge, same reasoning as thumb_painted) over the 'Songs' title — SCREEN_PAD (22px) in from the left, past the phone-standin status bar (44px) and most of the title block's own top padding (6px). Sized generously (160x42 CSS) so the crop holds the whole word with margin on every side and stops short of the meta line ('N in your book...') below it, which is a different, smaller face at a different weight and would muddy the measurement if it leaked in. Threshold 50%: ink is #1C1917 on #FBF7F0 paper in light mode, nowhere near each other in lightness, so the exact cut point does not matter. Baseline numbers are real measurements (see the note on `ink_extent` in scripts/screenshot.sh for how they were taken and what forcing the DejaVu Serif fallback does to them: 0.56 / 0.75 / 0.113 against the 0.495 / 0.774 / 0.086 here). Width and ink-pixel tolerances are tight enough that the DejaVu numbers trip them with room to spare; the height tolerance is deliberately loose because these two particular faces happen to share a cap-height at this size, and a real regression would have to be a much larger typographic change — or a blank title — to be worth failing the build over on that axis alone."
+    },
+    {
       "name": "background_has_no_accent",
       "description": "NEGATIVE CONTROL. The opposite corner of that same empty status-bar strip contains no accent pixels at all. Nothing about the app can make this fail; only the checking machinery can.",
       "type": "accent_absence",

@@ -321,6 +321,7 @@ if [[ "$MODE" == self-test ]]; then
   expect_region bottom_nav_accent        "491x70+0+975"
   expect_region screen_background        "40x30+0+0"
   expect_region background_has_no_accent "40x30+451+0"
+  expect_region screen_title_glyph       "200x53+28+60"
 
   # 550x1065 — the size the same window manager grants now, for the same
   # request. Only the two right-anchored regions and the full-width one move,
@@ -332,6 +333,7 @@ if [[ "$MODE" == self-test ]]; then
   expect_region bottom_nav_accent        "550x70+0+975"
   expect_region screen_background        "40x30+0+0"
   expect_region background_has_no_accent "40x30+510+0"
+  expect_region screen_title_glyph       "200x53+28+60"
 
   # 700x1065 — no window manager has done this yet; the arithmetic should not
   # care that it is unreasonable.
@@ -340,6 +342,7 @@ if [[ "$MODE" == self-test ]]; then
   expect_region fab_solid_accent         "65x58+605+882"
   expect_region bottom_nav_accent        "700x70+0+975"
   expect_region background_has_no_accent "40x30+660+0"
+  expect_region screen_title_glyph       "200x53+28+60"
 
   # 786x1704 — a 2x display. Everything scales, including the vertical
   # offsets, which is what the height-derived scale factor is for.
@@ -350,6 +353,7 @@ if [[ "$MODE" == self-test ]]; then
   expect_region bottom_nav_accent        "786x112+0+1560"
   expect_region screen_background        "64x48+0+0"
   expect_region background_has_no_accent "64x48+722+0"
+  expect_region screen_title_glyph       "320x84+44+96"
 
   # 393x852 — a 1x display, where CSS pixels and physical pixels are the same
   # thing and the numbers in the baseline should appear unchanged.
@@ -360,6 +364,7 @@ if [[ "$MODE" == self-test ]]; then
   expect_region bottom_nav_accent        "393x56+0+780"
   expect_region screen_background        "32x24+0+0"
   expect_region background_has_no_accent "32x24+361+0"
+  expect_region screen_title_glyph       "160x42+22+48"
 
   info ""
   info "${BOLD}schema faults${RESET} (a region that does not say where it hangs from is an error, not a default)"
@@ -427,6 +432,44 @@ info "building (cargo build --release)…"
 #   3. rhypedb takes a directory lock. Pointing this at the real library means
 #      the check cannot run while you have the app open to look at the very
 #      thing you are checking.
+#
+# Card A4 raised a fourth thing about this same `XDG_DATA_HOME` override, worth
+# recording here because it looked like a problem and turned out not to be
+# one. `XDG_DATA_HOME` is also where fontconfig looks for user-installed
+# fonts, and `scripts/install-fonts.sh` puts Newsreader and Karla there — so
+# every run of this script was, in principle, also blinding fontconfig to the
+# app's own typefaces, on top of blinding it to the developer's library.
+# Before card K17 (`f8db611`) that would have mattered: the app asked for
+# those faces by name and depended on the platform's font list to supply them,
+# so every capture this harness ever took was rendered in whatever fontconfig
+# fell back to — DejaVu Serif and DejaVu Sans — not the app's own type, and
+# nothing here could have told you. As of K17 the desktop binary carries the
+# font files (`crate::FONTS` in src/lib.rs, passed straight into
+# `run_with_fonts`), and this was checked rather than assumed: a capture taken
+# with `XDG_DATA_HOME` pointed at a directory fontconfig can search (so it
+# *can* find the real Newsreader/Karla files) is byte-identical to one with it
+# pointed here, at a directory with nothing in it — 0 of 585,750 pixels differ
+# — which means fontconfig finding or not finding those names makes no
+# difference to what gets painted; the bundled faces answer regardless. And
+# removing the serif/sans-serif entries from `FONTS` and rebuilding — forcing
+# the same DejaVu fallback fontconfig used to hand back silently — moves
+# 31,468 of those same 585,750 pixels, which is what proves the bundled faces
+# are what the un-modified build paints rather than DejaVu coincidentally
+# matching them. So this override needs no seeded font directory: it already
+# gets the real typefaces, for a reason that has nothing to do with
+# fontconfig. See `ink_extent` below for the check that would now catch it if
+# that ever stopped being true. One rough edge found along the way and not
+# fixed here, because it is a different failure than the one this card is
+# about: `fontique`'s fontconfig backend (`SystemSource::new`, in the
+# `parley` dependency tree) still runs unconditionally at startup regardless
+# of `FONTS`, to build its own system-wide generic-family map, and it
+# `.unwrap()`s a `font_sort` call that can return `NoMatch` — confirmed by
+# pointing `FONTCONFIG_FILE` at a config with no usable font directories at
+# all, which panics the app before a window ever opens. That is a real
+# fragility, but it takes a fontconfig with literally nothing in it to trigger
+# — every real machine, including one with Newsreader and Karla never
+# installed, has system fonts fontconfig can find — so it is out of scope
+# here and left for whoever next has reason to touch that code path.
 #
 # `--seed` only ever fills a library that has nothing in it, so a fresh
 # directory each run gives the same fourteen songs in the same order every
@@ -643,6 +686,78 @@ matched_pixels() {
   echo $((total - ae)) "$total"
 }
 
+# Ink shape over a crop, as three scale-invariant fractions: how much of the
+# region's width and height the glyph ink actually spans, and what fraction of
+# the region's pixels are ink at all. This exists because of card A4 (see the
+# long note above the launch, "The typefaces come from FONTS") — every other
+# check in this file samples colour, and colour cannot tell Newsreader from
+# DejaVu Serif: the accent swatch, the paper and the fill are the same six hex
+# codes whichever face drew the letters over them. Six colour checks passed on
+# every capture this harness ever took, including ones that turned out to be
+# rendered in the system's DejaVu fallback rather than the app's own type —
+# nothing here would have gone red for that. Shape is the axis colour cannot
+# see, so this measures shape.
+#
+# The pipeline: crop, convert to greyscale, `-threshold` to pure black/white
+# at `threshold_percent`, then read the binary image two ways:
+#
+#   * `-trim` finds the bounding box of the non-background pixels — the
+#     tightest rectangle containing every ink pixel — and `identify` reads its
+#     width and height back out. Dividing by the crop's own W and H turns that
+#     into a fraction of the crop the ink spans, which is what makes the
+#     number comparable across display scale factors: a 2x capture has a
+#     bounding box twice the pixel size but the same fraction, the same way
+#     `gray_mean`'s 0..1 mean is comparable regardless of how many pixels went
+#     into it. An empty crop makes `-trim` print "geometry does not contain
+#     image" and hand back a 1x1 placeholder rather than failing outright, so
+#     an unpainted region reads back as a fraction near zero and fails the
+#     check for the right reason instead of aborting the script.
+#   * `-negate` then the same `%[fx:mean]` trick `gray_mean` uses reads the
+#     fraction of the *whole* crop that is ink, independent of its shape — two
+#     faces can share a bounding box but differ in stroke weight, and this
+#     catches that axis too.
+#
+# Ink and paper are `#1C1917` on `#FBF7F0` in light mode — nowhere near each
+# other in lightness — so a 50% threshold sits comfortably in the gap without
+# needing to track the theme's actual hex values.
+#
+# Measured on the library screen title ("Songs", `T_SCREEN_TITLE`, Newsreader
+# at 34px) at this file's recorded region: the bundled face gives a 0.495
+# width fraction, 0.774 height fraction, 0.086 ink fraction. Forcing the
+# DejaVu Serif fallback — deleting the `AppFont::serif` and `AppFont::new`
+# (italic) entries from `crate::FONTS` in src/lib.rs and rebuilding, so
+# `font-family: Newsreader, Georgia, serif` falls through both named faces to
+# the bare generic — moves every one of those numbers: 0.56 / 0.75 / 0.113.
+# DejaVu Serif's "Songs" is both wider and heavier-stroked than Newsreader's
+# at the same point size, and the width and ink fractions below are tight
+# enough to catch that on their own; the height fraction is left loose
+# because cap-height happens to be close between these two particular faces,
+# but a face that failed to render at all — 1x1 bounding box — would still
+# blow through it.
+ink_extent() {
+  local w="$1" h="$2" x="$3" y="$4" threshold="$5"
+  local bin="$CAPTURE_DIR/.tmp-ink-bin.png" trimmed="$CAPTURE_DIR/.tmp-ink-trim.png"
+  convert "$SHOT_PATH" -crop "${w}x${h}+${x}+${y}" +repage -colorspace Gray -threshold "${threshold}%" "$bin"
+  local ink_fraction
+  ink_fraction="$(convert "$bin" -negate -format '%[fx:mean]' info:)"
+  # `-trim` warns rather than fails on an all-background image (see the note
+  # above), but it is wrapped in `|| true` anyway: a future ImageMagick that
+  # makes that a hard error must not take the whole script down with it, only
+  # this one check, which will then read a 0x0 trim and fail loudly on its own.
+  convert "$bin" -trim +repage "$trimmed" 2>/dev/null || true
+  local dims tw th
+  dims="$(identify -format '%w %h' "$trimmed" 2>/dev/null || echo "0 0")"
+  tw="${dims%% *}"; th="${dims##* }"
+  rm -f "$bin" "$trimmed"
+  # The trailing \n matters: `read` (below, at the call site) reports failure
+  # on a line with no terminating newline even though it fills the variables
+  # correctly, and that failure is enough to abort the whole script under
+  # `set -e` — silently, since nothing here catches it. `matched_pixels`
+  # avoids this the same way, with `echo` rather than `printf`.
+  awk -v tw="$tw" -v th="$th" -v w="$w" -v h="$h" -v ink="$ink_fraction" \
+    'BEGIN { printf "%.4f %.4f %.4f\n", tw / w, th / h, ink }'
+}
+
 within_tolerance() {
   awk -v a="$1" -v b="$2" -v tol="$3" 'BEGIN { d = a - b; if (d < 0) d = -d; exit !(d <= tol) }'
 }
@@ -769,6 +884,43 @@ for i in $(seq 0 $((CHECK_COUNT - 1))); do
           fi
           ;;
       esac
+      ;;
+    ink_extent)
+      threshold="$(jq -r '.threshold_percent' <<<"$check")"
+      exp_w="$(jq -r '.ink_width_fraction' <<<"$check")"
+      tol_w="$(jq -r '.ink_width_tolerance' <<<"$check")"
+      exp_h="$(jq -r '.ink_height_fraction' <<<"$check")"
+      tol_h="$(jq -r '.ink_height_tolerance' <<<"$check")"
+      exp_i="$(jq -r '.ink_pixel_fraction' <<<"$check")"
+      tol_i="$(jq -r '.ink_pixel_tolerance' <<<"$check")"
+      read -r meas_w meas_h meas_i < <(ink_extent "$w" "$h" "$x" "$y" "$threshold")
+
+      if [[ "$MODE" == update ]]; then
+        UPDATED_JSON="$(jq --argjson i "$i" --argjson vw "$meas_w" --argjson vh "$meas_h" --argjson vi "$meas_i" \
+          '.checks[$i].ink_width_fraction = ($vw | tonumber)
+           | .checks[$i].ink_height_fraction = ($vh | tonumber)
+           | .checks[$i].ink_pixel_fraction = ($vi | tonumber)' \
+          <<<"$(cat "$UPDATED_JSON")")"
+        echo "$UPDATED_JSON" > "$CAPTURE_DIR/.tmp-baseline.json" && UPDATED_JSON="$CAPTURE_DIR/.tmp-baseline.json"
+        printf '%supdate%s %-24s width %.3f -> %.3f, height %.3f -> %.3f, ink %.3f -> %.3f\n' \
+          "$YELLOW" "$RESET" "$name" "$exp_w" "$meas_w" "$exp_h" "$meas_h" "$exp_i" "$meas_i" >&2
+        continue
+      fi
+
+      ink_w_ok=1; within_tolerance "$meas_w" "$exp_w" "$tol_w" || ink_w_ok=0
+      ink_h_ok=1; within_tolerance "$meas_h" "$exp_h" "$tol_h" || ink_h_ok=0
+      ink_i_ok=1; within_tolerance "$meas_i" "$exp_i" "$tol_i" || ink_i_ok=0
+
+      if [[ "$ink_w_ok" == 1 && "$ink_h_ok" == 1 && "$ink_i_ok" == 1 ]]; then
+        ok "$name: ink width $meas_w height $meas_h pixels $meas_i (expected $exp_w/$exp_h/$exp_i ± $tol_w/$tol_h/$tol_i)"
+      else
+        FAILURES=$((FAILURES + 1))
+        printf '%s✗ %s%s — %s\n' "$RED" "$name" "$RESET" "$desc" >&2
+        [[ "$ink_w_ok" == 1 ]] || printf '    ink width fraction: expected %s ± %s, measured %s\n' "$exp_w" "$tol_w" "$meas_w" >&2
+        [[ "$ink_h_ok" == 1 ]] || printf '    ink height fraction: expected %s ± %s, measured %s\n' "$exp_h" "$tol_h" "$meas_h" >&2
+        [[ "$ink_i_ok" == 1 ]] || printf '    ink pixel fraction: expected %s ± %s, measured %s\n' "$exp_i" "$tol_i" "$meas_i" >&2
+        printf '    region: %sx%s+%s+%s in %s\n' "$w" "$h" "$x" "$y" "$SHOT_PATH" >&2
+      fi
       ;;
     *)
       die "unknown check type in baseline: $type"
