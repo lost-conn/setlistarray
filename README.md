@@ -640,6 +640,44 @@ diff no longer needed; the rest are still waiting on review.
 
 - [joeleaver/rinch#268](https://github.com/joeleaver/rinch/pull/268) — the Android `ClickContext` viewport, which is what put the overflow menu off screen. Filed against #246 while it was still a narrower mount-time fix; #246's own review widened it into a unified `window_size` contract across all three shells (`RinchApp::layout_viewport`, a shared guarded `rinch_platform::to_logical`) before merging, which fixed the same fault for a different reason. The maintainer credited the diagnosis on closing it, and filed [issue #300](https://github.com/joeleaver/rinch/issues/300) for the two loose ends that widening left behind — addressed by #306, below.
 
+**In `../rinch-fixes`, not yet filed upstream:**
+
+- **A decoded image never reaches the screen on its own.** Card D4 rasterises a
+  PDF page to a PNG beside the attachment and shows it with an `<img>`, and on
+  both platforms the picture simply did not appear: the file was on disk, the
+  `src` was right, the box was the right size, and the card was blank until the
+  user happened to touch something. Three separate misses, each in a different
+  crate, all with the same shape — *a finished image decode dirties no DOM node,
+  and every layer assumed something dirty is the only reason to do work.*
+  1. `rinch-dom`'s loader thread pushed the decode onto the pending queue and
+     returned. The desktop event loop is `ControlFlow::Wait`, so nothing woke it
+     and the queue sat there. It now calls `rinch_core::run_on_main_thread`.
+  2. `RinchApp::resolve_and_repaint` short-circuits when no node is dirty, and
+     the drain lives *inside* the layout it was skipping. It now also asks the
+     new `rinch_dom::image_cache::has_pending`.
+  3. `RinchDocument::resolve_layout` calls `drain_pending_images` and threw away
+     its `bool`. A decoded image changes a Taffy node's *context*, not its style,
+     so `layout_dirty` stayed false and the `<img>` kept the 0x0 intrinsic size
+     it was created with. It now sets `layout_dirty` when the drain returns true.
+  4. The Android loop decides for itself whether to call `resolve_and_repaint`,
+     from `frame.pending_layout` — which a decode does not set either. It now
+     also asks the new `RinchApp::has_pending_images`.
+
+  All four are in the working tree at `../rinch-fixes` and none has a PR yet.
+  Anything drawing a local image will hit them; `docs/PDF.md` §7 listed
+  "whether Rinch's `Image` will display a cached PNG from app-private storage at
+  all" as the largest unknown in card D4 and it was right to.
+
+- **An `<img>` with a percentage width is laid out at its bitmap's height.**
+  Not fixed, and worked around in the app instead — `song_detail::page_image`
+  states both axes in pixels. `width: 100%` on a 1080x1398 page in a 393 px
+  window produced a 373x1398 box: Rinch's Taffy measure closure derives the
+  missing axis from the aspect ratio only when the other arrives as a
+  `known_dimension`, and a percentage does not survive the content-sizing pass
+  as one. Stating both dimensions skips the measure function entirely, which is
+  why the workaround is reliable rather than lucky, but a page whose size the
+  app has to compute for itself is a page Rinch could have sized.
+
 **Still open, unreviewed:**
 
 - [joeleaver/rinch#266](https://github.com/joeleaver/rinch/pull/266) — a long press on Android is a context menu, stage 1 of three

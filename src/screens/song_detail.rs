@@ -50,6 +50,29 @@ pub fn SongDetail(id: Option<SongId>) -> NodeHandle {
         };
     };
 
+    // D4: draw the primary chart's first page if it is not already drawn.
+    //
+    // Here, in the component body, which runs once when the screen mounts —
+    // never from a render closure, which runs on every redraw. This is the
+    // self-healing half of the cache and it exists for two states that
+    // `pdf::import` cannot fix on its own: a chart imported before D4 landed,
+    // which has a `chart.pdf` and no pages at all, and one whose import-time
+    // render failed or was killed halfway. Both look identical from here —
+    // `chart.pdf` present, `page-1.png` absent — and both want the same thing.
+    //
+    // Synchronous, and on the thread that draws. That is the deliberate cheap
+    // option: one page is a frame's work, it only happens at all when the cache
+    // is cold, and the alternative is `set_timeout`, which parks a callback on
+    // the main thread through machinery this app has never used and docs/PDF.md
+    // lists as an open risk. A once-per-mount stall of a frame is a smaller
+    // thing to accept than a first use of untried framework plumbing.
+    if let Some(primary) = song.primary()
+        && attachments.get(primary).map(|a| a.kind) == Some(AttachmentKind::Pdf)
+        && let Some(directory) = attachments.directory(primary)
+    {
+        crate::pdf::pages::ensure_page(&directory, 1);
+    }
+
     let chips = metadata_chips(&song);
     let set_count = setlists.containing(id).len();
 
@@ -163,6 +186,25 @@ pub fn SongDetail(id: Option<SongId>) -> NodeHandle {
                                     // Nothing here is a skeleton: a kind with
                                     // no renderable content says so.
                                     div { style: "margin-top: 14px; display: flex; flex-direction: column;",
+                                        // D4: a PDF's first page, rasterised.
+                                        // `width: 100%` and nothing else —
+                                        // Rinch's layout takes the height from
+                                        // the decoded image's aspect ratio when
+                                        // only one axis is constrained, so a
+                                        // portrait page and a landscape one
+                                        // both come out the right shape without
+                                        // this screen knowing which it has. The
+                                        // radius matches the card's own 16 px
+                                        // less its 18 px of padding, so the
+                                        // page's corners sit concentric inside
+                                        // the card's rather than proud of them.
+                                        for (src, width, height) in page_of_primary(songs, attachments, id) {
+                                            img {
+                                                key: {src.clone()},
+                                                src: {src.clone()},
+                                                style: {format!("width: {width}px; height: {height}px; border-radius: 6px;")},
+                                            }
+                                        }
                                         for (index, line, note) in preview_of_primary(songs, attachments, id) {
                                             div {
                                                 key: {index},
@@ -212,6 +254,14 @@ pub fn SongDetail(id: Option<SongId>) -> NodeHandle {
                                     }
                                     span { style: "color: var(--sla-muted); display: flex;",
                                         {icon(__scope, if open { TablerIcon::ChevronUp } else { TablerIcon::ChevronDown }, 17)}
+                                    }
+                                }
+                                for (src, width, height) in page_of_row(songs, attachments, id, index, expanded) {
+                                    img {
+                                        key: {src.clone()},
+                                        src: {src.clone()},
+                                        style: {format!("width: {width}px; height: {height}px; \
+                                                         border-radius: 6px; margin-bottom: 10px;")},
                                     }
                                 }
                                 for (line_index, line, note) in preview_of_row(songs, attachments, id, index, expanded) {
@@ -557,10 +607,131 @@ fn preview(attachments: AttachmentsStore, id: AttachmentId) -> Vec<(usize, Strin
         })
         .collect();
 
-    if let Some(note) = note(&attachment, lines.len(), all.len()) {
-        lines.push((lines.len(), note, true));
+    // A chart that is showing its first page is not a chart with nothing to
+    // show, so the sentence that says so is suppressed — otherwise a PDF whose
+    // page rasterised would draw the picture *and* "No page preview yet."
+    // underneath it. The `+N more lines` half of `note` cannot fire here
+    // anyway, because a PDF has no extracted body to have more lines of, but
+    // the whole call is skipped rather than half of it so that G2's text
+    // extraction does not have to remember this when it gives one a body.
+    if page_image(attachments, id, CARD_PAGE_WIDTH).is_none() {
+        if let Some(note) = note(&attachment, lines.len(), all.len()) {
+            lines.push((lines.len(), note, true));
+        }
     }
     lines
+}
+
+/// How wide a rasterised page is drawn, in CSS pixels, in each of the two
+/// places one appears.
+///
+/// Arithmetic rather than taste, and spelled out because the numbers it is made
+/// of are elsewhere: the window is a fixed `crate::WIDTH` of 393 (src/lib.rs),
+/// the scrolling column insets it by `SCREEN_PAD` on each side (src/theme.rs),
+/// and the primary card adds 18 px of padding of its own — the literal in the
+/// card's own `style` a hundred lines above. A collapsed row has no card, so it
+/// gets the column width.
+///
+/// A constant, rather than `100%`, because of [`page_image`] — see there.
+const CARD_PAGE_WIDTH: u32 = crate::WIDTH - 2 * SCREEN_PAD_PX - 2 * 18;
+const ROW_PAGE_WIDTH: u32 = crate::WIDTH - 2 * SCREEN_PAD_PX;
+
+/// `SCREEN_PAD` as a number. `crate::theme::SCREEN_PAD` is the string `"22px"`,
+/// because everything else that uses it is interpolating it into CSS; this is
+/// the one place that has to do sums with it.
+const SCREEN_PAD_PX: u32 = 22;
+
+/// The rasterised first page of a chart, as `(src, width, height)` in CSS
+/// pixels — or nothing, for every kind that is not a PDF and every PDF whose
+/// page has not been drawn.
+///
+/// D4. `pages::cached_page` is one `stat` and `pages::page_pixels` is 24 bytes
+/// off the front of a file, and neither **ever renders**. That is what makes
+/// them safe to call from here: this runs inside the reactive closure that
+/// rebuilds the attachment card, so it runs on every redraw of it, and a
+/// function that could spend 74 ms of a phone's main thread rasterising a page
+/// has no business on that path. Drawing happens in exactly two places, neither
+/// of them a render closure — `pdf::import`, for page one, and
+/// `pages::ensure_page` from [`SongDetail`]'s own body when the screen mounts.
+///
+/// ## Why the size is computed here instead of written as `width: 100%`
+///
+/// Because `width: 100%` on an `<img>` gives Rinch a page at its natural height
+/// — measured on 2026-08-28 at 373 x 1398 in a 393 px window, a page fourteen
+/// hundred pixels tall spilling out of a card. Rinch's Taffy measure function
+/// derives the missing axis from the image's aspect ratio only when the other
+/// axis arrives as a `known_dimension`, and a percentage width does not: the
+/// node ends up laid out at the style's width and the bitmap's *unscaled*
+/// height. Stating both axes sidesteps the measure function altogether — Taffy
+/// does not call it when neither dimension is in question — so the page is
+/// exactly as tall as it is wide times its own shape, on the first frame, with
+/// no dependence on how a percentage happened to resolve.
+///
+/// That leaves this function needing the page's real proportions, which is what
+/// `page_pixels` reads out of the PNG header without decoding it.
+///
+/// ## Why the path is bare
+///
+/// An absolute path rather than a `file://` URL: Rinch's `FileImageLoader`
+/// strips that scheme if it is there and reads the rest as a path either way,
+/// and a path that has been through URL encoding is a path a library name with
+/// a space in it can break.
+fn page_image(
+    attachments: AttachmentsStore,
+    id: AttachmentId,
+    width: u32,
+) -> Option<(String, u32, u32)> {
+    let attachment = attachments.get(id)?;
+    if attachment.kind != AttachmentKind::Pdf {
+        return None;
+    }
+    let directory = attachments.directory(id)?;
+    let path = crate::pdf::pages::cached_page(&directory, 1)?;
+    let (page_width, page_height) = crate::pdf::pages::page_pixels(&path)?;
+    // Rounded up, so a page is never a pixel shorter than its own shape and
+    // never leaves a hairline of card showing under its bottom edge.
+    let height = (width as u64 * page_height as u64).div_ceil(page_width as u64) as u32;
+    Some((path.to_string_lossy().into_owned(), width, height))
+}
+
+/// The same thing as a nought-or-one vector, because `rsx!`'s `for` is the only
+/// reactive conditional the macro has — the pattern `primary_of` above uses,
+/// and for the same reason.
+fn page_of_primary(
+    songs: SongsStore,
+    attachments: AttachmentsStore,
+    id: SongId,
+) -> Vec<(String, u32, u32)> {
+    songs
+        .get(id)
+        .and_then(|song| song.primary())
+        .and_then(|primary| page_image(attachments, primary, CARD_PAGE_WIDTH))
+        .into_iter()
+        .collect()
+}
+
+/// The first page of an expanded row's chart, or nothing when the row is shut.
+///
+/// A collapsed row gets the same picture the card does when it is opened. The
+/// alternative — a page in the card and the old sentence in the rows — would
+/// have said two different things about two charts on one screen, and neither
+/// of them would have been about which chart was primary.
+fn page_of_row(
+    songs: SongsStore,
+    attachments: AttachmentsStore,
+    id: SongId,
+    index: usize,
+    expanded: Signal<Vec<AttachmentId>>,
+) -> Vec<(String, u32, u32)> {
+    let Some(attachment) = other_id(songs, attachments, id, index) else {
+        return Vec::new();
+    };
+    if !expanded.get().contains(&attachment) {
+        return Vec::new();
+    }
+    page_image(attachments, attachment, ROW_PAGE_WIDTH)
+        .into_iter()
+        .collect()
 }
 
 /// The honest sentence under a preview: how much was left out, or why there was
@@ -579,8 +750,15 @@ fn note(attachment: &Attachment, shown: usize, total: usize) -> Option<String> {
     Some(
         match attachment.kind {
             AttachmentKind::Text => "Nothing typed yet.",
-            // D4 rasterises a PDF's pages to PNGs beside it on import; until
-            // then the app has the file and no way to look inside it.
+            // D4 rasterises a PDF's first page to a PNG beside it, and when
+            // there is one `preview` shows the picture and never gets here. So
+            // this sentence now means one of two things: hayro could not draw
+            // the page, or this chart was imported before D4 existed and the
+            // screen has not been opened since — `SongDetail` draws a missing
+            // page on mount, so the second heals itself the moment anybody
+            // looks. They are indistinguishable on disk and get one sentence
+            // between them; telling them apart would need a marker file for a
+            // difference the reader cannot act on either way.
             AttachmentKind::Pdf => "No page preview yet.",
             // E2 writes `page.html` into the directory and extracts the text
             // beside it. A capture made before that lands has the page and no
@@ -787,5 +965,119 @@ verse two"))]);
         let card = primary_of(songs, attachments, id);
         assert_eq!(card[0].title, "lyrics.txt");
         assert!(other_rows(songs, attachments, id, Signal::new(Vec::new())).is_empty());
+    }
+
+    // ── D4: the page in the card ────────────────────────────────────────────
+
+    /// The tests above run on in-memory stores, which is all a preview of
+    /// *text* needs. A rasterised page is a file, so these need a library with
+    /// a real directory under it — the same shape `crate::pdf`'s own tests use,
+    /// and for the same reason.
+    fn on_disk(name: &str) -> (SongsStore, AttachmentsStore, SongId) {
+        let dir = crate::db::scratch(name);
+        let storage = crate::store::Storage::open(&dir);
+        let attachments = AttachmentsStore::restored(storage, Vec::new());
+        let songs = SongsStore::restored(storage, attachments, Vec::new());
+        songs.create(Song::new(0, "Carolina", "M. Ward")).expect("a song");
+        (songs, attachments, 1)
+    }
+
+    fn import_chart(songs: SongsStore, id: SongId, pages: usize) -> AttachmentId {
+        crate::pdf::import(
+            songs,
+            id,
+            crate::picker::PickedFile {
+                name: Some("tab.pdf".to_string()),
+                bytes: crate::pdf::test_support::inked_pdf(pages),
+            },
+        )
+        .expect("imported")
+    }
+
+    /// The whole of what card D4 promised the card would do.
+    #[test]
+    fn an_imported_pdf_shows_its_first_page_instead_of_saying_there_is_none() {
+        let (songs, attachments, id) = on_disk("song_detail_page_in_card");
+        import_chart(songs, id, 2);
+
+        let page = page_of_primary(songs, attachments, id);
+        assert_eq!(page.len(), 1, "one page, and it is page one");
+        let (src, width, height) = page[0].clone();
+        assert!(
+            std::path::Path::new(&src).is_file(),
+            "the src an <img> is handed has to be a file that exists: {src}"
+        );
+        assert!(src.ends_with("page-1.png"));
+
+        // Both axes are stated, and the shape is the page's own: US Letter
+        // cached at 1080 x 1398, so 313 px of card is 313 x 1398 / 1080 = 405.1,
+        // rounded up. See `page_image` for why a percentage width will not do
+        // and why the rounding goes up.
+        assert_eq!((width, height), (CARD_PAGE_WIDTH, 406));
+        assert_eq!(width, 313, "393 window, less 22 of column and 18 of card, twice");
+
+        assert!(
+            preview_of_primary(songs, attachments, id).is_empty(),
+            "and the sentence that stood in for it is gone, rather than sitting under it"
+        );
+    }
+
+    /// The hole this card was cut to fill, still open for everything that is
+    /// not a drawn PDF page.
+    #[test]
+    fn a_pdf_with_no_drawn_page_still_says_so(){
+        let (songs, attachments, id) = on_disk("song_detail_page_missing");
+        let chart = import_chart(songs, id, 1);
+        let directory = attachments.directory(chart).expect("a directory");
+        std::fs::remove_file(directory.join(crate::pdf::pages::page_file(1))).expect("the page");
+
+        assert!(page_of_primary(songs, attachments, id).is_empty());
+        let lines = preview_of_primary(songs, attachments, id);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].1, "No page preview yet.");
+        assert!(lines[0].2, "and it is a note, not a chart");
+    }
+
+    /// A `.part` is what a process killed mid-write leaves behind. The card
+    /// must not hand one to an image decoder that will only fail on it.
+    #[test]
+    fn an_interrupted_render_is_not_shown_as_a_page() {
+        let (songs, attachments, id) = on_disk("song_detail_page_part");
+        let chart = import_chart(songs, id, 1);
+        let directory = attachments.directory(chart).expect("a directory");
+        let page = directory.join(crate::pdf::pages::page_file(1));
+        std::fs::rename(&page, page.with_extension("png.part")).expect("interrupt it");
+
+        assert!(page_of_primary(songs, attachments, id).is_empty());
+        assert_eq!(
+            preview_of_primary(songs, attachments, id)[0].1,
+            "No page preview yet."
+        );
+    }
+
+    /// A typed chart has a directory too, and nothing in it to draw. The
+    /// picture path must not claim one.
+    #[test]
+    fn only_a_pdf_gets_a_page() {
+        let (songs, _attachments, id) = on_disk("song_detail_page_kinds");
+        songs.attach(id, text(Some("Capo 3"))).expect("attached");
+        let attachments = songs.attachments();
+
+        assert!(page_of_primary(songs, attachments, id).is_empty());
+        assert_eq!(preview_of_primary(songs, attachments, id)[0].1, "Capo 3");
+    }
+
+    /// A chart in a collapsed row gets the picture when the row is opened and
+    /// not before, exactly as its text does.
+    #[test]
+    fn an_expanded_row_shows_its_page_and_a_shut_one_shows_nothing() {
+        let (songs, attachments, id) = on_disk("song_detail_page_row");
+        songs.attach(id, text(Some("Capo 3"))).expect("the primary");
+        import_chart(songs, id, 1);
+        let expanded = Signal::new(Vec::new());
+
+        assert!(page_of_row(songs, attachments, id, 0, expanded).is_empty());
+        toggle_expanded(songs, attachments, id, 0, expanded);
+        assert_eq!(page_of_row(songs, attachments, id, 0, expanded).len(), 1);
     }
 }

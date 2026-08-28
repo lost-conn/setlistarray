@@ -115,6 +115,37 @@ impl AttachmentsStore {
         true
     }
 
+    /// Say that the *files* behind an attachment have changed, without changing
+    /// its row.
+    ///
+    /// D4 needs this and the ordering is the reason. `SongsStore::attach` mints
+    /// the row and its directory in one step, and the row is in this signal —
+    /// and therefore on screen — the instant it is minted, which is necessarily
+    /// *before* the producer has written a single byte into that directory. So
+    /// the first draw of a newly imported PDF happens against an empty
+    /// directory: `song_detail` looks for `page-1.png`, finds nothing, and says
+    /// "No page preview yet." Then `pdf::import` writes the file and rasterises
+    /// page one — and nothing in this store has changed, so nothing redraws, and
+    /// that sentence sits under a chart whose picture is on disk until the user
+    /// happens to leave the screen and come back.
+    ///
+    /// A signal write with no value change is exactly the right size for that:
+    /// it costs one redraw and no database round trip, because the row on disk
+    /// is already correct and only the pixels beside it are new. Callers that
+    /// changed the row itself want [`update`](Self::update) instead.
+    pub fn files_changed(self, id: AttachmentId) {
+        // Checked before the write, not inside it: `Signal::update` notifies
+        // whatever its closure did or did not do, so an `if let` in there would
+        // still have redrawn every card on the screen for an id this store has
+        // never heard of. The read is also a subscription-free `get` on the same
+        // signal, which is safe here for the reason `update` records below — the
+        // borrow is released before the write begins.
+        if !self.items.get().iter().any(|a| a.id == id) {
+            return;
+        }
+        self.items.update(|_| {});
+    }
+
     /// Create the row, link it to its song, and make the directory the bytes go
     /// in. All three or none: if the directory cannot be made, nothing is
     /// attached.

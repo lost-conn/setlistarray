@@ -11,10 +11,18 @@ Card **D4**, the Phase D spike, and the evidence for **decision 3** in
 > comparison does not have to be run again. Section 8 is the reasoning as it
 > stood *before* the decision, left unedited.
 
-Nothing was implemented. No PDF code is in `src/`, `Cargo.toml` and
-`build-apk.sh` are untouched, and every measurement below was taken with a
-temporary edit that has been reverted. `cargo test --release` is 148/148 and
-`scripts/screenshot.sh` is 5/5.
+> **Implemented 2026-08-28, card D4.** `src/pdf/pages.rs` rasterises with
+> hayro and caches 16-grey palette PNGs; §9 at the bottom of this document is
+> what a real implementation on real hardware changed about the numbers below,
+> and answers three of the device-only questions in §7 that could not be
+> answered when this was written. **Read §9 before trusting §5's timings** —
+> the 6.0 ms figure everyone quotes is PDFium's *render step*, not a pipeline,
+> and not this one.
+
+Nothing was implemented *at the time this was written*. No PDF code was in
+`src/`, `Cargo.toml` and `build-apk.sh` were untouched, and every measurement
+below §8 was taken with a temporary edit that has been reverted.
+`cargo test --release` was 148/148 and `scripts/screenshot.sh` was 5/5.
 
 Measured 2026-08-26 on this machine: AMD Ryzen 9 9955HX, NDK r27c, rustc
 1.96.0. **There is no phone and no emulator here.** Everything about Android
@@ -644,6 +652,83 @@ If a fourth option is wanted: **rasterise nothing yet, but decide the cache
 format now.** The single most consequential number in this document is that the
 same 30 pages are 8.35 MiB or 1.30 MiB depending on how they are encoded, and
 that choice is independent of which renderer makes them.
+
+---
+
+## 9. What D4 changed, on hardware (2026-08-28)
+
+Everything above §8 is a desktop spike with no phone in the room. This section
+is the implementation, on a moto g stylus 5G, and it is the part to trust where
+the two disagree.
+
+### The timings were optimistic in one direction and pessimistic in the other
+
+| | desktop (9955HX) | moto g stylus 5G |
+| --- | ---: | ---: |
+| §5's number, PDFium *render only* | 6.0 ms/page | — |
+| **whole pipeline** (parse, render, quantise, deflate, write) | **14 ms/page** | **37.3 / 38.5 ms/page** |
+
+The desktop figure is over a generated 6-page lead sheet and the 22-page
+fig2dev manual; the device figures are two separate imports of page one of the
+same lead sheet, read out of `logcat`. **2.7× the desktop**, at the optimistic
+end of the "3 to 8× slower" band §5 could only guess at, and question 1 of §7
+is answered.
+
+At 38 ms a page a 30-page chart book is 1.1 s and a 200-page fake book is 7.6 s
+— on the thread that draws, which is why D4 rasterises page one eagerly and
+every other page on demand. §5's own closing paragraph recommended exactly
+that; the device numbers make it the only option.
+
+### The 16-colour palette is free, and was checked rather than assumed
+
+§5 chose it on a size table. D4 checked what it looks like, by rendering with
+poppler's `pdftoppm -gray` at the same 1080 px, quantising poppler's own output
+to the sixteen levels, and diffing it against itself — which isolates the
+palette from the renderer. Over a chord chart, a staff-notation lead sheet with
+0.4 pt staff lines, and the fig2dev manual: **mean error 0.07–0.29 of 255,
+worst pixel 8 of 255 (half a step, and unavoidable), and 0.000 % of pixels off
+by more than one level.** Side by side at 1:1 they are indistinguishable —
+staff lines, note heads, stems, chord symbols and 8 pt lyrics all survive.
+
+Two things §5 did not say. **Colour is gone**: a 50-page album booklet checked
+at the same time turned a red logo into a mid grey. And the 44 KiB/page figure
+is a figure *about charts* — that booklet's photographic pages cost **347 KB**
+each, because film grain does not compress. Measured cache cost on real chart
+material: **41.7 KB/page** for the lead sheet, 59.4 KB/page for the manual.
+
+PNG compression level was measured rather than defaulted, whole pipeline:
+
+| | ms/page | bytes/page |
+| --- | ---: | ---: |
+| `Compression::Fast` | 9.7 / 10.2 | 49.9 / 69.2 KB |
+| **`Compression::Balanced`** | **14.2 / 15.1** | **41.7 / 59.4 KB** |
+| `Compression::High` | 21.4 / 24.9 | 41.0 / 58.3 KB |
+
+`High` is half as much time again for 1.6 % of a file. `Balanced` is what ships.
+
+### Question 2 was the right thing to worry about
+
+§7 called "whether Rinch's `Image` will display a cached PNG from app-private
+storage at all" the largest unknown in the card, and it was. The answer is yes
+— *after four fixes in `../rinch-fixes`*, because on both platforms the picture
+did not appear at all: the PNG on disk, the `src` correct, and a blank card
+until the user touched something. A finished image decode dirties no DOM node,
+and four separate layers each assumed a dirty node is the only reason to work.
+They are written up in README.md under "The Rinch contributions". A fifth, not
+fixed: `width: 100%` on an `<img>` lays it out at the bitmap's unscaled height,
+so `song_detail` states both axes in pixels.
+
+Question 3 — rasterising off the UI thread — was **not** answered, because D4
+does not do it. One page at 38 ms does not need a thread; a viewer that wants
+twenty in a row (D5) will have to ask this again.
+
+### The APK
+
+Two `./build-apk.sh` runs on the same machine an hour apart: **7,991,819 B
+before, 10,416,651 B after, +2,424,832 B (+2.31 MiB)**. §2 predicted +2,486,352
+B for the whole of hayro from a tree with no PDF code, D3 had already paid
++167,936 B of it for the parser, and the 106 KB of daylight is `png`'s encoder,
+`src/pdf/pages.rs` and the Rinch fix above.
 
 ---
 

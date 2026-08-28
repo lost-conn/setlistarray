@@ -1,10 +1,13 @@
 //! PDFs: what the app can learn about one, and how one becomes an attachment.
 //!
-//! Card D3. The renderer question is already settled — `docs/PDF.md` chose
-//! **hayro**, the pure-Rust rasteriser, on 2026-08-26, over `pdfium-render`'s
-//! 6.4 MB C++ blob and over deferring to the system viewer. This file takes the
-//! half of that decision D3 needs (`hayro-syntax`, the parser) and leaves the
-//! rasterising half to D4, which is where the pixels are wanted.
+//! Cards D3 and D4. The renderer question is already settled — `docs/PDF.md`
+//! chose **hayro**, the pure-Rust rasteriser, on 2026-08-26, over
+//! `pdfium-render`'s 6.4 MB C++ blob and over deferring to the system viewer.
+//! This file is D3's half of that decision (`hayro-syntax`, the parser: is this
+//! a PDF, and how many pages has it) and [`pages`] is D4's (the rasteriser: what
+//! does a page look like). They are split because they are asked at different
+//! moments and one of them is thirty times more expensive than the other —
+//! every import parses, and only a page somebody is about to look at is drawn.
 //!
 //! ## Why the page count is parsed here rather than left to D4
 //!
@@ -40,8 +43,9 @@
 //! [`crate::picker::name_from_content_uri`]) and on the desktop it is whatever
 //! the file system had, so it is outside data either way, and outside data does
 //! not get to be a path component. `capture` writes a fixed `page.html` beside
-//! its `assets/` for the same reason, and D4's rasterised pages will land in
-//! this directory next to `chart.pdf`.
+//! its `assets/` for the same reason, and D4's rasterised pages landed in this
+//! directory next to `chart.pdf` — `page-1.png` and so on, named by
+//! [`pages::page_file`].
 //!
 //! ## The order of operations, and what happens when the disk says no
 //!
@@ -53,6 +57,10 @@
 //! ghost holding the card on song detail. Nothing here creates a directory
 //! itself; `Repo::create_attachment` does, which is what keeps every attachment
 //! directory owned by a row that can delete it again.
+
+pub mod pages;
+#[cfg(test)]
+pub mod test_support;
 
 use std::sync::Arc;
 
@@ -292,6 +300,28 @@ pub fn import(
         return Err(ImportError::Write(e.to_string()));
     }
 
+    // D4: draw page one, now, while the bytes are still in hand and the user is
+    // still watching the thing they asked for happen. One page, so this is a
+    // frame's worth of work rather than the whole-book loop the card's wording
+    // would suggest — `pages`' module header is the argument for that, and for
+    // why every other page waits until something asks.
+    //
+    // The result is deliberately dropped. A chart hayro will not draw is still a
+    // chart the user chose to keep, exactly as a chart hayro will not *count* is
+    // — see the module header — and the card on song detail already has an
+    // honest sentence for a PDF with no picture behind it. Undoing an import
+    // over a failed preview would be the 0.x library getting the veto this
+    // module spent four paragraphs refusing to give it.
+    let _ = pages::cache_page(&directory, Arc::clone(&data), 1);
+
+    // And now say so. The row went into `AttachmentsStore` — and onto the
+    // screen — several statements ago, when the directory behind it was still
+    // empty, so the card has already drawn itself once against a chart with no
+    // file and no page and has already said "No page preview yet." Nothing
+    // since has touched a signal. See `AttachmentsStore::files_changed` for why
+    // this is a redraw and not a save.
+    attachments.files_changed(id);
+
     Ok(id)
 }
 
@@ -302,55 +332,12 @@ mod tests {
 
     use super::*;
     use crate::db::scratch;
+    use crate::pdf::test_support::inked_pdf;
+    use rinch::prelude::Memo;
     use crate::model::Song;
     use crate::picker::test_support::Canned;
     use crate::picker::{FilePicker, Picked};
     use crate::store::{AttachmentsStore, Storage};
-
-    /// The smallest thing that is really a PDF: a header, one page, a trailer.
-    /// Written by hand rather than checked in as a fixture so that the offsets
-    /// in it are visible — `hayro_syntax` reads the `startxref` at the bottom
-    /// to find the table, and a fixture nobody can read would make a broken
-    /// test unfixable.
-    fn one_page_pdf() -> Vec<u8> {
-        pdf_of(1)
-    }
-
-    /// A valid PDF with `pages` empty pages in it.
-    fn pdf_of(pages: usize) -> Vec<u8> {
-        let kids: String = (0..pages)
-            .map(|n| format!("{} 0 R ", 4 + n))
-            .collect::<String>();
-        let mut objects: Vec<String> = vec![
-            "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
-            format!("<< /Type /Pages /Kids [{kids}] /Count {pages} >>"),
-            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
-        ];
-        for _ in 0..pages {
-            objects.push(
-                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> >>"
-                    .to_string(),
-            );
-        }
-
-        let mut out = String::from("%PDF-1.4\n");
-        let mut offsets = Vec::new();
-        for (index, body) in objects.iter().enumerate() {
-            offsets.push(out.len());
-            out.push_str(&format!("{} 0 obj\n{body}\nendobj\n", index + 1));
-        }
-        let xref_at = out.len();
-        out.push_str(&format!("xref\n0 {}\n", objects.len() + 1));
-        out.push_str("0000000000 65535 f \n");
-        for offset in &offsets {
-            out.push_str(&format!("{offset:010} 00000 n \n"));
-        }
-        out.push_str(&format!(
-            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref_at}\n%%EOF\n",
-            objects.len() + 1
-        ));
-        out.into_bytes()
-    }
 
     /// A library with a real directory behind it, because the whole point of
     /// [`import`] is that bytes land somewhere.
@@ -398,8 +385,8 @@ mod tests {
 
     #[test]
     fn a_pdf_is_counted_by_its_pages_and_not_its_objects() {
-        assert_eq!(page_count(Arc::new(one_page_pdf())), Some(1));
-        assert_eq!(page_count(Arc::new(pdf_of(3))), Some(3));
+        assert_eq!(page_count(Arc::new(inked_pdf(1))), Some(1));
+        assert_eq!(page_count(Arc::new(inked_pdf(3))), Some(3));
     }
 
     #[test]
@@ -446,7 +433,7 @@ mod tests {
     fn a_picked_pdf_lands_as_a_chart_with_its_size_and_its_pages() {
         let (songs, attachments, storage) = on_disk("pdf-import");
         let song = songs.songs.get()[0].id;
-        let bytes = pdf_of(2);
+        let bytes = inked_pdf(2);
         let size = bytes.len() as u64;
 
         let id = import(songs, song, picked("landslide.pdf", bytes.clone())).expect("imported");
@@ -512,7 +499,7 @@ mod tests {
         let (songs, _, storage) = on_disk("pdf-too-large");
         let song = songs.songs.get()[0].id;
 
-        let mut huge = one_page_pdf();
+        let mut huge = inked_pdf(1);
         huge.resize(MAX_BYTES as usize + 1, b' ');
         let refused = import(songs, song, picked("book.pdf", huge));
 
@@ -527,7 +514,7 @@ mod tests {
     #[test]
     fn with_no_library_on_disk_nothing_is_attached() {
         let songs = SongsStore::new(vec![Song::new(1, "Carolina", "M. Ward")]);
-        let refused = import(songs, 1, picked("landslide.pdf", one_page_pdf()));
+        let refused = import(songs, 1, picked("landslide.pdf", inked_pdf(1)));
 
         assert_eq!(refused, Err(ImportError::NoLibrary));
         assert!(songs.get(1).unwrap().attachments.is_empty(), "the row was taken back out");
@@ -536,6 +523,65 @@ mod tests {
 
     /// The failure that matters most, because it is the one that could leave
     /// the library lying: a row saying there is a chart, and no chart.
+    /// The bug this found, in the two halves that can be checked.
+    ///
+    /// `SongsStore::attach` puts the row into `AttachmentsStore::items` — and
+    /// therefore on screen — before this function has written a byte into the
+    /// directory it just minted, so the card draws itself once against an empty
+    /// directory and says "No page preview yet." Everything after that is
+    /// `std::fs`, which no signal is watching, so without a deliberate word to
+    /// the screen that sentence stays put over a picture that exists. It was
+    /// found exactly that way, on the private display, with the PNG on disk and
+    /// the card insisting there was none.
+    ///
+    /// Half one, below: by the time `import` returns, the page is there — so
+    /// anything that redraws afterwards is guaranteed to find it. Half two is
+    /// [`attachments_notice_new_files`]: `files_changed` does redraw. A test
+    /// that counted the notifications in between is not available, because a
+    /// `Memo` is pulled rather than pushed and collapses two writes into one
+    /// recompute — which is precisely why the bug was invisible until a real
+    /// screen drew it.
+    #[test]
+    fn an_import_has_drawn_page_one_by_the_time_it_returns() {
+        let (songs, attachments, _) = on_disk("pdf-import-page-first");
+        let id = import(songs, 1, picked("landslide.pdf", inked_pdf(2))).expect("imported");
+        let directory = attachments.directory(id).expect("a directory");
+
+        assert!(directory.join(PDF_FILE).is_file(), "the chart");
+        assert!(pages::cached_page(&directory, 1).is_some(), "and page one, drawn");
+        assert!(
+            pages::cached_page(&directory, 2).is_none(),
+            "and only page one — the rest wait until something asks"
+        );
+    }
+
+    /// The other half. A `Memo` stands in for the card: it recomputes when, and
+    /// only when, something writes to the signal it read.
+    #[test]
+    fn attachments_notice_new_files() {
+        let (songs, attachments, _) = on_disk("pdf-files-changed");
+        let id = import(songs, 1, picked("landslide.pdf", inked_pdf(1))).expect("imported");
+
+        let runs = Rc::new(RefCell::new(0usize));
+        let counter = Rc::clone(&runs);
+        let card = Memo::new(move || {
+            attachments.items.get().len();
+            *counter.borrow_mut() += 1;
+        });
+        card.get();
+        let before = *runs.borrow();
+
+        attachments.files_changed(id);
+        card.get();
+        assert_eq!(*runs.borrow(), before + 1, "a redraw, from a row that did not change");
+
+        // And an id nothing knows about is not an excuse to redraw every card
+        // on the screen.
+        attachments.files_changed(9_999);
+        card.get();
+        assert_eq!(*runs.borrow(), before + 1);
+    }
+
     #[test]
     fn a_write_that_cannot_land_takes_the_row_back_out_with_it() {
         let (songs, attachments, storage) = on_disk("pdf-write-fails");
@@ -544,7 +590,7 @@ mod tests {
         // Import once so the attachments root exists, then make the *next*
         // attachment's directory unwritable by replacing it — the id is
         // predictable because ids are minted in order.
-        let first = import(songs, song, picked("one.pdf", one_page_pdf())).expect("first");
+        let first = import(songs, song, picked("one.pdf", inked_pdf(1))).expect("first");
         let doomed_dir = attachments
             .directory(first)
             .unwrap()
@@ -554,7 +600,7 @@ mod tests {
         std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o500);
         std::fs::set_permissions(&doomed_dir, perms).unwrap();
 
-        let refused = import(songs, song, picked("two.pdf", one_page_pdf()));
+        let refused = import(songs, song, picked("two.pdf", inked_pdf(1)));
 
         assert!(
             matches!(refused, Err(ImportError::Write(_))),
@@ -599,7 +645,7 @@ mod tests {
     fn a_pick_that_chooses_a_pdf_ends_with_a_chart_on_the_song() {
         let (songs, attachments, storage) = on_disk("pdf-through-the-picker");
         let song = songs.songs.get()[0].id;
-        let bytes = pdf_of(2);
+        let bytes = inked_pdf(2);
         let picker = Canned::new(Picked::Chose(picked("landslide.pdf", bytes.clone())));
 
         // The callback is the only thing that learns the answer, so what it did
