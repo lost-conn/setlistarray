@@ -360,6 +360,38 @@ pub fn fmt_duration(secs: u32) -> String {
     format!("{}:{:02}", secs / 60, secs % 60)
 }
 
+/// `412 KB` — what an attachment costs, in the words the handoff uses.
+///
+/// The wireframe's storage row (`5c`) reads `248 MB ›` and the attachment rows
+/// this feeds are the same register, so the unit is decimal and the label is
+/// the short one: nobody looking at a chart wants to read `1.4 MiB`, and the
+/// distinction is not worth the character it costs on a phone row.
+///
+/// One decimal place from a megabyte up, none below — and a trailing `.0`
+/// dropped, because the row the handoff drew reads `248 MB` and not
+/// `248.0 MB`. A chart is rarely under a hundred kilobytes and rarely over ten
+/// megabytes, so `412 KB` and `1.4 MB` are the two shapes this actually
+/// produces; the rest exist so that no size can render as an empty string or a
+/// wall of digits.
+pub fn fmt_bytes(bytes: u64) -> String {
+    const KB: u64 = 1_000;
+    const MB: u64 = 1_000_000;
+    const GB: u64 = 1_000_000_000;
+    match bytes {
+        b if b < KB => format!("{b} B"),
+        // Rounded up, so a file that exists never reads as `0 KB`.
+        b if b < MB => format!("{} KB", b.div_ceil(KB)),
+        b if b < GB => format!("{} MB", one_decimal(b as f64 / MB as f64)),
+        b => format!("{} GB", one_decimal(b as f64 / GB as f64)),
+    }
+}
+
+/// `1.4`, `248`, `3.2`. The whole number keeps no decimal point.
+fn one_decimal(value: f64) -> String {
+    let text = format!("{value:.1}");
+    text.strip_suffix(".0").unwrap_or(&text).to_string()
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Setlist {
     pub id: SetlistId,
@@ -380,6 +412,19 @@ mod tests {
         assert_eq!(fmt_duration(9), "0:09");
         assert_eq!(fmt_duration(224), "3:44");
         assert_eq!(fmt_duration(3600), "60:00");
+    }
+
+    #[test]
+    fn a_size_reads_as_the_handoffs_storage_row_does() {
+        assert_eq!(fmt_bytes(0), "0 B");
+        assert_eq!(fmt_bytes(999), "999 B");
+        assert_eq!(fmt_bytes(1_000), "1 KB");
+        assert_eq!(fmt_bytes(1_001), "2 KB");
+        assert_eq!(fmt_bytes(411_500), "412 KB");
+        assert_eq!(fmt_bytes(1_400_000), "1.4 MB");
+        // Exactly the string the handoff's storage row (`5c`) shows.
+        assert_eq!(fmt_bytes(248_000_000), "248 MB");
+        assert_eq!(fmt_bytes(3_200_000_000), "3.2 GB");
     }
 
     #[test]

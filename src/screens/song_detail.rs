@@ -4,10 +4,22 @@ use rinch::prelude::*;
 use rinch_tabler_icons::TablerIcon;
 
 use crate::menu::{AttachmentMenuItems, FULL_WIDTH_TARGET, MENU_SURFACE, SongMenuItems};
-use crate::model::{Attachment, AttachmentId, AttachmentKind, Song, SongId, fmt_duration};
+use crate::model::{
+    Attachment, AttachmentId, AttachmentKind, Song, SongId, fmt_bytes, fmt_duration,
+};
+use crate::picker::Picked;
 use crate::store::{AttachmentsStore, NavStore, Route, SetlistsStore, SongsStore};
 use crate::theme::{SCREEN_PAD, T_BODY, T_CHART, T_DETAIL_TITLE, T_META, T_META_SMALL};
-use crate::ui::{ConfidenceDots, IconButton, MetaChip, icon};
+use crate::ui::{AttachmentThumb, ConfidenceDots, IconButton, MetaChip, icon};
+
+/// One row of the add-attachment chooser: badge, what it does, chevron.
+///
+/// `1j` draws these as bordered boxes; here they wear the card fill the rest of
+/// this screen uses, because on song detail they sit under a card and a second
+/// outlined shape would read as a competing one.
+const PRODUCER_ROW: &str = "display: flex; align-items: center; gap: 11px; \
+    padding: 10px 12px; border-radius: 12px; background: var(--sla-card); \
+    box-shadow: var(--sla-card-shadow);";
 
 #[component]
 pub fn SongDetail(id: Option<SongId>) -> NodeHandle {
@@ -16,6 +28,14 @@ pub fn SongDetail(id: Option<SongId>) -> NodeHandle {
     let setlists = use_store::<SetlistsStore>();
     let attachments = use_store::<AttachmentsStore>();
     let menu_open = Signal::new(false);
+    // Whether the add-attachment chooser is showing its rows.
+    let adding = Signal::new(false);
+    // What the last import attempt had to say, if it failed. Written from
+    // inside the picker's callback, which on Android runs long after the tap
+    // and possibly after this screen is gone — a write to a signal whose scope
+    // has been disposed is a warn-once no-op rather than a panic, which is what
+    // makes that safe (see `crate::picker`).
+    let trouble = Signal::new(Option::<String>::None);
     // Which collapsed rows are open. Purely view state: expanding a row inlines
     // its content and nothing else — it does not promote it, and it is not
     // remembered past this screen. The mutation seam is `SongsStore::attach` /
@@ -217,20 +237,95 @@ pub fn SongDetail(id: Option<SongId>) -> NodeHandle {
                     }
                 }
 
-                // The one producer that exists (D2). `1j` draws three rows
-                // here — Pick a PDF · Save a webpage offline · Type lyrics /
-                // chords — and two of them are D3 and E2. Rather than draw
-                // three and wire one, this stays the hi-fi's single accent
-                // line and says underneath what it currently does; when a
-                // second producer lands it becomes the chooser `1j` asks for.
+                // The chooser `1j` draws, now that D3 has given it a second
+                // thing to choose.
+                //
+                // Until this card there was one producer, so this was the
+                // hi-fi's single accent line with a muted sub-line naming what
+                // it did. `1j` draws three boxed rows — `PDF · Pick a PDF`,
+                // `WEB · Save a webpage offline`, `TXT · Type lyrics / chords`
+                // — and two of them now exist. The third is E2 and is left out
+                // rather than drawn inert: a row that looks live and does
+                // nothing is worse than the gap, which is the same call
+                // `song_form` made about this section and the reason it is
+                // still empty there.
+                //
+                // The accent line stays as the way in, because the hi-fi draws
+                // it and the wireframe's boxed rows are what is behind it. It
+                // opens them rather than navigating, so a song that already has
+                // charts is not one tap further from a second one.
                 div {
-                    onclick: move || nav.go(Route::TypeChart { song: id, chart: None }),
                     style: "padding: 14px 0 22px;",
                     div {
-                        style: "color: var(--sla-accent); font-weight: 600; font-size: 15px;",
+                        onclick: move || {
+                            trouble.set(None);
+                            adding.update(|open| *open = !*open);
+                        },
+                        style: "color: var(--sla-accent); font-weight: 600; font-size: 15px; \
+                                padding: 4px 0;",
                         "+ Add attachment"
                     }
-                    div { style: {format!("{T_META_SMALL} margin-top: 3px;")}, "Type lyrics / chords" }
+
+                    if adding.get() {
+                        div { style: "margin-top: 8px; display: flex; flex-direction: column; gap: 8px;",
+
+                            // D3. The picker is asked and the answer comes back
+                            // through a callback that may run now (desktop) or
+                            // after a trip through another app (Android) — see
+                            // `crate::picker`. Nothing here assumes the screen
+                            // is still on screen when it does.
+                            div {
+                                onclick: move || {
+                                    adding.set(false);
+                                    trouble.set(None);
+                                    crate::picker::pick(crate::pdf::PICK_REQUEST, move |picked| {
+                                        match picked {
+                                            // Not an error. The user closed a
+                                            // dialog, which they are allowed to
+                                            // do, and the screen says nothing.
+                                            Picked::Cancelled => {}
+                                            Picked::Failed(why) => trouble.set(Some(why)),
+                                            Picked::Chose(file) => {
+                                                if let Err(e) = crate::pdf::import(songs, id, file) {
+                                                    trouble.set(Some(e.message()));
+                                                }
+                                            }
+                                        }
+                                    });
+                                },
+                                style: {PRODUCER_ROW},
+                                AttachmentThumb { kind: {Some(AttachmentKind::Pdf)} }
+                                span { style: "flex: 1; font-weight: 500; font-size: 15px;", "Pick a PDF" }
+                                span { style: "color: var(--sla-muted); display: flex;",
+                                    {icon(__scope, TablerIcon::ChevronRight, 17)}
+                                }
+                            }
+
+                            // D2, which used to be what the accent line did on
+                            // its own.
+                            div {
+                                onclick: move || nav.go(Route::TypeChart { song: id, chart: None }),
+                                style: {PRODUCER_ROW},
+                                AttachmentThumb { kind: {Some(AttachmentKind::Text)} }
+                                span { style: "flex: 1; font-weight: 500; font-size: 15px;", "Type lyrics / chords" }
+                                span { style: "color: var(--sla-muted); display: flex;",
+                                    {icon(__scope, TablerIcon::ChevronRight, 17)}
+                                }
+                            }
+                        }
+                    }
+
+                    // What went wrong, if anything did. An inline strip in the
+                    // flow rather than a dialog, for the reason `chart_editor`
+                    // gives: there is no modal anywhere in this app. It clears
+                    // itself the next time the chooser is opened, so a
+                    // complaint never outlives the attempt that caused it.
+                    if trouble.get().is_some() {
+                        div {
+                            style: {format!("{T_META_SMALL} color: var(--sla-danger); margin-top: 10px;")},
+                            {move || trouble.get().unwrap_or_default()}
+                        }
+                    }
                 }
             }
 
@@ -368,13 +463,33 @@ fn toggle_expanded(
     });
 }
 
-/// `primary · 2 pages`, or `primary · saved page` for a kind that has no pages
-/// to count.
+/// `primary · 2 pages · 412 KB`, or `primary · saved page` for a kind that has
+/// no pages to count.
+///
+/// The hi-fi draws `primary · 2 pages` under a `tab.pdf`, and that is what the
+/// first two facts are. The size is D3's addition and only a PDF gets one: an
+/// imported chart is the one attachment kind whose bytes came from outside and
+/// were chosen, the card that asked for the import asked for the size to be
+/// visible with it, and the storage screen that would otherwise be the only
+/// place to see it (`5c`, card H1) does not exist yet. A typed chart's size is
+/// the length of what is on the screen already, and a capture's is not
+/// something anybody picked, so neither grows a number the design did not ask
+/// for.
+///
+/// The count is pluralised. `page_count` has been in the model since D1 and
+/// nothing could set it from a real file until now, so `1 pages` was a string
+/// no run of this app had ever produced — and a one-page chart is the single
+/// most likely thing somebody imports.
 fn primary_subtitle(attachment: &Attachment) -> String {
+    let mut parts = vec!["primary".to_string()];
     match attachment.page_count {
-        Some(n) => format!("primary · {n} pages"),
-        None => format!("primary · {}", attachment.kind.descriptor()),
+        Some(n) => parts.push(format!("{n} {}", if n == 1 { "page" } else { "pages" })),
+        None => parts.push(attachment.kind.descriptor().to_string()),
     }
+    if attachment.kind == AttachmentKind::Pdf {
+        parts.push(fmt_bytes(attachment.bytes_on_disk));
+    }
+    parts.join(" · ")
 }
 
 fn preview_of_primary(
@@ -623,10 +738,40 @@ verse two"))]);
         let pdf = Attachment {
             title: "tab.pdf".into(),
             page_count: Some(2),
+            bytes_on_disk: 412_000,
             ..of_kind(AttachmentKind::Pdf)
         };
-        assert_eq!(primary_subtitle(&pdf), "primary · 2 pages");
+        assert_eq!(primary_subtitle(&pdf), "primary · 2 pages · 412 KB");
+        // Only a PDF carries a size. See `primary_subtitle` for why.
         assert_eq!(primary_subtitle(&text(None)), "primary · typed");
+        assert_eq!(
+            primary_subtitle(&of_kind(AttachmentKind::CapturedPage)),
+            "primary · saved page"
+        );
+    }
+
+    /// `1 pages` was unreachable until D3 gave `page_count` a real source, and
+    /// a one-page chart is the most likely thing there is to import.
+    #[test]
+    fn one_page_is_a_page() {
+        let one = Attachment {
+            page_count: Some(1),
+            bytes_on_disk: 40_000,
+            ..of_kind(AttachmentKind::Pdf)
+        };
+        assert_eq!(primary_subtitle(&one), "primary · 1 page · 40 KB");
+    }
+
+    /// A PDF hayro could not parse still has to describe itself. `crate::pdf`
+    /// imports it deliberately, so this is the row it gets.
+    #[test]
+    fn a_pdf_with_no_page_count_still_says_what_it_is_and_what_it_costs() {
+        let unknown = Attachment {
+            page_count: None,
+            bytes_on_disk: 1_400_000,
+            ..of_kind(AttachmentKind::Pdf)
+        };
+        assert_eq!(primary_subtitle(&unknown), "primary · pdf · 1.4 MB");
     }
 
     #[test]

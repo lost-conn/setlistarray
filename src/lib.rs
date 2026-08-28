@@ -27,6 +27,8 @@ mod derive;
 mod gesture_reachability;
 mod menu;
 mod model;
+pub mod pdf;
+pub mod picker;
 pub mod platform;
 mod screens;
 mod seed;

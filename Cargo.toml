@@ -36,6 +36,28 @@ markup5ever_rcdom = "0.39"
 # named here because the capture module reaches for it directly.
 url = "2"
 
+# Reading a PDF far enough to count its pages (src/pdf.rs). `hayro-syntax` is
+# the parser half of `hayro`, the rasteriser docs/PDF.md chose on 2026-08-26
+# and card D4 will draw pages with; taking the parser now means D4's `hayro`
+# line arrives over a crate already in the tree at a version cargo has already
+# unified, rather than over a second PDF library. docs/PDF.md measured the
+# parser alone at +236,554 B of APK against hayro's whole +2,486,352 B, and D3
+# needs a page count rather than a picture.
+#
+# Re-measured on 2026-08-28 by building the APK with this card's whole working
+# tree stashed and again with it applied: 7,823,883 B -> 7,991,819 B, so the
+# parser *and* everything else D3 adds together come to +167,936 B. Beware the
+# 6,799,883 B figure docs/PDF.md calls "today": it was taken on 2026-08-26 and
+# the APK at 98ae4eb is already 7,823,883 B without a line of PDF code in it,
+# so a delta measured against that number reads a megabyte of other people's
+# cards as this one's cost. Two builds an hour apart is the only honest way to
+# price a dependency here.
+#
+# `default-features = false` drops the `images` feature — JPEG2000, JBIG2 and
+# CCITT decoders that exist to turn a scanned page into pixels. Counting pages
+# never opens an image. D4 turns them back on.
+hayro-syntax = { version = "0.7.2", default-features = false, features = ["std"] }
+
 # The library itself: rhypedb, in-process. `default-features = false` keeps the
 # fastembed/ONNX stack out — an embedding runtime is not something this app can
 # ship on a phone, and nothing here needs vector search.
@@ -63,6 +85,10 @@ rinch = { path = "../rinch-fixes/crates/rinch", default-features = false, featur
     "desktop",
     "components",
     "theme",
+    # The `rfd` file dialog behind `rinch::dialogs` — the desktop half of the
+    # picker seam in `src/picker.rs`. Android has no dialog to enable: its
+    # picker is an activity, and it comes from `rinch-android` below.
+    "file-dialogs",
 ] }
 
 [target.'cfg(target_os = "android")'.dependencies]
