@@ -84,6 +84,30 @@
 //! it is the one that did: driving the real app and watching the item not
 //! fire.
 //!
+//! Card K23 is the same lesson from the far side, and worth stating because
+//! it is the one shape where "works on the desktop, dead on the phone" is
+//! *not* about handlers at all. Every bottom sheet in the app stopped opening
+//! on Android. The chip's `onclick` fired, `nav.sort_sheet_open` flipped to
+//! `true`, and every style closure re-ran — all of it provable from `adb
+//! logcat`, and none of it visible on the glass. What was missing was the
+//! frame clock: the Android shell never sent `PlatformEvent::AboutToWait`, so
+//! CSS transitions never advanced, so the panel stayed parked 700px below the
+//! fold and the scrim stayed at opacity 0 while the sheet root's
+//! `pointer-events: auto` — not animatable, so applied at once — put an
+//! invisible full-screen box over the app. The sheet was open, and the next
+//! tap anywhere landed on its scrim and closed it. Fixed upstream in
+//! rinch#325.
+//!
+//! So: a handler can be reachable, run, and change the state it was written to
+//! change, and the screen can still be wrong, because between the state and
+//! the pixels there is a layout, a paint order, and a clock — and this table
+//! has an opinion about none of them. When a screen is dead on the phone,
+//! ruling this file's question out is the first step, not the last. The
+//! cheapest next one, twice now, has been to put a `log::info!` in the handler
+//! and read `adb logcat`: it splits "the tap never arrived" from "the tap
+//! arrived and the frame did not" in one build, and those two have nothing in
+//! common but the symptom.
+//!
 //! ## Why an unknown handler fails instead of passing by omission
 //!
 //! [`is_reachable`] returns `None` for a name that isn't in the table at
