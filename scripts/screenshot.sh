@@ -89,6 +89,25 @@ die() {
   exit 1
 }
 
+# Everything below this point maps a real X window and photographs it, and the
+# display it does that on is not allowed to be the one somebody is working in.
+# This script has always taken focus for the ten-odd seconds it takes to launch
+# and capture, which was merely rude; on 2026-08-28 an agent verifying the file
+# picker went further and opened native file dialogs on the developer's desktop
+# while the developer was using it. So the run re-enters itself under
+# `scripts/with-display.sh`, which puts it on a private, invisible Xvfb at the
+# same 1.25x scale factor this file's numbers were measured at.
+#
+# `--self-test` is exempt because it never opens a window, and an explicit
+# `SLA_HEADLESS_DISPLAY=1` is exempt because that is what with-display.sh sets
+# on the way in — and because a human who genuinely wants to watch the capture
+# happen on their own screen can set it by hand and get the old behaviour.
+if [[ "$MODE" != self-test && -z "${SLA_HEADLESS_DISPLAY:-}" ]]; then
+  WITH_DISPLAY="$ROOT/scripts/with-display.sh"
+  [[ -x "$WITH_DISPLAY" ]] || die "missing $WITH_DISPLAY — it is what keeps this off :0"
+  exec "$WITH_DISPLAY" "${BASH_SOURCE[0]}" "$@"
+fi
+
 # --self-test only reads the baseline and does arithmetic, so it must not
 # refuse to run on a machine with no X server, no ImageMagick and no toolchain
 # — that is most of the value of having it. Everything else needs the lot.
