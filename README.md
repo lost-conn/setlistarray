@@ -41,7 +41,7 @@ local path dependencies, so `Cargo.toml` expects three checkouts side by side:
 ```
 projects/personal/
 ├── setlistarray/     ← this
-├── rinch-fixes/      ← github.com/joeleaver/rinch, branch carrying #245, #246, #266, #267, #270, #274, #281, #286, #292, #298, #317, #342
+├── rinch-fixes/      ← github.com/joeleaver/rinch, branch carrying #245, #246, #266, #267, #270, #274, #281, #286, #292, #298, #317, #342, #344
 └── rhypedb-main/     ← github.com/joeleaver/rhypedb, main
 ```
 
@@ -428,6 +428,25 @@ reasoning, and the two options not taken, are in
   [joeleaver/rinch#342](https://github.com/joeleaver/rinch/pull/342); the check
   that would have caught it is
   `group_header_double_paint` in `scripts/screenshot-baseline.json`.
+- **Nothing in the app animated, and the reason was not the animation code.**
+  Card K24. The first frame after a tap took 316ms to present on the moto g
+  stylus 5G, so a 220ms transition got exactly one tick — the one that finished
+  it. The sheet was parked, and then it was arrived. None of that time was
+  where it looked like it should be: presenting the pixels was a flat 12ms,
+  re-resolving style was 0.0ms, glyphs were 7ms. It was all in paint, and all of
+  it was work with no visible output — three always-mounted sheet scrims parked
+  at `opacity: 0` being painted in full and composited back at alpha zero; every
+  element's `background-color: transparent` rasterised as a real fill because
+  that is the CSS initial value and Stylo hands it back as a colour; every
+  nested clip intersecting its mask across all 2.66 million pixels of the
+  surface; a blurred `box-shadow` filling eight layers across the whole sheet
+  panel to darken pixels the panel then covered. **316ms → 63ms**, and the
+  sheets now move through the positions in between.
+  [joeleaver/rinch#344](https://github.com/joeleaver/rinch/pull/344). What is
+  left is honest rasterisation — CPU tiny-skia at a full 1080×2460, where one
+  opaque full-screen fill is 13ms — so roughly four frames per transition:
+  animated, not yet smooth. The structural answer is the GPU path, which is
+  card K27, not this one.
 - **INTERNET really is invisible.** `dumpsys package` lists it under *install
   permissions*, `granted=true`, with no runtime permissions at all — which is
   why there is nothing for the app's permission screen to show. The claim under
@@ -632,6 +651,7 @@ diff no longer needed; the rest are still waiting on review.
 - [joeleaver/rinch#298](https://github.com/joeleaver/rinch/pull/298) — an app can tell Android its system bars sit over a light background, which is what made the clock invisible
 - [joeleaver/rinch#306](https://github.com/joeleaver/rinch/pull/306) — the two loose ends issue #300 named after the #268 review: an inline, unrounded viewport division `dispatch_oncontextmenu` still did, and an architecture doc that never named `window_size`'s unit
 - [joeleaver/rinch#317](https://github.com/joeleaver/rinch/pull/317) — a dropdown menu's dismiss backdrop sits under the panel it belongs to, which is what made every menu item dead. Based on #292's branch rather than `main`, because #292 is what makes the fault visible and #292 should not ship without it
+- [joeleaver/rinch#344](https://github.com/joeleaver/rinch/pull/344) — four things the software painter drew that could not be seen: an `opacity: 0` subtree painted in full, a fully transparent `background-color` rasterised as a fill, a clip mask intersected across the whole surface rather than the clip's own bounds, and a blurred `box-shadow` filled under the element instead of around it. Card K24; 316ms to 63ms on the device
 - [joeleaver/rinch#342](https://github.com/joeleaver/rinch/pull/342) — the double paint behind card K20: `PositionValue`'s `#[default]` in
   `crates/rinch-dom/src/computed_style/values.rs`, moved from `Relative` to the
   `Static` that CSS gives `position` as its initial value. Style resolution runs
