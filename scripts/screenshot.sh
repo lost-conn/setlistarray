@@ -317,6 +317,7 @@ if [[ "$MODE" == self-test ]]; then
   at_size 491 1065
   expect_region thumb_painted            "40x50+30+330"
   expect_region fab_solid_accent         "65x58+396+882"
+  expect_region confidence_dots_on_screen "43x20+425+353"
   expect_region group_header_accent      "55x20+20+290"
   expect_region group_header_double_paint "55x25+20+285"
   expect_region bottom_nav_accent        "491x70+0+975"
@@ -330,6 +331,7 @@ if [[ "$MODE" == self-test ]]; then
   at_size 550 1065
   expect_region thumb_painted            "40x50+30+330"
   expect_region fab_solid_accent         "65x58+455+882"
+  expect_region confidence_dots_on_screen "43x20+484+353"
   expect_region group_header_accent      "55x20+20+290"
   expect_region group_header_double_paint "55x25+20+285"
   expect_region bottom_nav_accent        "550x70+0+975"
@@ -342,6 +344,7 @@ if [[ "$MODE" == self-test ]]; then
   at_size 700 1065
   expect_region thumb_painted            "40x50+30+330"
   expect_region fab_solid_accent         "65x58+605+882"
+  expect_region confidence_dots_on_screen "43x20+634+353"
   expect_region bottom_nav_accent        "700x70+0+975"
   expect_region background_has_no_accent "40x30+660+0"
   expect_region screen_title_glyph       "200x53+28+60"
@@ -351,6 +354,7 @@ if [[ "$MODE" == self-test ]]; then
   at_size 786 1704
   expect_region thumb_painted            "64x80+48+528"
   expect_region fab_solid_accent         "104x92+634+1412"
+  expect_region confidence_dots_on_screen "68x32+682+564"
   expect_region group_header_accent      "88x32+32+464"
   expect_region group_header_double_paint "88x40+32+456"
   expect_region bottom_nav_accent        "786x112+0+1560"
@@ -363,6 +367,7 @@ if [[ "$MODE" == self-test ]]; then
   at_size 393 852
   expect_region thumb_painted            "32x40+24+264"
   expect_region fab_solid_accent         "52x46+317+706"
+  expect_region confidence_dots_on_screen "34x16+341+282"
   expect_region group_header_accent      "44x16+16+232"
   expect_region group_header_double_paint "44x20+16+228"
   expect_region bottom_nav_accent        "393x56+0+780"
