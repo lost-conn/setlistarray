@@ -11,6 +11,7 @@ set -euo pipefail
 #   ./build-apk.sh --build-only        # build and package only (no device needed)
 #   ./build-apk.sh --target x86_64     # for an emulator (default: arm64-v8a)
 #   ./build-apk.sh --debug             # debug profile (slow: Stylo and Parley)
+#   ./build-apk.sh --gpu               # rinch's android-gpu shell (wgpu + vello)
 #
 # Requirements:
 #   ANDROID_NDK_HOME          NDK r27c        (default ~/android/android-ndk-r27c)
@@ -28,12 +29,22 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TARGET="arm64-v8a"
 BUILD_ONLY=false
 RELEASE=true
+# The GPU shell is a rinch feature, not one of ours, so there is nothing in
+# Cargo.toml to name it — `--features rinch/android-gpu` reaches through the
+# dependency. It is off by default and stays off: card K27 measured it 2-10x
+# slower than the software painter because every frame was read back to the
+# CPU, and card K35 rewrote it to present the wgpu swapchain directly. The flag
+# exists so that both halves of that comparison can be built from this script
+# rather than from a remembered cargo incantation, which is how the two numbers
+# in K27's APK-size note came to be taken minutes apart.
+FEATURES=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --target) TARGET="$2"; shift 2 ;;
         --debug) RELEASE=false; shift ;;
         --build-only) BUILD_ONLY=true; shift ;;
+        --gpu) FEATURES="rinch/android-gpu"; shift ;;
         -h|--help) sed -n '3,26p' "$0"; exit 0 ;;
         *) echo "Unknown arg: $1"; exit 1 ;;
     esac
@@ -76,7 +87,7 @@ fi
 # `--lib` only: the desktop binary and the probe are not part of the APK.
 echo "==> Building $TARGET ($PROFILE)..."
 export ANDROID_NDK_HOME
-(cd "$SCRIPT_DIR" && cargo ndk -t "$TARGET" build --lib $PROFILE_FLAG)
+(cd "$SCRIPT_DIR" && cargo ndk -t "$TARGET" build --lib $PROFILE_FLAG ${FEATURES:+--features "$FEATURES"})
 
 SO_PATH="$SCRIPT_DIR/target/$TRIPLE/$PROFILE/$LIB_NAME"
 if [[ ! -f "$SO_PATH" ]]; then
