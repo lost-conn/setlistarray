@@ -84,6 +84,31 @@ if [[ "$RELEASE" == false ]]; then
 fi
 
 # ── Rust ─────────────────────────────────────────────────────────────────────
+# Link-time optimisation lives here rather than in `[profile.release]`, and the
+# reason is a measurement rather than a preference.
+#
+# Card K33 wanted `lto = "fat"` and `codegen-units = 1` for what they take off
+# the phone, and they do: `libsetlistarray.so` 25,509,032 → 22,223,448 B, a
+# 3.29 MB saving with no change in frame timing on the device (median 8.33ms
+# against 8.34ms over ten flings, both pinned to the 120Hz vsync). Thin LTO was
+# measured too and is a wash — 22,232,432 B, 87s against fat's 85s — so the
+# cost is `codegen-units = 1`, not the LTO mode, and fat is very slightly
+# smaller for the same money.
+#
+# Put those two lines in `Cargo.toml` and they apply to the desktop build as
+# well, where they buy nothing and cost everything: an incremental rebuild
+# after touching `src/lib.rs` went **7.28s → 124.74s**, seventeen times slower,
+# and that is the loop `scripts/screenshot.sh` runs on. A full APK build goes
+# 46.76s → 84.81s, which is the price of the 3.29 MB and is paid by a build
+# that installs to a phone anyway.
+#
+# `:=` rather than `=`, so a card that needs a fast on-device loop can say
+# `CARGO_PROFILE_RELEASE_LTO=false ./build-apk.sh` and get the 47-second build
+# back without editing anything.
+: "${CARGO_PROFILE_RELEASE_LTO:=fat}"
+: "${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:=1}"
+export CARGO_PROFILE_RELEASE_LTO CARGO_PROFILE_RELEASE_CODEGEN_UNITS
+
 # `--lib` only: the desktop binary and the probe are not part of the APK.
 echo "==> Building $TARGET ($PROFILE)..."
 export ANDROID_NDK_HOME
@@ -130,9 +155,28 @@ cp "$SO_PATH" "$APK_DIR/lib/$ABI/"
     --target-sdk-version 35 \
     -o "$APK_DIR/base.apk"
 
-(cd "$APK_DIR" && zip -qr base.apk lib/ classes.dex)
+# `classes.dex` is deflated like any other entry; the library is **stored**.
+#
+# That -0 is half of card K33's second fix, and it only makes sense with the
+# other half — `android:extractNativeLibs="false"` in AndroidManifest.xml. Ask
+# the loader to map the library straight out of the APK and it can only do
+# that if the bytes in the APK are the bytes of the ELF, uncompressed and
+# aligned to a page boundary. Compress them and the installer has to extract a
+# second copy to `/data/app/…/lib/arm64/`, which is exactly the 35 MB
+# duplicate K33 measured on the phone. The two lines below and the manifest
+# attribute are one change wearing three hats, and
+# `the_apk_stores_its_native_library_uncompressed` in src/lib.rs fails the
+# build if any of them goes missing on its own.
+(cd "$APK_DIR" && zip -qr base.apk classes.dex && zip -qr -0 base.apk lib/)
 
-"$BUILD_TOOLS/zipalign" -f 4 "$APK_DIR/base.apk" "$APK_DIR/aligned.apk"
+# `-P 16`, not `-p`. Both page-align the stored `.so`; `-p` means 4 KB and
+# `-P 16` means 16 KB, and 16 KB is what this library actually wants — NDK
+# r27c links it with `p_align 0x4000` on every LOAD segment (checked with
+# `llvm-readelf -lW`), and Android 15 requires 16 KB-page support of anything
+# targeting SDK 35, which this manifest does. Aligning to 4 KB would still
+# install and still run on the 4 KB-page devices of today, and would fail to
+# map on a 16 KB-page one.
+"$BUILD_TOOLS/zipalign" -f -P 16 4 "$APK_DIR/base.apk" "$APK_DIR/aligned.apk"
 
 if [[ ! -f "$KEYSTORE" ]]; then
     echo "==> Creating a throwaway debug keystore at $KEYSTORE..."

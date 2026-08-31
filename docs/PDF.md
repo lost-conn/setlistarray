@@ -204,6 +204,13 @@ entire cost, and more than a quarter of pdfium's. It is a one-line change to
 proposed as part of this card; it is noted because it changes what the size
 numbers above mean.)
 
+> **Done on 2026-08-31, card K33** — though not in `build-apk.sh`. Cargo will
+> strip on the way out of the linker if asked, so it is `strip = "symbols"` in
+> a new `[profile.release]` in `Cargo.toml` and the build script did not change
+> at all. Measured on the tree of the day rather than on the numbers above:
+> the library went 35,665,688 → 25,509,032 B and the APK 12,018,187 →
+> 10,187,275 B.
+
 **The APK deflates its native libraries**, so they are extracted at install.
 The manifest sets no `android:extractNativeLibs`, and there is no AGP here to
 inject `false`. Installed footprint of native code is therefore the
@@ -211,6 +218,14 @@ inject `false`. Installed footprint of native code is therefore the
 29.0 MB with hayro. If on-device footprint matters more than download size,
 that reverses part of the comparison — and `extractNativeLibs="false"` plus
 `zipalign -p 4` is the fix, again independent of this decision.
+
+> **Done on 2026-08-31, card K33**, with one correction: `zipalign -P 16`, not
+> `-p 4`. NDK r27c links every LOAD segment with `p_align 0x4000`, and a
+> targetSdk-35 app has to map on a 16 KB-page device. Measured on the phone:
+> **46.6 MB installed → 25.0 MB**, of which the `lib/arm64/` directory is now
+> an empty 4 KB. The download went the other way, 10,187,275 → 25,534,987 B,
+> which is the trade this makes and the reason it is a decision rather than a
+> tidy-up — the paragraph above already framed it as one.
 
 ---
 

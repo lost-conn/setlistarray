@@ -60,6 +60,17 @@ url = "2"
 # than one that refused them. The line is still spelled out rather than folded
 # into `hayro` below, because this is the crate the *parser* comes from and
 # `page_count` still calls it directly with no renderer in sight.
+#
+# Card K33 came back to ask whether the fax-era codecs could go — JBIG2 is
+# 163,820 B of `.text` and JPEG2000 and CCITT are not free either — and the
+# answer is no, twice over. `images` is one feature covering all four codecs
+# with no per-codec granularity, and `hayro-interpret` depends on
+# `hayro-syntax` with `features = ["std", "images", "unsafe"]` spelled out, so
+# turning it off here changes nothing: cargo unifies it straight back on. It
+# would take a feature split upstream, and it would take it in order to drop
+# support for exactly the photocopied Real Book the paragraph above is about.
+# Not worth doing, and worth writing down so the next reader does not go and
+# measure it again.
 hayro-syntax = "0.7.2"
 
 # Drawing a page (src/pdf/pages.rs). The rasteriser half of the decision
@@ -158,3 +169,36 @@ opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3
+
+# The release profile exists for one reason: what ships to the phone.
+#
+# Card K33 measured the installed app at 46.6 MB against an 11.5 MiB APK and
+# went looking for the difference. There was no `[profile.release]` section
+# here at all, so `libsetlistarray.so` went to the device with its symbol
+# tables intact — `.symtab` 4,646,160 B and `.strtab` 5,497,880 B, 10.1 MB of
+# names that nothing on Android ever reads. Android's loader resolves the
+# library's exports from `.dynsym`, which `strip = "symbols"` leaves alone;
+# `.symtab` is for a debugger, and there is no debugger on a gigging
+# musician's phone.
+#
+# What it costs is a native backtrace. If one is ever wanted, the unstripped
+# library is still sitting in `target/<triple>/release/` after the build —
+# stripping happens on the way out of cargo, not in place — so keep that file
+# next to the APK before the next `cargo clean` rather than turning this off.
+#
+# `panic = "abort"` is deliberately NOT here, however tempting `.eh_frame` and
+# `.gcc_except_table` look at 2.7 MB together. `src/pdf/pages.rs` wraps hayro
+# in `catch_unwind` precisely because a chart is a file that came from the
+# internet, and aborting would turn a malformed PDF into a crashed app.
+#
+# Neither is `lto`, and that one is a near miss worth writing down. K33 also
+# asked for `lto = "fat"` and `codegen-units = 1`, which are worth 3.29 MB on
+# the phone — but here they would apply to the desktop build too, and an
+# incremental rebuild after touching `src/lib.rs` goes 7.28s → 124.74s under
+# them. `scripts/screenshot.sh` runs a release build every time the visual net
+# is checked, so that is the loop that would pay. They live in `build-apk.sh`
+# as `CARGO_PROFILE_RELEASE_*` instead, where only the phone build sees them,
+# and `link_time_optimisation_is_asked_for_by_the_apk_build_alone` in
+# src/lib.rs keeps them from wandering back.
+[profile.release]
+strip = "symbols"

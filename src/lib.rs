@@ -404,6 +404,137 @@ mod tests {
         );
     }
 
+    /// Three edits in three files that only work as one, and card K33 is the
+    /// reason any of them exist.
+    ///
+    /// The app is essentially its native library — `classes.dex` is 18,900 B
+    /// and everything else in the APK is under 3 KB — so where that library
+    /// lives on the phone is the whole of the installed footprint. Measured on
+    /// 2026-08-28: an 11.5 MiB APK occupying **46.6 MB** installed, because
+    /// the installer had deflated `libsetlistarray.so` out of the APK into
+    /// `/data/app/…/lib/arm64/` and the phone was keeping both copies.
+    ///
+    /// Not extracting it takes all three of these together:
+    ///
+    /// 1. `android:extractNativeLibs="false"` — the manifest asking the loader
+    ///    to map the library where it already is;
+    /// 2. `zip -0` over `lib/` in `build-apk.sh` — the bytes in the APK being
+    ///    the bytes of the ELF, because a deflated entry cannot be mapped;
+    /// 3. `zipalign -P 16` — that entry starting on a page boundary, 16 KB
+    ///    because NDK r27c links every LOAD segment with `p_align 0x4000` and
+    ///    Android 15 requires 16 KB-page support of a targetSdk-35 app.
+    ///
+    /// Any one of them alone is worse than none of them. The attribute over a
+    /// compressed library is an `INSTALL_FAILED_INVALID_APK` from the
+    /// installer; the attribute over a misaligned one is a device that
+    /// installs and then cannot load the library at all. Both failures land a
+    /// long way from the edit that caused them, on a phone, which is why they
+    /// are asserted here on a laptop instead — the pattern cards K15 and K20
+    /// established.
+    ///
+    /// This test reads the two files as text on purpose. There is no build
+    /// system here to ask; `build-apk.sh` *is* the build system.
+    #[test]
+    fn the_apk_maps_its_native_library_instead_of_extracting_it() {
+        let manifest = strip_xml_comments(include_str!("../android/AndroidManifest.xml"));
+        assert!(
+            manifest.contains(r#"android:extractNativeLibs="false""#),
+            "AndroidManifest.xml no longer asks the loader to map the library out of the APK; \
+             without it the installer extracts a second 25 MB copy (card K33)"
+        );
+
+        let script = strip_shell_comments(include_str!("../build-apk.sh"));
+        assert!(
+            script.contains("zip -qr -0 base.apk lib/"),
+            "build-apk.sh no longer stores lib/ uncompressed; a deflated library cannot be \
+             mapped, and the manifest above says it will be (card K33)"
+        );
+        assert!(
+            script.contains("zipalign\" -f -P 16 4"),
+            "build-apk.sh no longer page-aligns the stored library to 16 KB; NDK r27c links \
+             it with p_align 0x4000 and a 16 KB-page device cannot map it otherwise (card K33)"
+        );
+    }
+
+    /// Link-time optimisation is asked for by `build-apk.sh`, not by
+    /// `Cargo.toml`, and that is deliberate enough to be worth holding still.
+    ///
+    /// `lto = "fat"` and `codegen-units = 1` take 3.29 MB off the library
+    /// (25,509,032 → 22,223,448 B) and cost 38 seconds on an APK build. Put
+    /// them in `[profile.release]` and the desktop build pays too, where they
+    /// buy nothing: an incremental rebuild after touching this very file went
+    /// **7.28s → 124.74s** — and `scripts/screenshot.sh` runs a release build
+    /// every time the visual net is checked.
+    ///
+    /// So the two settings are environment variables in the one script that
+    /// builds for the phone. This test is what stops them drifting back into
+    /// `Cargo.toml`, where the seventeen-fold slowdown would arrive silently
+    /// and be blamed on the framework.
+    #[test]
+    fn link_time_optimisation_is_asked_for_by_the_apk_build_alone() {
+        let script = strip_shell_comments(include_str!("../build-apk.sh"));
+        assert!(
+            script.contains(r#": "${CARGO_PROFILE_RELEASE_LTO:=fat}""#)
+                && script.contains(r#": "${CARGO_PROFILE_RELEASE_CODEGEN_UNITS:=1}""#),
+            "build-apk.sh no longer asks for fat LTO; that is 3.29 MB back on the phone \
+             (card K33)"
+        );
+
+        let cargo_toml = include_str!("../Cargo.toml");
+        let profile: Vec<&str> = cargo_toml
+            .lines()
+            .map(str::trim)
+            .skip_while(|line| *line != "[profile.release]")
+            .take_while(|line| !line.starts_with('[') || *line == "[profile.release]")
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .collect();
+        assert!(
+            !profile
+                .iter()
+                .any(|line| line.starts_with("lto") || line.starts_with("codegen-units")),
+            "[profile.release] sets an LTO knob, which makes every desktop rebuild 17x \
+             slower for a saving only the phone sees (card K33). Found: {profile:?}"
+        );
+    }
+
+    /// 10.1 MB of symbol names that nothing on the phone reads.
+    ///
+    /// `Cargo.toml` had no `[profile.release]` section at all until card K33,
+    /// so `libsetlistarray.so` shipped with `.symtab` (4,646,160 B) and
+    /// `.strtab` (5,497,880 B) intact. Measured either side of adding two
+    /// lines: the library went 35,665,688 → 25,509,032 B on the device and the
+    /// APK 12,018,187 → 10,187,275 B.
+    ///
+    /// Nothing fails visibly if this disappears — the app builds, installs and
+    /// runs exactly as before, ten megabytes heavier — which is precisely why
+    /// it is worth a test. `panic = "abort"` is checked for too, in the other
+    /// direction: `src/pdf/pages.rs` catches unwinds out of hayro because a
+    /// chart is a file from the internet, and aborting would turn a malformed
+    /// one into a crashed app.
+    #[test]
+    fn the_release_profile_strips_symbols_and_still_unwinds() {
+        let cargo_toml = include_str!("../Cargo.toml");
+        let settings: Vec<&str> = cargo_toml
+            .lines()
+            .map(str::trim)
+            .skip_while(|line| *line != "[profile.release]")
+            .skip(1)
+            .take_while(|line| !line.starts_with('['))
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .collect();
+
+        assert!(
+            settings.contains(&"strip = \"symbols\""),
+            "[profile.release] no longer strips symbols; that is 10 MB back on the phone \
+             for nothing (card K33). Found: {settings:?}"
+        );
+        assert!(
+            !settings.iter().any(|line| line.starts_with("panic")),
+            "[profile.release] sets a panic strategy; src/pdf/pages.rs relies on unwinding \
+             to survive a malformed PDF (card D4). Found: {settings:?}"
+        );
+    }
+
     /// The floor under "one network call exists in the entire app".
     ///
     /// `docs/PLAN.md` makes that claim in its cross-cutting section and card
@@ -462,6 +593,18 @@ mod tests {
         }
         out.push_str(rest);
         out
+    }
+
+    /// Drop whole-line `#` comments, so a test can read a shell script's code
+    /// without reading the prose above it. Deliberately does not touch a `#`
+    /// that follows code on the same line — there are none in `build-apk.sh`,
+    /// and guessing at quoting would be worse than not trying.
+    fn strip_shell_comments(script: &str) -> String {
+        script
+            .lines()
+            .filter(|line| !line.trim_start().starts_with('#'))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// Every `.rs` file under `dir`, depth first.

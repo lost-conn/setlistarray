@@ -40,9 +40,29 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!--
+      `android:extractNativeLibs="false"` is the whole of card K33's second
+      finding, and it is about the installed footprint rather than the
+      download. Left unset, the platform default for an APK built without AGP
+      is to extract: the installer deflates `lib/arm64-v8a/libsetlistarray.so`
+      out of the APK into `/data/app/…/lib/arm64/` and keeps the APK too, so
+      the phone stores the library twice. K33 measured it on 2026-08-28 — an
+      11.5 MiB APK occupying 46.6 MB installed, 35 MB of which was that second
+      copy. With this set, the loader maps the library out of the APK where it
+      already is and there is no second copy at all.
+
+      It only works if the APK cooperates: the entry must be **stored**, not
+      deflated, and page-aligned so it can be mapped. `build-apk.sh` does both
+      (`zip -0` and `zipalign -P 16`), and the test
+      `the_apk_stores_its_native_library_uncompressed` in `src/lib.rs` holds
+      the three of them together — an APK that sets this attribute over a
+      compressed library does not install, and the failure is an installer
+      error a long way from either edit.
+    -->
     <application
         android:label="SetListArray"
         android:hasCode="true"
+        android:extractNativeLibs="false"
         android:allowBackup="false">
 
         <!--
