@@ -41,7 +41,7 @@ local path dependencies, so `Cargo.toml` expects three checkouts side by side:
 ```
 projects/personal/
 ├── setlistarray/     ← this
-├── rinch-fixes/      ← github.com/joeleaver/rinch, branch carrying #245, #246, #266, #267, #270, #274, #281, #286, #292, #298, #317, #342, #344, #353
+├── rinch-fixes/      ← github.com/joeleaver/rinch, branch carrying #245, #246, #266, #267, #270, #274, #281, #286, #292, #298, #317, #342, #344, #353, #402
 └── rhypedb-main/     ← github.com/joeleaver/rhypedb, main
 ```
 
@@ -734,6 +734,30 @@ diff no longer needed; the rest are still waiting on review.
 - [joeleaver/rinch#317](https://github.com/joeleaver/rinch/pull/317) — a dropdown menu's dismiss backdrop sits under the panel it belongs to, which is what made every menu item dead. Based on #292's branch rather than `main`, because #292 is what makes the fault visible and #292 should not ship without it
 - [joeleaver/rinch#353](https://github.com/joeleaver/rinch/pull/353) — four gates between a finished image decode and the screen, each enough on its own to leave an `<img>` permanently blank: the loader never woke a `ControlFlow::Wait` loop, `resolve_and_repaint` returned early on an undirty tree, `resolve_layout` discarded `drain_pending_images`'s `bool`, and the Android loop gated on a `pending_layout` a decode never sets. Card D4; found showing a rasterised PDF page on the phone
 - [joeleaver/rinch#344](https://github.com/joeleaver/rinch/pull/344) — four things the software painter drew that could not be seen: an `opacity: 0` subtree painted in full, a fully transparent `background-color` rasterised as a fill, a clip mask intersected across the whole surface rather than the clip's own bounds, and a blurred `box-shadow` filled under the element instead of around it. Card K24; 316ms to 63ms on the device
+- [joeleaver/rinch#402](https://github.com/joeleaver/rinch/pull/402) — the two
+  painters disagreed about what an `opacity` layer clips, and only one of them
+  was right. `paint/mod.rs` handed `push_layer` the element's own border box as
+  the layer bounds; `skia_painter.rs` named that parameter `_bounds` and never
+  read it, while `vello_painter.rs` passed it to `vello::Scene::push_layer`,
+  which clips every command after it. So a `box-shadow`, an overflowing child
+  or a `transform` that leaves the box was drawn by the software painter and
+  silently thrown away by the GPU one — which is why the GPU path could not
+  become the default, however much faster card K35 made it. CSS is not
+  ambiguous here: a stacking context does not clip its descendants, so Vello
+  was the one in the wrong. The cheap fix was to pass an unbounded rect the way
+  the zero-area path a few hundred lines up already does, and it was not the
+  fix taken: a new `paint/layer_bounds.rs` walks the subtree and returns the
+  union of what it actually paints — border box, outset `box-shadow`, outline,
+  text-shadow reach, every descendant with its own transform applied, shrunk
+  where an `overflow` ancestor inside the subtree genuinely clips — so Vello's
+  clip becomes an optimisation hint that can never cut anything off. Anything
+  the walk cannot measure exactly falls back to the unbounded rect rather than
+  to a guess, because bounds that are too large cost a little fill and bounds
+  that are too small are the bug. Measured at ~20ns a node with no allocation,
+  so there is no cache to invalidate wrongly. Card K36; the disagreement was
+  suspected in K24 and proven in K35. Cut from `main`, which means it does not
+  carry K43's clip-skip work — the two touch different parts of `paint_node`
+  and apply cleanly either way, but whoever lands both will reconcile them.
 - [joeleaver/rinch#342](https://github.com/joeleaver/rinch/pull/342) — the double paint behind card K20: `PositionValue`'s `#[default]` in
   `crates/rinch-dom/src/computed_style/values.rs`, moved from `Relative` to the
   `Static` that CSS gives `position` as its initial value. Style resolution runs
