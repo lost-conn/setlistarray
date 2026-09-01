@@ -1,7 +1,7 @@
 use rinch::prelude::*;
 
 use crate::model::{Attachment, AttachmentId, Confidence, Day, Song, SongId};
-use crate::store::{AttachmentsStore, Storage};
+use crate::store::{AttachmentsStore, SetlistsStore, Storage};
 
 /// The library, in memory, with every mutation written through to disk first.
 ///
@@ -31,25 +31,55 @@ pub struct SongsStore {
     /// to reach back into the library would be a cycle, and there is nothing an
     /// attachment needs to know about a song.
     attachments: AttachmentsStore,
+    /// The sets a song can belong to.
+    ///
+    /// A song does not own its memberships the way it owns its attachments —
+    /// `Setlist.songs` is the setlist's own edge, not this store's — but
+    /// deleting a song is still this store's job, and `@on_delete(remove)` on
+    /// that edge means the database has already dropped the song from every
+    /// set by the time [`delete`](Self::delete) returns. `SetlistsStore` has
+    /// no way to hear that happen on its own — nothing about a delete touches
+    /// its signal — so this handle exists for exactly one call:
+    /// [`SetlistsStore::forget_song`](crate::store::SetlistsStore::forget_song),
+    /// the setlist half of the same seam `attachments` above is the chart
+    /// half of. Same one-way rule: `SetlistsStore` does not hold a
+    /// `SongsStore` back.
+    setlists: SetlistsStore,
 }
 
 impl SongsStore {
-    /// In memory only — no database behind it. The attachments store it gets
-    /// is its own, and equally in memory: the two have to share a `Storage` or
-    /// half the library would be persistent and half of it would not.
+    /// In memory only — no database behind it. The attachments and setlists
+    /// stores it gets are its own, and equally in memory: the three have to
+    /// share a `Storage` or the library would be part persistent and part not.
     pub fn new(seed: Vec<Song>) -> Self {
         let storage = Storage::in_memory();
-        Self::restored(storage, AttachmentsStore::restored(storage, Vec::new()), seed)
+        Self::restored(
+            storage,
+            AttachmentsStore::restored(storage, Vec::new()),
+            SetlistsStore::restored(storage, Vec::new()),
+            seed,
+        )
     }
 
     /// The library as it was left, behind the storage that will keep it.
-    pub fn restored(storage: Storage, attachments: AttachmentsStore, songs: Vec<Song>) -> Self {
+    ///
+    /// `setlists` is handed in rather than built here because it has to be
+    /// the *same* store the rest of the app reads — `app()` constructs it
+    /// first, with no dependency of its own, and passes it down for exactly
+    /// that reason.
+    pub fn restored(
+        storage: Storage,
+        attachments: AttachmentsStore,
+        setlists: SetlistsStore,
+        songs: Vec<Song>,
+    ) -> Self {
         let next = songs.iter().map(|s| s.id).max().unwrap_or(0) + 1;
         Self {
             songs: Signal::new(songs),
             next_id: Signal::new(next),
             storage,
             attachments,
+            setlists,
         }
     }
 
@@ -203,13 +233,28 @@ impl SongsStore {
     }
 
     /// The schema takes the song's attachments with it and drops it from every
-    /// setlist. In-memory setlists keep the id until the next launch; nothing
-    /// renders for a song that is not there, so it shows as already gone.
+    /// setlist — `@on_delete(cascade)` on `Attachment.song` for the first,
+    /// `@on_delete(remove)` on `Setlist.songs` for the second — and neither
+    /// signal has a way to learn what a delete policy did on its own. So both
+    /// halves are handled the same way: collect what is about to be doomed
+    /// before the write, and once it lands, tell the signal directly rather
+    /// than waiting for the next launch to notice.
     ///
-    /// Its charts are not left that way. `@on_delete(cascade)` takes the rows
-    /// and `Repo::delete_song` takes the directories, but the attachments
-    /// signal has no way to learn either happened, so the ids are collected
-    /// before the delete and dropped from it afterwards.
+    /// Charts: `Repo::delete_song` takes the rows *and* the directories, so
+    /// the attachment ids are collected up front and
+    /// [`forget_all`](AttachmentsStore::forget_all) drops them from
+    /// `attachments` afterwards.
+    ///
+    /// Setlists: nothing needs collecting — every running order is already in
+    /// memory — so [`SetlistsStore::forget_song`] just walks `setlists` and
+    /// removes this id from each one directly. This used to be the part that
+    /// did not happen: a deleted song lingered as an id in `song_ids` until
+    /// the next launch, invisible because every read already filters through
+    /// [`get`](Self::get), but real underneath — `rows`' positions on
+    /// `setlist_detail` index into that raw list, so a stale id there could
+    /// point a reorder tap at the wrong song. `forget_song` closes that,
+    /// including taking a pending removal (`SetlistsStore::last_removal`) with it
+    /// if it named this song.
     pub fn delete(self, id: SongId) {
         let doomed = self.get(id).map(|s| s.attachments).unwrap_or_default();
         if !self
@@ -220,6 +265,7 @@ impl SongsStore {
         }
         self.songs.update(|list| list.retain(|s| s.id != id));
         self.attachments.forget_all(&doomed);
+        self.setlists.forget_song(id);
     }
 
     /// A copy of the song's data under a new id, from the overflow menu.
@@ -457,6 +503,83 @@ mod tests {
         );
         assert_eq!(songs.attachments().get(kept).unwrap().title, "ripple.txt");
         assert_eq!(songs.get(other).unwrap().attachments, vec![kept]);
+    }
+
+    // ── delete and the setlist half of it (J5) ──────────────────────────────
+    //
+    // `store()` above builds a `SongsStore` through `new`, which mints its own
+    // private `SetlistsStore` nobody else can see — fine for the attachment
+    // tests, useless for these, which need the *same* `SetlistsStore` a
+    // setlist screen would be holding. So these build the trio by hand, the
+    // way `crate::app` and `Session::open` (`store/storage.rs`) do.
+
+    fn linked() -> (SongsStore, SetlistsStore) {
+        let storage = Storage::in_memory();
+        let attachments = AttachmentsStore::restored(storage, Vec::new());
+        let setlists = SetlistsStore::restored(storage, Vec::new());
+        let songs = SongsStore::restored(
+            storage,
+            attachments,
+            setlists,
+            vec![Song::new(1, "Carolina", "M. Ward"), Song::new(2, "Ripple", "Grateful Dead")],
+        );
+        (songs, setlists)
+    }
+
+    #[test]
+    fn deleting_a_song_drops_it_from_every_setlist_immediately() {
+        let (songs, setlists) = linked();
+        let friday = setlists.add("Friday set");
+        let saturday = setlists.add("Saturday set");
+        setlists.add_songs(friday, &[1, 2]);
+        setlists.add_songs(saturday, &[2]);
+
+        songs.delete(1);
+
+        assert_eq!(
+            setlists.get(friday).unwrap().song_ids,
+            vec![2],
+            "gone the moment the delete lands, not at the next launch"
+        );
+        assert_eq!(setlists.get(saturday).unwrap().song_ids, vec![2], "and a set it was never in stays that way");
+    }
+
+    /// The bug this seam replaces: a stale id sitting in `song_ids` is
+    /// invisible on screen — every read already filters through
+    /// [`SongsStore::get`] — but a reorder still indexes into the *raw* list,
+    /// so a set holding one dead id could send a reorder tap to the wrong
+    /// song. Deleting the song has to remove the id, not just stop it from
+    /// rendering.
+    #[test]
+    fn a_deleted_songs_id_does_not_linger_where_a_reorder_could_still_find_it() {
+        let (songs, setlists) = linked();
+        let set = setlists.add("Friday set");
+        setlists.add_songs(set, &[1, 2]);
+
+        songs.delete(1);
+
+        assert!(
+            !setlists.get(set).unwrap().song_ids.contains(&1),
+            "not merely unrenderable — actually gone from the running order"
+        );
+    }
+
+    /// A song can come out of a set (arming the undo offer) and then be
+    /// deleted from the library outright before anyone taps Undo. See
+    /// `SetlistsStore::forget_song`'s own doc comment for what `undo_removal`
+    /// would otherwise do with the dead id.
+    #[test]
+    fn deleting_a_song_that_is_the_pending_undo_spends_the_offer_too() {
+        let (songs, setlists) = linked();
+        let set = setlists.add("Friday set");
+        setlists.add_songs(set, &[1, 2]);
+        setlists.remove_song(set, 1);
+        assert!(setlists.last_removal.get().is_some(), "the setup is an offer standing");
+
+        songs.delete(1);
+
+        assert_eq!(setlists.last_removal.get(), None, "nothing left to put back");
+        assert!(!setlists.undo_removal());
     }
 
     #[test]

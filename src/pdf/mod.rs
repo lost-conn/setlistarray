@@ -337,7 +337,7 @@ mod tests {
     use crate::model::Song;
     use crate::picker::test_support::Canned;
     use crate::picker::{FilePicker, Picked};
-    use crate::store::{AttachmentsStore, Storage};
+    use crate::store::{AttachmentsStore, SetlistsStore, Storage};
 
     /// A library with a real directory behind it, because the whole point of
     /// [`import`] is that bytes land somewhere.
@@ -345,7 +345,8 @@ mod tests {
         let dir = scratch(name);
         let storage = Storage::open(&dir);
         let attachments = AttachmentsStore::restored(storage, Vec::new());
-        let songs = SongsStore::restored(storage, attachments, Vec::new());
+        let setlists = SetlistsStore::restored(storage, Vec::new());
+        let songs = SongsStore::restored(storage, attachments, setlists, Vec::new());
         songs.create(Song::new(0, "Carolina", "M. Ward")).expect("a song");
         (songs, attachments, storage)
     }

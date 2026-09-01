@@ -1151,7 +1151,8 @@ verse two"))]);
         let dir = crate::db::scratch(name);
         let storage = crate::store::Storage::open(&dir);
         let attachments = AttachmentsStore::restored(storage, Vec::new());
-        let songs = SongsStore::restored(storage, attachments, Vec::new());
+        let setlists = SetlistsStore::restored(storage, Vec::new());
+        let songs = SongsStore::restored(storage, attachments, setlists, Vec::new());
         songs.create(Song::new(0, "Carolina", "M. Ward")).expect("a song");
         (songs, attachments, 1)
     }

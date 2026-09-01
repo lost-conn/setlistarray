@@ -256,10 +256,11 @@ mod tests {
             });
             let loaded = storage.load();
             let attachments = AttachmentsStore::restored(storage, loaded.attachments);
+            let setlists = SetlistsStore::restored(storage, loaded.setlists);
             Self {
                 storage,
-                songs: SongsStore::restored(storage, attachments, loaded.songs),
-                setlists: SetlistsStore::restored(storage, loaded.setlists),
+                songs: SongsStore::restored(storage, attachments, setlists, loaded.songs),
+                setlists,
                 attachments,
                 view: LibraryViewStore::restored(storage),
                 settings: SettingsStore::restored(storage),
@@ -756,6 +757,7 @@ mod tests {
         let songs = SongsStore::restored(
             storage,
             AttachmentsStore::restored(storage, Vec::new()),
+            SetlistsStore::restored(storage, Vec::new()),
             vec![phantom],
         );
 
@@ -781,6 +783,7 @@ mod tests {
         let songs = SongsStore::restored(
             storage,
             AttachmentsStore::restored(storage, Vec::new()),
+            SetlistsStore::restored(storage, Vec::new()),
             vec![Song::new(9_999, "Carolina", "M. Ward")],
         );
 
@@ -809,6 +812,7 @@ mod tests {
         let songs = SongsStore::restored(
             storage,
             AttachmentsStore::restored(storage, Vec::new()),
+            SetlistsStore::restored(storage, Vec::new()),
             Vec::new(),
         );
         let id = songs.add("Carolina", "M. Ward");

@@ -416,3 +416,100 @@ fn rows(setlists: SetlistsStore, songs: SongsStore, id: SetlistId) -> Vec<Row> {
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::store::AttachmentsStore;
+
+    /// Stores wired the way `crate::app` wires them: `SongsStore` holds the
+    /// very `SetlistsStore` this screen reads, which is what lets
+    /// `SongsStore::delete` reach in and drop a song's id out of the running
+    /// order the instant the delete lands (card J5). `SongsStore::new` will
+    /// not do here — it mints its own private `SetlistsStore` nobody else can
+    /// see, which is fine for a screen that only ever reads one store at a
+    /// time and wrong for this one.
+    fn linked(songs: Vec<Song>) -> (SongsStore, SetlistsStore) {
+        let storage = crate::store::Storage::in_memory();
+        let attachments = AttachmentsStore::restored(storage, Vec::new());
+        let setlists = SetlistsStore::restored(storage, Vec::new());
+        let songs = SongsStore::restored(storage, attachments, setlists, songs);
+        (songs, setlists)
+    }
+
+    /// A three-song set, open the way this screen would have it open when the
+    /// delete in each test below arrives — not a contrived state, but the
+    /// Delete two taps away on the song's own overflow menu, reachable while
+    /// this exact screen is on top.
+    fn a_set_of_three() -> (SongsStore, SetlistsStore, SetlistId) {
+        let (songs, setlists) = linked(vec![
+            Song::new(1, "Carolina", "M. Ward"),
+            Song::new(2, "Ripple", "Grateful Dead"),
+            Song::new(3, "Blackbird", "The Beatles"),
+        ]);
+        let id = setlists.add("Friday set");
+        setlists.add_songs(id, &[1, 2, 3]);
+        (songs, setlists, id)
+    }
+
+    /// The screen's own row list, not just the store's `song_ids` — this is
+    /// what would still have shown three rows before J5, since `rows` already
+    /// filtered a stale id out of the *positions* it drew even while
+    /// `song_ids` itself still held it underneath.
+    #[test]
+    fn deleting_a_song_mid_session_removes_its_row_from_the_open_screen() {
+        let (songs, setlists, id) = a_set_of_three();
+        assert_eq!(rows(setlists, songs, id).len(), 3);
+
+        songs.delete(2);
+
+        let after = rows(setlists, songs, id);
+        let titles: Vec<SongId> = after.iter().map(|r| r.id).collect();
+        assert_eq!(titles, vec![1, 3]);
+        // And it is not merely unrenderable: the running order the store
+        // holds is one song shorter, not three ids with one that draws
+        // nothing.
+        assert_eq!(setlists.get(id).unwrap().song_ids, vec![1, 3]);
+    }
+
+    /// The bug a stale id actually caused, and the reason "nothing renders
+    /// for it" was not the same thing as "harmless": `rows` numbers a row by
+    /// its position in the *filtered* list, but the reorder arrows call
+    /// `SetlistsStore::reorder` with that same number against the *raw*
+    /// `song_ids`. A dead id sitting between two live ones made those two
+    /// numbers disagree — row 1's arrow would have moved whatever `song_ids`
+    /// held at index 1, which was the dead id, not the song drawn there.
+    #[test]
+    fn a_reorder_after_a_mid_session_delete_moves_the_song_the_screen_actually_shows() {
+        let (songs, setlists, id) = a_set_of_three();
+        songs.delete(2);
+
+        let after = rows(setlists, songs, id);
+        assert_eq!(after[1].id, 3, "Blackbird is drawn second now");
+        assert_eq!(after[1].index, 1, "and its index agrees with song_ids");
+
+        setlists.reorder(id, after[1].index, 0);
+
+        assert_eq!(
+            setlists.get(id).unwrap().song_ids,
+            vec![3, 1],
+            "the move landed on Blackbird, the song under the arrow that was tapped"
+        );
+    }
+
+    /// The set-of-nothing case: this screen's own early return, exercised
+    /// with the linked stores so the empty state still comes from a real
+    /// delete rather than an empty set built by hand.
+    #[test]
+    fn deleting_every_song_in_a_set_leaves_it_open_but_empty() {
+        let (songs, setlists) = linked(vec![Song::new(1, "Carolina", "M. Ward")]);
+        let id = setlists.add("Friday set");
+        setlists.add_song(id, 1);
+
+        songs.delete(1);
+
+        assert!(rows(setlists, songs, id).is_empty());
+        assert!(setlists.get(id).is_some(), "the set itself is untouched, only empty");
+    }
+}

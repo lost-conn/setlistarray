@@ -218,6 +218,40 @@ impl SetlistsStore {
         self.setlists.update(|list| list.retain(|s| s.id != id));
     }
 
+    /// Drop one song id from every in-memory running order, without writing
+    /// anything back to storage.
+    ///
+    /// Mirrors [`AttachmentsStore::forget_all`](crate::store::AttachmentsStore::forget_all):
+    /// `@on_delete(remove)` on `Setlist.songs` already unlinked this song from
+    /// every set in the database the instant `Repo::delete_song` ran, so a
+    /// write here would ask the database to remove a membership that is
+    /// already gone — and, worse, would renumber `position` a second time on
+    /// top of whatever that delete already wrote. In memory only, and
+    /// deliberately so.
+    ///
+    /// The one thing a signal write cannot skip is the pending undo: if
+    /// [`last_removal`](Self::last_removal) names exactly this song, it goes
+    /// too. Left standing, `undo_removal` would reinsert the dead id into
+    /// `song_ids`, `commit_order` would write it through `Repo::set_members` —
+    /// which skips a song id that no longer resolves, by its own doc comment —
+    /// and the signal would then hold an id the database had just quietly
+    /// declined to link. That is the exact divergence this method exists to
+    /// prevent, so the offer cannot survive the song it promises to restore.
+    ///
+    /// Only [`SongsStore::delete`](crate::store::SongsStore::delete) calls
+    /// this — a leaf store reaching back to unlink itself from every set would
+    /// be the cycle the dependency between these two stores is built to avoid.
+    pub(super) fn forget_song(self, song: SongId) {
+        self.setlists.update(|list| {
+            for setlist in list.iter_mut() {
+                setlist.song_ids.retain(|id| *id != song);
+            }
+        });
+        if self.last_removal.get().is_some_and(|r| r.song == song) {
+            self.last_removal.set(None);
+        }
+    }
+
     /// A copy of the setlist's running order under a new id, from the
     /// long-press card menu. Songs are still shared by reference — nothing
     /// about the songs themselves is touched. The copy hasn't been played,
@@ -580,6 +614,58 @@ mod tests {
         assert!(setlists.get(id).is_some(), "the setup is a set that exists");
         setlists.delete(id);
         assert!(setlists.get(id).is_none());
+    }
+
+    // ── forget_song (J5) ────────────────────────────────────────────────
+
+    #[test]
+    fn forget_song_drops_the_id_from_every_set_that_holds_it() {
+        let setlists = SetlistsStore::new(Vec::new());
+        let friday = setlists.add("Friday set");
+        let saturday = setlists.add("Saturday set");
+        setlists.add_songs(friday, &[1, 2, 3]);
+        setlists.add_songs(saturday, &[2, 3]);
+
+        setlists.forget_song(2);
+
+        assert_eq!(setlists.get(friday).unwrap().song_ids, vec![1, 3]);
+        assert_eq!(setlists.get(saturday).unwrap().song_ids, vec![3]);
+    }
+
+    #[test]
+    fn forget_song_is_a_no_op_for_a_song_no_set_holds() {
+        let (setlists, id) = five();
+        setlists.forget_song(999);
+        assert_eq!(order(setlists, id), vec![10, 20, 30, 40, 50]);
+    }
+
+    /// The sequence J5 was written for: a song comes out of a set (arming the
+    /// undo offer) and is then deleted from the library outright, before
+    /// anyone taps Undo. Left alone, `undo_removal` would put a dead id back
+    /// into `song_ids` — see `forget_song`'s own doc comment for why that id
+    /// would then diverge from what `Repo::set_members` actually links.
+    #[test]
+    fn forgetting_a_song_that_is_the_pending_undo_spends_the_offer() {
+        let (setlists, id) = five();
+        setlists.remove_song(id, 30);
+        assert!(setlists.last_removal.get().is_some(), "the setup is an offer standing");
+
+        setlists.forget_song(30);
+
+        assert_eq!(setlists.last_removal.get(), None, "there is nothing left to undo");
+        assert!(!setlists.undo_removal());
+        assert_eq!(order(setlists, id), vec![10, 20, 40, 50], "and no dead id came back");
+    }
+
+    #[test]
+    fn forgetting_a_song_that_is_not_the_pending_undo_leaves_the_offer_alone() {
+        let (setlists, id) = five();
+        setlists.remove_song(id, 30);
+        let removal = setlists.last_removal.get();
+
+        setlists.forget_song(999);
+
+        assert_eq!(setlists.last_removal.get(), removal, "an unrelated deletion is not this offer's business");
     }
 
     #[test]

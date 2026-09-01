@@ -151,13 +151,21 @@ pub fn app() -> NodeHandle {
 
     let settings = create_store(SettingsStore::restored(storage));
 
-    // Attachments first: a song owns its charts, so `SongsStore` is handed the
-    // store it mutates them through. The dependency runs one way (see the note
-    // on `SongsStore::attachments`), so there is no wiring-up step and no
-    // half-built store either of them can be observed in.
+    // Setlists before songs: `SongsStore::delete` reaches into `SetlistsStore`
+    // to drop a deleted song's id out of every running order the instant the
+    // delete lands (card J5), which means `SongsStore` has to be handed a
+    // `SetlistsStore` that already exists. `SetlistsStore` itself depends on
+    // nothing, so it can move first without anything left half-built.
+    //
+    // Attachments before songs for the same reason: a song owns its charts,
+    // so `SongsStore` is handed the store it mutates them through too. The
+    // dependency runs one way in both cases (see the notes on
+    // `SongsStore::attachments` and `SongsStore::setlists`), so there is no
+    // wiring-up step and no half-built store any of the three can be observed
+    // in.
     let attachments = create_store(AttachmentsStore::restored(storage, loaded.attachments));
-    let songs = create_store(SongsStore::restored(storage, attachments, loaded.songs));
     let setlists = create_store(SetlistsStore::restored(storage, loaded.setlists));
+    let songs = create_store(SongsStore::restored(storage, attachments, setlists, loaded.songs));
     create_store(LibraryViewStore::restored(storage));
     let playback = create_store(PlaybackStore::new());
     let nav = create_store(NavStore::new());
