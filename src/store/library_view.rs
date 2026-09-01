@@ -1,7 +1,7 @@
 use rinch::prelude::*;
 use rinch_tabler_icons::TablerIcon;
 
-use crate::model::Song;
+use crate::model::{Confidence, Song};
 use crate::store::Storage;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -225,6 +225,127 @@ impl Density {
     }
 }
 
+/// The library's filters — card G3, and no wireframe drew this: the handoff's
+/// `Filter` chip (`design_handoff_setlistarray/README.md:144`) is
+/// `background: fill, color: muted` and nothing more, never wired to a sheet.
+/// See `src/screens/filter_sheet.rs` for the sheet this drives and the
+/// decisions it made in the wireframe's absence.
+///
+/// Four facets — Confidence, Tag, Tuning, has-a-chart — each a set of values
+/// to accept. **A song passes a facet with nothing picked in it**, which is
+/// what lets all four start wide open with no "any" chip to tap first, and
+/// [`matches`](Self::matches) is the one place that rule is written down.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Filters {
+    /// `None` in this list means the `Unrated` chip — `confidence: None` on
+    /// the song, not "no confidence chip selected". That second meaning is
+    /// [`is_active`](Self::is_active): an *empty* `Vec` here, not a `Vec`
+    /// containing `None`.
+    pub confidences: Vec<Option<Confidence>>,
+    pub tags: Vec<String>,
+    pub tunings: Vec<String>,
+    pub has_chart: bool,
+}
+
+impl Filters {
+    /// How many chips are lit, across every facet — what the `Filter` chip's
+    /// `· N` counts and what [`is_active`](Self::is_active) is asking about.
+    pub fn count(&self) -> usize {
+        self.confidences.len() + self.tags.len() + self.tunings.len() + usize::from(self.has_chart)
+    }
+
+    /// Whether any facet constrains anything at all — the difference between
+    /// the muted `Filter` chip and its active, counted treatment.
+    pub fn is_active(&self) -> bool {
+        self.count() > 0
+    }
+
+    pub fn is_confidence_selected(&self, confidence: Option<Confidence>) -> bool {
+        self.confidences.contains(&confidence)
+    }
+
+    pub fn toggle_confidence(&mut self, confidence: Option<Confidence>) {
+        match self.confidences.iter().position(|c| *c == confidence) {
+            Some(i) => {
+                self.confidences.remove(i);
+            }
+            None => self.confidences.push(confidence),
+        }
+    }
+
+    /// Tags are compared case-insensitively, the same rule [`parse_tags`]
+    /// dedupes by and [`crate::derive::library_tags`] lists by — otherwise a
+    /// chip for `Campfire` could sit selected beside a song's own `campfire`
+    /// and the two would never agree that they name the same tag.
+    ///
+    /// [`parse_tags`]: crate::derive::parse_tags
+    pub fn is_tag_selected(&self, tag: &str) -> bool {
+        self.tags.iter().any(|t| t.eq_ignore_ascii_case(tag))
+    }
+
+    pub fn toggle_tag(&mut self, tag: String) {
+        match self.tags.iter().position(|t| t.eq_ignore_ascii_case(&tag)) {
+            Some(i) => {
+                self.tags.remove(i);
+            }
+            None => self.tags.push(tag),
+        }
+    }
+
+    pub fn is_tuning_selected(&self, tuning: &str) -> bool {
+        self.tunings.iter().any(|t| t.eq_ignore_ascii_case(tuning))
+    }
+
+    pub fn toggle_tuning(&mut self, tuning: String) {
+        match self.tunings.iter().position(|t| t.eq_ignore_ascii_case(&tuning)) {
+            Some(i) => {
+                self.tunings.remove(i);
+            }
+            None => self.tunings.push(tuning),
+        }
+    }
+
+    pub fn toggle_has_chart(&mut self) {
+        self.has_chart = !self.has_chart;
+    }
+
+    /// Whether `song` survives every facet that has a selection — OR within a
+    /// facet, AND across them. `crate::derive::grouped` calls this before
+    /// bucketing, so a group header counts what it actually contains rather
+    /// than the unfiltered book underneath it.
+    ///
+    /// **A stale tag or tuning is read exactly as this function reads
+    /// anything else the book no longer has: nothing carries it, so nothing
+    /// passes that facet.** The alternative was pruning the value out of the
+    /// stored filter the moment its last song is deleted, the way card J5's
+    /// `SetlistsStore::forget_song` prunes a dead id out of `song_ids` the
+    /// instant `SongsStore::delete` runs. That pattern only works there
+    /// because `SongsStore` already holds the `SetlistsStore` it reaches
+    /// into; doing the same here would mean handing `SongsStore` a
+    /// `LibraryViewStore` too, a second cross-store dependency, to keep one
+    /// filter facet tidy. `matches` alone already gives the same *visible*
+    /// answer — a facet nothing in the book satisfies excludes everything,
+    /// same as it would for a tag never typed — and Clear is one tap away.
+    /// So the stored selection lingers, unreachable through the sheet once
+    /// its chip stops being offered, until Clear or a fresh pick replaces it.
+    pub fn matches(&self, song: &Song) -> bool {
+        let confidence_ok =
+            self.confidences.is_empty() || self.confidences.contains(&song.confidence);
+        let tag_ok = self.tags.is_empty()
+            || self
+                .tags
+                .iter()
+                .any(|t| song.tags.iter().any(|s| s.eq_ignore_ascii_case(t)));
+        let tuning_ok = self.tunings.is_empty()
+            || song
+                .tuning
+                .as_deref()
+                .is_some_and(|t| self.tunings.iter().any(|f| f.eq_ignore_ascii_case(t)));
+        let chart_ok = !self.has_chart || song.has_chart();
+        confidence_ok && tag_ok && tuning_ok && chart_ok
+    }
+}
+
 /// One rendered group: its header label and the songs under it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Group {
@@ -268,6 +389,8 @@ pub struct LibraryViewStore {
     pub collapsed: Signal<Vec<String>>,
     /// Groups the user has expanded past the truncation limit.
     pub expanded: Signal<Vec<String>>,
+    /// The library's active filters (card G3) — see [`Filters`].
+    pub filters: Signal<Filters>,
     storage: Storage,
 }
 
@@ -290,6 +413,7 @@ impl LibraryViewStore {
             density: Signal::new(preferences.density),
             collapsed: Signal::new(preferences.collapsed),
             expanded: Signal::new(preferences.expanded),
+            filters: Signal::new(preferences.filters),
             storage,
         }
     }
@@ -351,6 +475,39 @@ impl LibraryViewStore {
         self.storage.remember(|p| p.group_by = group_by);
     }
 
+    /// Every filter mutator below follows [`toggle_collapsed`](Self::toggle_collapsed)'s
+    /// own shape: mutate the signal, then write the whole `Filters` back to
+    /// the one `Preferences` row it lives in.
+    pub fn toggle_confidence(self, confidence: Option<Confidence>) {
+        self.filters.update(|f| f.toggle_confidence(confidence));
+        let filters = self.filters.get();
+        self.storage.remember(|p| p.filters = filters);
+    }
+
+    pub fn toggle_tag_filter(self, tag: String) {
+        self.filters.update(|f| f.toggle_tag(tag));
+        let filters = self.filters.get();
+        self.storage.remember(|p| p.filters = filters);
+    }
+
+    pub fn toggle_tuning_filter(self, tuning: String) {
+        self.filters.update(|f| f.toggle_tuning(tuning));
+        let filters = self.filters.get();
+        self.storage.remember(|p| p.filters = filters);
+    }
+
+    pub fn toggle_has_chart_filter(self) {
+        self.filters.update(|f| f.toggle_has_chart());
+        let filters = self.filters.get();
+        self.storage.remember(|p| p.filters = filters);
+    }
+
+    /// The filter sheet's footer — empties every facet in one write.
+    pub fn clear_filters(self) {
+        self.filters.set(Filters::default());
+        self.storage.remember(|p| p.filters = Filters::default());
+    }
+
     pub fn toggle_density(self) {
         let density = match self.density.get() {
             Density::Comfortable => Density::Compact,
@@ -360,21 +517,28 @@ impl LibraryViewStore {
         self.storage.remember(|p| p.density = density);
     }
 
-    /// The library list, grouped and sorted. Derived on read — the rules live
-    /// in [`crate::derive`] as plain functions so they can be tested without a
-    /// window.
+    /// The library list, filtered, grouped and sorted. Derived on read — the
+    /// rules live in [`crate::derive`] as plain functions so they can be
+    /// tested without a window.
     ///
     /// [`query`](Self::query) is deliberately not one of the inputs any more.
     /// Card G1 moved the typing to the search screen (`1p`) and left the
     /// library showing the whole book; `crate::derive::grouped`'s own header
     /// carries the argument for why a library that stays filtered behind a
     /// field that no longer types is the worse of the two.
+    ///
+    /// [`filters`](Self::filters) *is* one of the inputs, and deliberately the
+    /// first thing `crate::derive::grouped` does with the book — card G3's
+    /// Filter chip narrows what is actually in your book, which `query` no
+    /// longer does, so the two are not the contradiction they look like side
+    /// by side.
     pub fn grouped(self, all: Vec<Song>) -> Vec<Group> {
         crate::derive::grouped(
             all,
             self.group_by.get(),
             self.sort_field.get(),
             self.sort_dir.get(),
+            &self.filters.get(),
         )
     }
 }
@@ -382,5 +546,142 @@ impl LibraryViewStore {
 impl Default for LibraryViewStore {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn song(id: u32) -> Song {
+        Song::new(id, "Title", "Artist")
+    }
+
+    #[test]
+    fn nothing_selected_matches_every_song() {
+        let filters = Filters::default();
+        assert!(filters.matches(&song(1)));
+        let mut solid = song(2);
+        solid.confidence = Some(Confidence::Solid);
+        assert!(filters.matches(&solid));
+    }
+
+    #[test]
+    fn confidence_is_or_within_the_facet() {
+        let filters = Filters {
+            confidences: vec![Some(Confidence::Solid), Some(Confidence::Rusty)],
+            ..Default::default()
+        };
+        let mut solid = song(1);
+        solid.confidence = Some(Confidence::Solid);
+        let mut rusty = song(2);
+        rusty.confidence = Some(Confidence::Rusty);
+        let mut learning = song(3);
+        learning.confidence = Some(Confidence::Learning);
+
+        assert!(filters.matches(&solid));
+        assert!(filters.matches(&rusty));
+        assert!(!filters.matches(&learning));
+    }
+
+    #[test]
+    fn unrated_matches_a_song_with_no_confidence_set() {
+        let filters = Filters {
+            confidences: vec![None],
+            ..Default::default()
+        };
+        assert!(filters.matches(&song(1)));
+        let mut rated = song(2);
+        rated.confidence = Some(Confidence::Solid);
+        assert!(!filters.matches(&rated));
+    }
+
+    #[test]
+    fn confidence_and_tag_are_anded_across_facets() {
+        let filters = Filters {
+            confidences: vec![Some(Confidence::Solid), Some(Confidence::Rusty)],
+            tags: vec!["campfire".into()],
+            ..Default::default()
+        };
+        // Solid, but not tagged — fails the tag facet even though it clears
+        // the confidence one.
+        let mut solid_untagged = song(1);
+        solid_untagged.confidence = Some(Confidence::Solid);
+        assert!(!filters.matches(&solid_untagged));
+
+        // Rusty and tagged campfire — clears both.
+        let mut rusty_tagged = song(2);
+        rusty_tagged.confidence = Some(Confidence::Rusty);
+        rusty_tagged.tags = vec!["Campfire".into()];
+        assert!(filters.matches(&rusty_tagged));
+
+        // Learning and tagged — clears the tag facet, fails confidence.
+        let mut learning_tagged = song(3);
+        learning_tagged.confidence = Some(Confidence::Learning);
+        learning_tagged.tags = vec!["campfire".into()];
+        assert!(!filters.matches(&learning_tagged));
+    }
+
+    #[test]
+    fn tag_matching_is_case_insensitive() {
+        let filters = Filters {
+            tags: vec!["Campfire".into()],
+            ..Default::default()
+        };
+        let mut song = song(1);
+        song.tags = vec!["campfire".into()];
+        assert!(filters.matches(&song));
+    }
+
+    #[test]
+    fn tuning_matching_is_case_insensitive() {
+        let filters = Filters {
+            tunings: vec!["drop d".into()],
+            ..Default::default()
+        };
+        let mut song = song(1);
+        song.tuning = Some("Drop D".into());
+        assert!(filters.matches(&song));
+    }
+
+    #[test]
+    fn has_chart_excludes_a_song_with_no_attachments() {
+        let filters = Filters {
+            has_chart: true,
+            ..Default::default()
+        };
+        assert!(!filters.matches(&song(1)));
+
+        let mut charted = song(2);
+        charted.attachments.push(7);
+        assert!(filters.matches(&charted));
+    }
+
+    #[test]
+    fn toggling_a_confidence_twice_leaves_it_unselected() {
+        let mut filters = Filters::default();
+        filters.toggle_confidence(Some(Confidence::Solid));
+        assert!(filters.is_confidence_selected(Some(Confidence::Solid)));
+        filters.toggle_confidence(Some(Confidence::Solid));
+        assert!(!filters.is_confidence_selected(Some(Confidence::Solid)));
+        assert!(filters.confidences.is_empty());
+    }
+
+    #[test]
+    fn an_untouched_filter_set_is_not_active() {
+        assert!(!Filters::default().is_active());
+        assert_eq!(Filters::default().count(), 0);
+    }
+
+    #[test]
+    fn count_adds_across_every_facet() {
+        let filters = Filters {
+            confidences: vec![Some(Confidence::Solid), None],
+            tags: vec!["campfire".into()],
+            tunings: vec!["drop d".into(), "standard".into()],
+            has_chart: true,
+        };
+        assert_eq!(filters.count(), 6);
+        assert!(filters.is_active());
     }
 }

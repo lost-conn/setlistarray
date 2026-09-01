@@ -54,9 +54,9 @@ use rinch_tabler_icons::TablerIcon;
 use db::DataDir;
 use platform::SafeArea;
 use screens::{
-    AddToSetlistSheet, AttachmentViewer, CaptureScreen, ChartEditor, Library, Performance,
-    RunningOrderSheet, Search, SetlistDetail, SetlistPicker, Settings, Setlists, SongDetail,
-    SongForm, SortGroupSheet,
+    AddToSetlistSheet, AttachmentViewer, CaptureScreen, ChartEditor, FilterSheet, Library,
+    Performance, RunningOrderSheet, Search, SetlistDetail, SetlistPicker, Settings, Setlists,
+    SongDetail, SongForm, SortGroupSheet,
 };
 use store::{
     AttachmentsStore, LibraryViewStore, NavStore, PlaybackStore, Route, SettingsStore,
@@ -356,7 +356,7 @@ pub fn app() -> NodeHandle {
 
             {bottom_nav(__scope, safe.bottom.max(NAV_MIN_GAP))}
 
-            // The four bottom sheets. All stay mounted for the life of the
+            // The five bottom sheets. All stay mounted for the life of the
             // app, parked below the fold, so that opening one has something to
             // slide. They sit last so they paint over the screen and the nav.
             //
@@ -366,6 +366,7 @@ pub fn app() -> NodeHandle {
             // scrim and all, and a sheet nested in that screen's own column
             // could only ever slide up inside the chart. See its header.
             SortGroupSheet {}
+            FilterSheet {}
             AddToSetlistSheet {}
             SetlistPicker {}
             RunningOrderSheet {}

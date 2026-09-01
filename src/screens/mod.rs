@@ -13,6 +13,9 @@ mod chart_editor;
 // argument `captured_page` makes, applied to the picture rather than to one
 // kind of it.
 mod chart_surface;
+// The filters sheet (card G3): the sheet behind the library's `Filter` chip.
+// No wireframe drew it — see its own header.
+mod filter_sheet;
 mod library;
 mod performance;
 // The running order (F3): the sheet behind performance mode's `≡ set` chip.
@@ -35,6 +38,7 @@ pub use add_to_setlist::AddToSetlistSheet;
 pub use attachment_viewer::AttachmentViewer;
 pub use capture::CaptureScreen;
 pub use chart_editor::ChartEditor;
+pub use filter_sheet::FilterSheet;
 pub use library::Library;
 pub use performance::Performance;
 pub use running_order::RunningOrderSheet;

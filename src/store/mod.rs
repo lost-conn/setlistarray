@@ -17,7 +17,7 @@ mod songs;
 mod storage;
 
 pub use attachments::AttachmentsStore;
-pub use library_view::{Density, Group, GroupBy, LibraryViewStore, SortDir, SortField};
+pub use library_view::{Density, Filters, Group, GroupBy, LibraryViewStore, SortDir, SortField};
 pub use nav::{NavStore, Route, Tab};
 pub use playback::PlaybackStore;
 pub use settings::{AccentChoice, PerformanceTheme, SettingsStore};

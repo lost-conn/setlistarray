@@ -200,6 +200,15 @@ nothing in the UI code assumes either platform. See "Android" below.
 - **Sort & group sheet** — wireframe `2c`. Group-by chips, every metadata field
   as a sort row, tap the active row to reverse, sparse fields greyed with a
   count but still selectable.
+- **Filters sheet** — no wireframe, card G3: the handoff's `Filter` chip
+  (`design_handoff_setlistarray/README.md:144`) was never wired to anything.
+  Confidence, Tag, Tuning and a has-a-chart toggle, OR within a facet and AND
+  across them; Tag and Tuning list only the values actually in the book and
+  disappear entirely when the book has none. The `Filter` chip reads
+  `Filter · N` the moment anything is picked, the Songs screen's sub-line
+  switches from `300 in your book` to `12 of 300` while a filter narrows it,
+  and a filter that leaves nothing standing gets its own panel with a
+  **Clear filters** way back. Persisted like density and grouping.
 - **Add / edit song** — wireframe `1j`. One screen for both. Title and artist
   visible, everything else behind a collapsed **More details**; the artist field
   autocompletes against the artists already in the book, with the `use

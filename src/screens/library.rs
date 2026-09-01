@@ -5,7 +5,7 @@ use rinch::prelude::*;
 use rinch_tabler_icons::TablerIcon;
 
 use crate::model::{AttachmentKind, Song};
-use crate::derive::{GROUP_PREVIEW, visible_songs};
+use crate::derive::{GROUP_PREVIEW, filter_chip_label, library_subtitle, visible_songs};
 use crate::menu::{FULL_WIDTH_TARGET, MENU_SURFACE, SongMenuItems};
 use crate::store::{
     AttachmentsStore, Density, LibraryViewStore, NavStore, Route, SettingsStore, SongsStore,
@@ -31,10 +31,10 @@ pub fn Library() -> NodeHandle {
                 div { style: "flex: 1;",
                     div { style: {format!("{T_SCREEN_TITLE}")}, "Songs" }
                     div { style: {format!("{T_META} margin-top: 7px;")},
-                        {|| format!("{} in your book · ", songs.count())}
+                        {|| library_subtitle(songs.songs.get(), &view.filters.get()).lead}
                         span {
                             style: "color: var(--sla-accent); font-weight: 600;",
-                            {|| format!("{} solid", songs.solid_count())}
+                            {|| format!("{} solid", library_subtitle(songs.songs.get(), &view.filters.get()).solid)}
                         }
                     }
                 }
@@ -90,10 +90,10 @@ pub fn Library() -> NodeHandle {
                     onclick: move || nav.sort_sheet_open.set(true),
                 }
                 Chip {
-                    label: "Filter",
-                    active: false,
+                    label: {|| filter_chip_label(view.filters.get().count())},
+                    active: {|| view.filters.get().is_active()},
                     selected: false,
-                    onclick: move || nav.sort_sheet_open.set(true),
+                    onclick: move || nav.filter_sheet_open.set(true),
                 }
             }
 
@@ -170,9 +170,25 @@ pub fn Library() -> NodeHandle {
                     }
                 }
 
+                // One `if`/`else if` chain rather than two independent `if`s
+                // beside it — `crate::derive`'s `SearchRow` header (`1p`, card
+                // G1) is the reason: several sibling conditionals toggling in
+                // the same scrolling parent is the shape that dropped a whole
+                // panel on the phone once already, and a chain is the one
+                // control-flow node the fix there settled on treating this
+                // kind of "which empty state, if any" question as.
                 if songs.songs.get().is_empty() {
                     div { style: {format!("{T_META_SMALL} text-align: center; padding: 48px 0;")},
                         "Nothing here yet. Add the first song you know how to play."
+                    }
+                } else if view.filters.get().is_active() && view.grouped(songs.songs.get()).is_empty() {
+                    div { style: {format!("{T_META_SMALL} text-align: center; padding: 48px 0;")},
+                        div { "Nothing in your book matches these filters." }
+                        div {
+                            onclick: move || view.clear_filters(),
+                            style: "color: var(--sla-accent); font-weight: 600; margin-top: 10px;",
+                            "Clear filters"
+                        }
                     }
                 }
             }

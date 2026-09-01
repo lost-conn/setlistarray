@@ -9,7 +9,7 @@ use rinch_tabler_icons::TablerIcon;
 
 use crate::model::{Confidence, Day, Setlist, SetlistId, Song, SongId, fmt_bytes, fmt_duration};
 use crate::store::{
-    AccentChoice, Density, Group, GroupBy, PerformanceTheme, Route, SortDir, SortField,
+    AccentChoice, Density, Filters, Group, GroupBy, PerformanceTheme, Route, SortDir, SortField,
 };
 
 /// How many rows a group shows before "Show N more".
@@ -40,7 +40,7 @@ pub fn filter_songs(songs: Vec<Song>, query: &str) -> Vec<Song> {
         .collect()
 }
 
-/// The library list, grouped and sorted.
+/// The library list, filtered, grouped and sorted.
 ///
 /// **It no longer takes a query, and that is card G1 removing a behaviour
 /// rather than an oversight.** The library's search field used to filter this
@@ -50,17 +50,37 @@ pub fn filter_songs(songs: Vec<Song>, query: &str) -> Vec<Song> {
 /// field on the screen to say why and nothing to clear — the dead-end H1 spent
 /// its own effort avoiding, one screen over. So the book reads as the whole
 /// book, and a question about it is asked somewhere the answer can be seen.
+///
+/// **`filters` is not that same mistake, and card G3 is why the two can sit
+/// side by side without contradicting each other.** `query` was a text field
+/// that filtered in place with no way to see or clear what was hiding the
+/// rest of the book; `filters` is a sheet with its own chip, its own count,
+/// its own Clear, and the library's own sub-line says "N of 300" the moment
+/// it is doing anything — see `crate::screens::library`. Applied first, before
+/// bucketing, so a group header counts what it actually contains rather than
+/// promising twelve songs and delivering a header that still says forty.
 pub fn grouped(
     songs: Vec<Song>,
     group_by: GroupBy,
     sort_field: SortField,
     sort_dir: SortDir,
+    filters: &Filters,
 ) -> Vec<Group> {
+    let songs = filter_by(songs, filters);
     let mut groups = group_songs(songs, group_by);
     for group in &mut groups {
         sort_songs(&mut group.songs, sort_field, sort_dir);
     }
     groups
+}
+
+/// The book with every song that fails an active filter facet removed. Its
+/// own function, rather than folded into [`grouped`], because two other
+/// readers need exactly this list and nothing past it: the Songs screen's
+/// sub-line counts it (`library_subtitle`, below) and its "nothing matches"
+/// panel asks whether it came back empty.
+pub fn filter_by(songs: Vec<Song>, filters: &Filters) -> Vec<Song> {
+    songs.into_iter().filter(|s| filters.matches(s)).collect()
 }
 
 /// Bucket songs by the active grouping. Empty buckets are dropped.
@@ -1037,6 +1057,23 @@ pub fn library_tags(songs: &[Song]) -> Vec<String> {
     tags
 }
 
+/// Every distinct tuning in the book, once each, A–Z — the filter sheet's
+/// (card G3) Tuning facet, and [`library_tags`]'s counterpart. Deduped and
+/// sorted the same case-insensitive way, for the same reason: "Drop D" and
+/// "drop d" are one tuning to everyone who did not happen to type it twice.
+pub fn library_tunings(songs: &[Song]) -> Vec<String> {
+    let mut tunings: Vec<String> = Vec::new();
+    for song in songs {
+        if let Some(tuning) = &song.tuning
+            && !tunings.iter().any(|t| t.eq_ignore_ascii_case(tuning))
+        {
+            tunings.push(tuning.clone());
+        }
+    }
+    tunings.sort_by_key(|t| t.to_lowercase());
+    tunings
+}
+
 /// The running count beside the picker's title: `2 picked`.
 ///
 /// Nothing at zero. An empty slot is not this app's house style, and a count
@@ -1118,6 +1155,71 @@ pub fn fill_note(count: usize) -> String {
     } else {
         format!("{count} songs have this")
     }
+}
+
+// ---------------------------------------------------------------------------
+// Filter sheet (no wireframe — card G3)
+// ---------------------------------------------------------------------------
+
+/// The `Filter` chip's own label: muted `Filter` with nothing picked,
+/// `Filter · N` the instant anything is — the same "count in the chip"
+/// treatment `crate::store::Filters::count` exists to feed.
+pub fn filter_chip_label(selected: usize) -> String {
+    if selected == 0 {
+        "Filter".to_string()
+    } else {
+        format!("Filter · {selected}")
+    }
+}
+
+/// The Songs screen's sub-line, and the number it colours in accent beside it,
+/// together — so the two can never disagree about what they are each counting.
+///
+/// **`41 solid` used to be a fact about the whole book; it is now a fact about
+/// whatever the filter left in front of you.** A book of 300 with 41 solid
+/// songs that a filter narrows to 12 would otherwise go on claiming 41 while
+/// the list under it can show at most 12 — so both numbers here are read off
+/// the *filtered* list, [`filter_by`]'s own output, not the unfiltered book.
+///
+/// The lead clause only switches away from `"N in your book · "` once a
+/// filter is actually doing something: an inactive `Filters` leaves `shown`
+/// equal to `all.len()`, and printing "12 of 12" on an ordinary, unfiltered
+/// library would be arithmetic nobody asked for, the same objection
+/// [`search_count_line`] raises about mixing two kinds of total.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LibrarySubtitle {
+    /// `"12 of 300 · "` or `"300 in your book · "` — the words before the
+    /// accent-coloured solid count.
+    pub lead: String,
+    pub solid: usize,
+}
+
+/// The filter sheet's own footer note, alongside its `Clear`/`Done` pair —
+/// [`fill_note`] above is the sort sheet's counterpart, and this is the same
+/// kind of sentence for the same reason: a footer that only ever draws a
+/// static hint is not telling anybody what the sheet in front of them is
+/// currently set to do.
+pub fn filter_sheet_note(selected: usize) -> String {
+    match selected {
+        0 => "Nothing selected — every song shows.".to_string(),
+        1 => "1 filter selected.".to_string(),
+        n => format!("{n} filters selected."),
+    }
+}
+
+pub fn library_subtitle(all: Vec<Song>, filters: &Filters) -> LibrarySubtitle {
+    let total = all.len();
+    let shown = filter_by(all, filters);
+    let solid = shown
+        .iter()
+        .filter(|s| s.confidence == Some(Confidence::Solid))
+        .count();
+    let lead = if filters.is_active() {
+        format!("{} of {total} · ", shown.len())
+    } else {
+        format!("{total} in your book · ")
+    };
+    LibrarySubtitle { lead, solid }
 }
 
 // ---------------------------------------------------------------------------
@@ -1525,6 +1627,123 @@ mod tests {
     #[test]
     fn grouping_by_none_of_an_empty_library_yields_no_groups() {
         assert!(group_songs(Vec::new(), GroupBy::None).is_empty());
+    }
+
+    // ── filtering (card G3) ─────────────────────────────────────────────
+
+    #[test]
+    fn no_filters_selected_leaves_grouped_untouched() {
+        let songs = vec![
+            rated(1, "Solid one", "A", Confidence::Solid),
+            rated(2, "Rusty one", "B", Confidence::Rusty),
+        ];
+        let groups = grouped(
+            songs,
+            GroupBy::Confidence,
+            SortField::Title,
+            SortDir::Asc,
+            &Filters::default(),
+        );
+        let total: usize = groups.iter().map(|g| g.songs.len()).sum();
+        assert_eq!(total, 2);
+    }
+
+    #[test]
+    fn grouped_counts_only_what_survives_the_filter() {
+        let songs = vec![
+            rated(1, "Solid one", "A", Confidence::Solid),
+            rated(2, "Solid two", "B", Confidence::Solid),
+            rated(3, "Rusty one", "C", Confidence::Rusty),
+        ];
+        let filters = Filters {
+            confidences: vec![Some(Confidence::Solid)],
+            ..Default::default()
+        };
+        let groups = grouped(songs, GroupBy::Confidence, SortField::Title, SortDir::Asc, &filters);
+        // Rusty has nothing left in it once the filter runs first, so its
+        // header does not appear at all — not an empty one.
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].label, "Solid");
+        assert_eq!(groups[0].songs.len(), 2);
+    }
+
+    #[test]
+    fn has_chart_filter_excludes_a_song_with_no_attachments() {
+        let bare = song(1, "Bare", "A");
+        let charted = with_chart(song(2, "Charted", "B"), 9);
+        let filters = Filters {
+            has_chart: true,
+            ..Default::default()
+        };
+        let found = filter_by(vec![bare, charted], &filters);
+        assert_eq!(titles(&found), ["Charted"]);
+    }
+
+    #[test]
+    fn library_tunings_lists_only_distinct_tunings_present() {
+        let mut drop_d = song(1, "One", "A");
+        drop_d.tuning = Some("Drop D".into());
+        let mut also_drop_d = song(2, "Two", "B");
+        also_drop_d.tuning = Some("drop d".into());
+        let mut standard = song(3, "Three", "C");
+        standard.tuning = Some("Standard".into());
+        let untuned = song(4, "Four", "D");
+
+        let tunings = library_tunings(&[drop_d, also_drop_d, standard, untuned]);
+        assert_eq!(tunings, vec!["Drop D".to_string(), "Standard".to_string()]);
+    }
+
+    #[test]
+    fn library_tunings_of_a_library_with_no_tunings_set_is_empty() {
+        assert!(library_tunings(&[song(1, "One", "A")]).is_empty());
+    }
+
+    #[test]
+    fn filter_chip_reads_plain_filter_at_zero() {
+        assert_eq!(filter_chip_label(0), "Filter");
+    }
+
+    #[test]
+    fn filter_chip_counts_selections_once_any_exist() {
+        assert_eq!(filter_chip_label(3), "Filter · 3");
+    }
+
+    #[test]
+    fn filter_sheet_note_says_nothing_is_narrowing_the_book_at_zero() {
+        assert_eq!(filter_sheet_note(0), "Nothing selected — every song shows.");
+    }
+
+    #[test]
+    fn filter_sheet_note_pluralizes_past_one() {
+        assert_eq!(filter_sheet_note(1), "1 filter selected.");
+        assert_eq!(filter_sheet_note(4), "4 filters selected.");
+    }
+
+    #[test]
+    fn library_subtitle_reads_the_whole_book_with_no_filter_active() {
+        let songs = vec![
+            rated(1, "One", "A", Confidence::Solid),
+            song(2, "Two", "B"),
+        ];
+        let subtitle = library_subtitle(songs, &Filters::default());
+        assert_eq!(subtitle.lead, "2 in your book · ");
+        assert_eq!(subtitle.solid, 1);
+    }
+
+    #[test]
+    fn library_subtitle_counts_the_filtered_subset_once_a_filter_narrows_it() {
+        let songs = vec![
+            rated(1, "One", "A", Confidence::Solid),
+            rated(2, "Two", "B", Confidence::Solid),
+            rated(3, "Three", "C", Confidence::Rusty),
+        ];
+        let filters = Filters {
+            confidences: vec![Some(Confidence::Solid)],
+            ..Default::default()
+        };
+        let subtitle = library_subtitle(songs, &filters);
+        assert_eq!(subtitle.lead, "2 of 3 · ");
+        assert_eq!(subtitle.solid, 2);
     }
 
     // ── sorting ─────────────────────────────────────────────────────────

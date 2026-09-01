@@ -83,6 +83,15 @@ type Preferences {
     // Newline-joined group labels: a label may contain a comma, never a newline.
     collapsed: String
     expanded: String
+    // The library's filters (card G3). `filter_confidences` is a
+    // newline-joined list of "Solid" | "Rusty" | "Learning" | "Unrated";
+    // `filter_tags` and `filter_tunings` are newline-joined the same way
+    // `collapsed`/`expanded` are, for the same reason — a tag or a tuning may
+    // contain a comma, never a newline.
+    filter_confidences: String
+    filter_tags: String
+    filter_tunings: String
+    filter_has_chart: Bool
     dark_mode: Bool
     // "system", or an index into theme::ACCENTS.
     accent: String

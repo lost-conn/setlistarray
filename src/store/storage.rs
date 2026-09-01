@@ -459,7 +459,7 @@ mod tests {
     // ── B3: view state and settings ─────────────────────────────────────────
 
     #[test]
-    fn grouping_sort_direction_and_collapsed_groups_come_back_exactly_as_left() {
+    fn grouping_sort_direction_collapsed_groups_and_filters_come_back_exactly_as_left() {
         let dir = scratch("store-view-restart");
         {
             let s = Session::open(&dir);
@@ -471,6 +471,11 @@ mod tests {
             s.view.toggle_collapsed("Open D".into());
             s.view.expand("Solid".into());
             s.view.set_query("wheel");
+            s.view.toggle_confidence(Some(Confidence::Solid));
+            s.view.toggle_confidence(None); // Unrated, alongside Solid
+            s.view.toggle_tag_filter("campfire".into());
+            s.view.toggle_tuning_filter("Drop D".into());
+            s.view.toggle_has_chart_filter();
         }
 
         let s = Session::open(&dir);
@@ -482,6 +487,11 @@ mod tests {
         assert_eq!(s.view.expanded.get(), vec!["Solid"]);
         assert_eq!(s.view.query.get(), "wheel");
         assert!(s.view.is_collapsed("Open D"));
+        let filters = s.view.filters.get();
+        assert_eq!(filters.confidences, vec![Some(Confidence::Solid), None]);
+        assert_eq!(filters.tags, vec!["campfire".to_string()]);
+        assert_eq!(filters.tunings, vec!["Drop D".to_string()]);
+        assert!(filters.has_chart);
     }
 
     #[test]

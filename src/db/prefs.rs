@@ -25,7 +25,8 @@
 use rhypedb_engine::object::{FieldMap, Value};
 
 use crate::capture::CaptureMode;
-use crate::store::{AccentChoice, Density, GroupBy, PerformanceTheme, SortDir, SortField};
+use crate::model::Confidence;
+use crate::store::{AccentChoice, Density, Filters, GroupBy, PerformanceTheme, SortDir, SortField};
 
 /// Everything `LibraryViewStore` and `SettingsStore` remember between launches.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -37,6 +38,8 @@ pub struct Preferences {
     pub density: Density,
     pub collapsed: Vec<String>,
     pub expanded: Vec<String>,
+    /// The library's active filters (card G3) — see `crate::store::Filters`.
+    pub filters: Filters,
     pub dark_mode: bool,
     pub accent: AccentChoice,
     pub performance_theme: PerformanceTheme,
@@ -57,6 +60,7 @@ impl Default for Preferences {
             density: Density::Comfortable,
             collapsed: Vec::new(),
             expanded: Vec::new(),
+            filters: Filters::default(),
             dark_mode: false,
             accent: AccentChoice::FromSystem,
             performance_theme: PerformanceTheme::FollowApp,
@@ -112,6 +116,32 @@ fn accent_from(name: &str) -> AccentChoice {
     }
 }
 
+/// One selected confidence chip's stored name, `Unrated` included — the same
+/// four words `crate::derive::group_songs`'s confidence buckets already use,
+/// so a filter chip and a group header never name the same state two ways.
+fn confidence_slot_name(confidence: Option<Confidence>) -> &'static str {
+    match confidence {
+        Some(Confidence::Solid) => "Solid",
+        Some(Confidence::Rusty) => "Rusty",
+        Some(Confidence::Learning) => "Learning",
+        None => "Unrated",
+    }
+}
+
+/// The inverse of [`confidence_slot_name`]. `None` here means "not one of the
+/// four words" — a line corrupted or written by a future version — and the
+/// caller drops it rather than guessing, the same as [`GroupBy::from_name`]
+/// returning `None` for a stray value.
+fn confidence_slot_from(name: &str) -> Option<Option<Confidence>> {
+    match name {
+        "Solid" => Some(Some(Confidence::Solid)),
+        "Rusty" => Some(Some(Confidence::Rusty)),
+        "Learning" => Some(Some(Confidence::Learning)),
+        "Unrated" => Some(None),
+        _ => None,
+    }
+}
+
 pub fn to_fields(preferences: &Preferences) -> FieldMap {
     let mut fields = FieldMap::new();
     let mut put = |name: &str, value: Value| {
@@ -127,6 +157,22 @@ pub fn to_fields(preferences: &Preferences) -> FieldMap {
     put("density", Value::String(preferences.density.name().into()));
     put("collapsed", Value::String(join(&preferences.collapsed)));
     put("expanded", Value::String(join(&preferences.expanded)));
+    let confidence_names: Vec<String> = preferences
+        .filters
+        .confidences
+        .iter()
+        .map(|c| confidence_slot_name(*c).to_string())
+        .collect();
+    put("filter_confidences", Value::String(join(&confidence_names)));
+    put("filter_tags", Value::String(join(&preferences.filters.tags)));
+    put(
+        "filter_tunings",
+        Value::String(join(&preferences.filters.tunings)),
+    );
+    put(
+        "filter_has_chart",
+        Value::Bool(preferences.filters.has_chart),
+    );
     put("dark_mode", Value::Bool(preferences.dark_mode));
     put("accent", Value::String(accent_name(preferences.accent)));
     put(
@@ -169,6 +215,18 @@ pub fn from_fields(fields: &FieldMap) -> Preferences {
         expanded: string(fields, "expanded")
             .map(|s| split(&s))
             .unwrap_or(fallback.expanded),
+        filters: Filters {
+            confidences: string(fields, "filter_confidences")
+                .map(|s| split(&s).iter().filter_map(|n| confidence_slot_from(n)).collect())
+                .unwrap_or(fallback.filters.confidences),
+            tags: string(fields, "filter_tags")
+                .map(|s| split(&s))
+                .unwrap_or(fallback.filters.tags),
+            tunings: string(fields, "filter_tunings")
+                .map(|s| split(&s))
+                .unwrap_or(fallback.filters.tunings),
+            has_chart: boolean(fields, "filter_has_chart", fallback.filters.has_chart),
+        },
         dark_mode: boolean(fields, "dark_mode", fallback.dark_mode),
         accent: string(fields, "accent")
             .map(|n| accent_from(&n))
@@ -201,6 +259,12 @@ mod tests {
             density: Density::Compact,
             collapsed: vec!["Learning".into(), "Old Crow, Medicine Show".into()],
             expanded: vec!["Solid".into()],
+            filters: Filters {
+                confidences: vec![Some(Confidence::Solid), None],
+                tags: vec!["campfire".into(), "Dylan, sort of".into()],
+                tunings: vec!["Drop D".into()],
+                has_chart: true,
+            },
             dark_mode: true,
             accent: AccentChoice::Named(2),
             performance_theme: PerformanceTheme::AlwaysDark,
@@ -247,5 +311,46 @@ mod tests {
             ..Default::default()
         };
         assert!(from_fields(&to_fields(&preferences)).collapsed.is_empty());
+    }
+
+    #[test]
+    fn a_filter_tag_containing_a_comma_survives() {
+        let back = from_fields(&to_fields(&filled()));
+        assert_eq!(back.filters.tags[1], "Dylan, sort of");
+    }
+
+    #[test]
+    fn unrated_survives_the_round_trip_alongside_a_named_confidence() {
+        let back = from_fields(&to_fields(&filled()));
+        assert_eq!(
+            back.filters.confidences,
+            vec![Some(Confidence::Solid), None]
+        );
+    }
+
+    #[test]
+    fn a_corrupted_confidence_slot_is_dropped_rather_than_guessed_at() {
+        let mut fields = to_fields(&filled());
+        fields.insert(
+            "filter_confidences".into(),
+            Value::String("Solid\nKazoo\nUnrated".into()),
+        );
+        let back = from_fields(&fields);
+        assert_eq!(
+            back.filters.confidences,
+            vec![Some(Confidence::Solid), None]
+        );
+    }
+
+    #[test]
+    fn no_filters_selected_reads_back_as_the_defaults() {
+        let preferences = Preferences {
+            filters: Filters::default(),
+            ..Default::default()
+        };
+        assert_eq!(
+            from_fields(&to_fields(&preferences)).filters,
+            Filters::default()
+        );
     }
 }
