@@ -1,27 +1,43 @@
-//! Performance mode — WIREFRAME (`1o`), card F1.
+//! Performance mode — WIREFRAME (`1o`), cards F1 and F2.
 //!
 //! A phone on a music stand, a set being played off it. `1o` draws the whole
 //! screen as two things: a thin top bar carrying `2 / 5`, the song's title with
 //! `G · capo 2 · 96 bpm` beneath it, and a close; and the chart, full-bleed,
 //! filling everything else at larger type than the card on song detail.
 //!
-//! ## What F1 is, and what the wireframe draws that is not in it
+//! ## What is here, and what the wireframe draws that is not
 //!
-//! `1o` also draws edge chevrons, a bottom bar (`up next …`, keep awake, `≡
-//! set`) and a five-segment progress strip along the very bottom. None of them
-//! are here, and they are absent by decision rather than by oversight: they are
-//! cards F2, F3 and F4, and each carries a question this card cannot answer for
-//! it — F2 has to say what happens to the swipe the handoff asks for on a
-//! platform where a swipe produces no app-visible event at all (`setlist_detail`
-//! §"Why there is no drag handle", and `src/bin/gesture_probe.rs` behind it),
-//! and F4 needs a keep-awake call Rinch does not expose yet (K5).
+//! `1o` also draws a bottom bar (`up next …`, keep awake, `≡ set`) and a
+//! five-segment progress strip along the very bottom. Neither is here, and both
+//! are absent by decision rather than by oversight: the bar and the strip are
+//! card F3, and the keep-awake chip inside the bar is F4, which is waiting on a
+//! call Rinch does not expose yet (K5).
 //!
-//! What that costs this screen is one thing worth naming: **there is no way to
-//! move through the set from here yet.** The ✕ is the only control on the
-//! screen. That is a smaller state than it sounds — the set opens on its first
-//! song, which is the one you are about to play — and it is deliberately not
-//! papered over with a temporary next button that F2 would then have to
-//! remove from underneath the design.
+//! ## The chevrons are the control, not a hint (F2)
+//!
+//! `1o` captions itself *"swipe for next song"* and draws a thin chevron at
+//! each edge as the thing that tells you the swipe is there. **The swipe half
+//! of that is not buildable on the platform this app ships to**, and not for
+//! want of trying: `TouchGesture::process` turns a moving finger into
+//! `MouseWheel` deltas and nothing else, the horizontal half of a scroll
+//! dispatches no handler at all, and a finger that has moved emits nothing
+//! whatever when it lifts — so there is no event a swipe could be *committed*
+//! on even if its progress could be watched. `src/gesture_reachability.rs`
+//! holds the table, `src/bin/gesture_probe.rs` is the harness that measured it,
+//! and card C6 walked into exactly this and shipped explicit controls instead.
+//! rinch#266 and #267 do not change the answer; stage 3 — real pointer events
+//! with capture — is what would, and it is not written.
+//!
+//! So the chevrons carry the whole job rather than advertising a gesture that
+//! is not there, and that inverts what they have to *be*. A hint can be a 26 px
+//! whisker at the edge of the glass; a control that is the only way through the
+//! set cannot. See [`CHEVRON_W`] for what that costs and what it buys.
+//!
+//! It is also why nothing on this screen reaches for `onmousedown`,
+//! `onmousemove` or any of the `ondrag*` family. Every one of them is answered
+//! by the desktop backend and by no phone, which is precisely the trap
+//! `gesture_reachability` exists to catch: a swipe built against them would
+//! look finished on this machine and be dead on the stand.
 //!
 //! ## Theme: this screen is *not* the viewer
 //!
@@ -47,7 +63,7 @@
 use rinch::prelude::*;
 use rinch_tabler_icons::TablerIcon;
 
-use crate::derive::{performance_meta, playing_at};
+use crate::derive::{performance_meta, playing_at, steps};
 use crate::model::{AttachmentId, SetlistId, SongId};
 use crate::store::{AttachmentsStore, NavStore, PlaybackStore, Route, SetlistsStore, SongsStore};
 use crate::theme::{T_META, T_META_SMALL, T_ROW_TITLE};
@@ -67,6 +83,61 @@ use super::chart_surface::{ChartSurface, STAGE_CHART_PX, page_span};
 /// 54 px holds `12 / 15` at this type size with room to spare, and it is wide
 /// enough for the 40 px touch target the ✕ sits in.
 const BAR_CELL: &str = "width: 54px; flex-shrink: 0;";
+
+/// How wide a chevron's tap target is.
+///
+/// `1o` draws a 26 px strip down each edge, and that is sketch geometry for a
+/// *hint*: in the wireframe the swipe was the control and the chevron only had
+/// to be seen. It is the control here — see the header — so it has to be *hit*,
+/// on a phone, at arm's length, by somebody whose hands are already holding an
+/// instrument, and 26 px is under every touch-target floor there is. 48 px
+/// clears the usual 44 px minimum with a little to spare and matches the width
+/// the rest of this app's bare glyphs already round their boxes to.
+const CHEVRON_W: u32 = 48;
+
+/// How tall it is.
+///
+/// This one goes the *other* way from the wireframe, which runs its strip from
+/// 120 px below the top bar to 120 px above the bottom one — very nearly the
+/// full height of the chart. Two 480 px-tall targets down the edges of the page
+/// would be a wall: on the desktop every click down either side of the chart
+/// changes song, and on the phone it is a 48 px-wide band of the chart, twice,
+/// that can never be touched for any other reason again — which matters the
+/// moment F3 or a later card wants a tap on the chart itself to mean something.
+///
+/// 120 px is tall enough to forgive a vertical miss by a thumb that is not
+/// looking — the whole point of a control on a phone on a stand — and short
+/// enough to leave the rest of the edge alone.
+const CHEVRON_H: u32 = 120;
+
+/// The glyph inside that box.
+///
+/// Small for the box it sits in, deliberately. The chart is the thing being
+/// read; a chevron that competes with it for the eye has already lost the
+/// argument the wireframe's own colour choice makes — it draws the *live* one
+/// no heavier than a piece of body text. 22 px is a shade over the 19 px the ✕
+/// in the top bar is drawn at, which is the right order between them: the
+/// chevrons are glanced at from a metre away and the ✕ is reached for on
+/// purpose.
+const CHEVRON_PX: u32 = 22;
+
+/// How far a chevron fades when there is nothing that way.
+///
+/// `1o` says this in colour, drawing the dead chevron at `#c9c5bd` against a
+/// live `#1a1a1a` on white. There is no such literal to copy here — this app
+/// has tokens, and whatever it does has to be right in both themes. So the live
+/// chevron is `--sla-muted`, the register the meta line under the title is
+/// already in, which is lighter than the wireframe's ink and is the "do not
+/// compete with the chart" half of the instruction honoured in a token; and the
+/// dead one is that same colour at this opacity, which lands within a shade of
+/// the wireframe's grey on light paper and stays visible-but-inert on dark.
+///
+/// Faded *and* inert, and both halves matter. A dim chevron keeps its box and
+/// swallows its own tap rather than wrapping round to the other end of the set:
+/// a › on the last song that jumped back to the first would be indistinguishable
+/// from a › that had not registered the tap, which is the argument
+/// `attachment_viewer::page_after` already makes about the last page of a PDF.
+const CHEVRON_DIM: &str = "0.3";
 
 /// The sentence for a song in the set that has no chart to put on the stand.
 ///
@@ -121,21 +192,51 @@ pub fn Performance(setlist: Option<SetlistId>) -> NodeHandle {
     let safe = crate::platform::safe_area();
     let column = (crate::WIDTH as f32 - safe.left - safe.right).max(1.0) as u32;
 
-    // The page a PDF chart opens on, drawn before the first frame rather than
-    // after it. Same self-healing job the viewer and `song_detail` both do at
-    // mount: a chart imported before D4 landed, or one whose import-time render
-    // was interrupted, has a `chart.pdf` and no pages, and this is where it
-    // gets them. **In the component body, never in a render closure** — that is
-    // `pages::cached_page`'s rule and `attachment_viewer`'s header explains it.
+    // The page a PDF chart opens on, drawn before the frame that shows it
+    // rather than after. Same self-healing job the viewer and `song_detail`
+    // both do at mount: a chart imported before D4 landed, or one whose
+    // import-time render was interrupted, has a `chart.pdf` and no pages, and
+    // this is where it gets them.
     //
-    // Once F2 can move through the set, the song it moves *to* needs the same
-    // call, and it belongs in that tap handler for exactly the same reason the
-    // viewer's ‹ / › handlers carry it.
-    if let Some(chart) = current(setlists, songs, playback, id).and_then(|now| now.chart)
-        && let Some(directory) = attachments.directory(chart)
-    {
-        crate::pdf::pages::ensure_page(&directory, 1);
-    }
+    // **From the component body and from the tap handlers, never from a render
+    // closure.** That is `pages::cached_page`'s rule and `attachment_viewer`'s
+    // header explains it: a closure re-runs on every redraw and a tap handler
+    // runs once per tap. F1 called this only at mount and left a note saying the
+    // song F2 moves *to* would need it too; `step` below is where that note is
+    // paid off, for exactly the reason the viewer's own ‹ / › handlers carry it.
+    let realise = move || {
+        if let Some(chart) = current(setlists, songs, playback, id).and_then(|now| now.chart)
+            && let Some(directory) = attachments.directory(chart)
+        {
+            crate::pdf::pages::ensure_page(&directory, 1);
+        }
+    };
+    realise();
+
+    // How long the set actually is, asked fresh every time rather than closed
+    // over. A number read once at mount would be the length the set had when
+    // the screen opened, and `current` is already careful to count only the
+    // songs that still resolve — the two have to be counting the same thing or
+    // the last › in the set stops agreeing with the counter above it.
+    let playable = move || ordered(setlists, songs, id).len();
+
+    // Which way the set can go from here. Read inside the chevrons' style
+    // closures, so the fade follows `playback.index` without this component
+    // being rebuilt, and read again inside their tap handlers — see `chevron`.
+    let step_state = move || steps(playback.index.get(), playable());
+
+    // Moving. `PlaybackStore::next`/`prev` already clamp at both ends, so this
+    // is not the place index arithmetic gets written a second time; `steps`
+    // above is the *question* those two cannot be asked, and this is the
+    // answer being acted on.
+    let step = move |forward: bool| {
+        if forward {
+            playback.next(playable());
+        } else {
+            playback.prev();
+        }
+        realise();
+    };
 
     // The set itself is checked once, at mount, the way `setlist_detail` checks
     // it: nothing on this screen can delete the set it is playing. Everything
@@ -218,59 +319,130 @@ pub fn Performance(setlist: Option<SetlistId>) -> NodeHandle {
                 }
             }
 
-            // ── The chart ─────────────────────────────────────────────────
+            // ── The stage: the chart, with the chevrons over it ───────────
             //
-            // A one-element keyed `for` over the song being played, which is
-            // the shape the whole rest of this screen already uses and which
-            // gives F2 its seam for free: move `playback.index` and the key
-            // changes, so the chart is rebuilt for the new song and the next
-            // one starts at the top of its own page rather than wherever the
-            // last one was scrolled to. The viewer wants that same property
-            // badly enough to have a comment of its own about it.
-            for now in current(setlists, songs, playback, id).into_iter().collect::<Vec<_>>() {
-                for chart in now.chart.into_iter().collect::<Vec<_>>() {
-                    ChartSurface {
-                        key: {format!("{}:{}", now.song, chart)},
-                        attachment: {chart},
-                        // Read here rather than inside the surface, which is
-                        // that component's own note: `AttachmentsStore::body`
-                        // is an object read off the database, and the surface
-                        // is remounted more often than the song changes.
-                        body: {attachments.body(chart).unwrap_or_default()},
-                        column: {column},
-                        // The one number `1o` asks for in words — "larger type
-                        // than the detail preview" — and the whole of what this
-                        // screen varies about how a chart is drawn.
-                        base_px: {STAGE_CHART_PX},
-                        // F1 shows page 1 and only page 1; the span is passed
-                        // anyway so that a multi-page PDF that fails to draw
-                        // says "Page 1 of this PDF" rather than "This PDF",
-                        // which is the sentence that is true of the file.
-                        span: {attachments.get(chart).map(|a| page_span(&a)).unwrap_or(1)},
+            // A box of its own rather than the chart sitting straight in the
+            // column, because the chevrons are positioned against it. `1o` puts
+            // them *on* the chart and not in gutters beside it, and the layer
+            // below can only be told `top: 0; bottom: 0` if the thing it is
+            // nought from is the chart's box and not the whole screen — with
+            // the top bar included they would centre themselves a bar's height
+            // too low, and the bar's height is a text metric nobody should be
+            // subtracting by hand.
+            div {
+                style: "flex: 1; min-height: 0; display: flex; flex-direction: column; \
+                        position: relative;",
+
+                // ── The chart ─────────────────────────────────────────────
+                //
+                // A one-element keyed `for` over the song being played, which is
+                // the shape the whole rest of this screen already uses and which is
+                // what makes F2 safe for free: move `playback.index` and the key
+                // changes, so the surface is torn down and rebuilt for the new
+                // song. That matters because `ChartSurface` owns the scrolling box
+                // — landing on song 3 half way down song 2's chart would be the
+                // fault — and it is the same property the viewer wants badly enough
+                // to have a comment of its own about. Performance mode passes the
+                // page, zoom and rotation as fixed constants rather than signals,
+                // so the scroll offset is the whole of the per-chart state there is
+                // to lose, and a remount is what loses it.
+                for now in current(setlists, songs, playback, id).into_iter().collect::<Vec<_>>() {
+                    for chart in now.chart.into_iter().collect::<Vec<_>>() {
+                        ChartSurface {
+                            key: {format!("{}:{}", now.song, chart)},
+                            attachment: {chart},
+                            // Read here rather than inside the surface, which is
+                            // that component's own note: `AttachmentsStore::body`
+                            // is an object read off the database, and the surface
+                            // is remounted more often than the song changes.
+                            body: {attachments.body(chart).unwrap_or_default()},
+                            column: {column},
+                            // The one number `1o` asks for in words — "larger type
+                            // than the detail preview" — and the whole of what this
+                            // screen varies about how a chart is drawn.
+                            base_px: {STAGE_CHART_PX},
+                            // F1 shows page 1 and only page 1; the span is passed
+                            // anyway so that a multi-page PDF that fails to draw
+                            // says "Page 1 of this PDF" rather than "This PDF",
+                            // which is the sentence that is true of the file.
+                            span: {attachments.get(chart).map(|a| page_span(&a)).unwrap_or(1)},
+                        }
+                    }
+                    // A song nobody has written down — three chords somebody has
+                    // always just known — said in the same chrome rather than as a
+                    // blank screen. The top bar stays above it, so the counter
+                    // still says where in the set you are and the ✕ is still where
+                    // it was.
+                    for sentence in absent(&now) {
+                        div {
+                            key: {sentence},
+                            style: {format!("flex: 1; min-height: 0; {T_META} padding: 48px 22px; text-align: center;")},
+                            {sentence}
+                        }
                     }
                 }
-                // A song nobody has written down — three chords somebody has
-                // always just known — said in the same chrome rather than as a
-                // blank screen. The top bar stays above it, so the counter
-                // still says where in the set you are and the ✕ is still where
-                // it was.
-                for sentence in absent(&now) {
+
+                // An empty set never yields a `now` at all, so its sentence hangs
+                // off the outer `for` being empty rather than off a branch inside
+                // it. Same nought-or-one shape, one level out.
+                for sentence in empty_note(setlists, songs, playback, id) {
                     div {
                         key: {sentence},
                         style: {format!("flex: 1; min-height: 0; {T_META} padding: 48px 22px; text-align: center;")},
                         {sentence}
                     }
                 }
-            }
 
-            // An empty set never yields a `now` at all, so its sentence hangs
-            // off the outer `for` being empty rather than off a branch inside
-            // it. Same nought-or-one shape, one level out.
-            for sentence in empty_note(setlists, songs, playback, id) {
+                // ── Edge chevrons ─────────────────────────────────────────
+                //
+                // A layer over the chart rather than two columns beside it: `1o`
+                // draws them on the page, and a column would take 96 px of width
+                // off every chart in the book to hold two glyphs — on a screen
+                // whose one typographic instruction was "bigger", and where a
+                // monospaced chart cannot wrap.
+                //
+                // Three things about this box are load-bearing rather than tidy:
+                //
+                // * **`z-index`.** `ChartSurface`'s root is `overflow: auto`, which
+                //   Rinch treats as a stacking context and hoists into the
+                //   z-index-0 phase — the phase that paints last and is hit-tested
+                //   first. An unnumbered sibling *after* it in the tree therefore
+                //   paints underneath it and never sees a tap. `library`'s FAB
+                //   carries the same 10 for the same reason and its note is the
+                //   long version; 10 also keeps this below the 40 the bottom
+                //   sheets live at.
+                // * **`pointer-events: none` here, `auto` on the two boxes.** The
+                //   layer spans the whole chart, so without this it would be the
+                //   thing every tap on the chart landed on — and the chart is most
+                //   of the screen.
+                // * **`align-items: center`.** This is what actually centres the
+                //   chevrons vertically, and it is flexbox rather than a percentage
+                //   `top` because the height to take a percentage of is `flex: 1`
+                //   of whatever the top bar left over, which is not a number this
+                //   file knows.
+                //
+                // Scrolling a long chart still works with a finger on a chevron.
+                // Rinch resolves a wheel to a scroll container by walking up from
+                // the hit node and, when that fails, geometrically at the point
+                // (`app/event_dispatch.rs`, and its own comment says the fallback
+                // is there for absolutely-positioned overlays exactly like this
+                // one); the geometric pass finds the chart's box under the glyph.
                 div {
-                    key: {sentence},
-                    style: {format!("flex: 1; min-height: 0; {T_META} padding: 48px 22px; text-align: center;")},
-                    {sentence}
+                    style: "position: absolute; left: 0; top: 0; right: 0; bottom: 0; \
+                            z-index: 10; pointer-events: none; display: flex; \
+                            align-items: center; justify-content: space-between;",
+                    {chevron(
+                        __scope,
+                        TablerIcon::ChevronLeft,
+                        move || step_state().back,
+                        move || step(false),
+                    )}
+                    {chevron(
+                        __scope,
+                        TablerIcon::ChevronRight,
+                        move || step_state().forward,
+                        move || step(true),
+                    )}
                 }
             }
         }
@@ -296,26 +468,45 @@ struct Now {
     chart: Option<AttachmentId>,
 }
 
+/// The songs of the set that still resolve, in the order the set holds them.
+///
+/// A song id in the set that no longer resolves is skipped, exactly as
+/// `setlist_detail` skips it. Which makes this the one definition of "how long
+/// is the set" the screen has, and it has to be: [`current`] picks the song at
+/// an index into this list and the chevrons ask only for its length, and if
+/// those two ever counted different things the › over the last song in the set
+/// would be live while the counter above it read `5 / 5`.
+///
+/// A set that is not in the library at all is an empty one here. The caller
+/// tells the two apart before it gets this far — see the `SET_GONE` check at
+/// mount — because they need different sentences and only one of them is a
+/// fault.
+fn ordered(setlists: SetlistsStore, songs: SongsStore, id: SetlistId) -> Vec<crate::model::Song> {
+    let Some(setlist) = setlists.get(id) else {
+        return Vec::new();
+    };
+    setlist
+        .song_ids
+        .iter()
+        .filter_map(|sid| songs.get(*sid))
+        .collect()
+}
+
 /// Read the stores for the song being played, or `None` when there is not one.
 ///
 /// `None` covers both a set that is gone and a set with nothing in it; the two
 /// are told apart by the caller, which can still ask the store whether the set
-/// exists. Everything else is handled rather than reported: a song id in the
-/// set that no longer resolves is skipped by `filter_map`, exactly as
-/// `setlist_detail` skips it, and an `index` past the end of what survives is
-/// clamped by [`playing_at`] rather than blanking the screen.
+/// exists. Everything else is handled rather than reported: a song id that no
+/// longer resolves is already gone from [`ordered`], and an `index` past the
+/// end of what survives is clamped by [`playing_at`] rather than blanking the
+/// screen.
 fn current(
     setlists: SetlistsStore,
     songs: SongsStore,
     playback: PlaybackStore,
     id: SetlistId,
 ) -> Option<Now> {
-    let setlist = setlists.get(id)?;
-    let ordered: Vec<crate::model::Song> = setlist
-        .song_ids
-        .iter()
-        .filter_map(|sid| songs.get(*sid))
-        .collect();
+    let ordered = ordered(setlists, songs, id);
     let (index, position) = playing_at(playback.index.get(), ordered.len())?;
     let song = &ordered[index];
     Some(Now {
@@ -366,6 +557,49 @@ fn empty_note(
     match current(setlists, songs, playback, id) {
         Some(_) => Vec::new(),
         None => vec![EMPTY_SET],
+    }
+}
+
+/// One edge chevron: a bare glyph in a tap target big enough to find.
+///
+/// `live` is a closure rather than a `bool`, and it is read twice for two
+/// different reasons. The style closure reads it on every redraw, so the fade
+/// follows the song without this component being rebuilt — the chevrons sit
+/// outside the keyed `for` that rebuilds the chart, deliberately, because
+/// tearing down a control every time it is used is how a control loses a tap.
+/// The tap handler reads it again at the moment of the tap, so a chevron that
+/// has *just* gone dim cannot be caught by a finger already on its way down.
+///
+/// Checking inside the handler rather than by not binding one is the shape
+/// `attachment_viewer::ChromeButton` settled on for the same job: `rsx!` builds
+/// the props either way, and one branch is easier to be sure of than two
+/// arrangements of the tree.
+///
+/// `onclick` and nothing else. See the module header — the whole family of
+/// handlers a swipe would want is unreachable on the platform this ships to,
+/// and `src/gesture_reachability.rs` fails the build for anything from it.
+fn chevron(
+    scope: &mut RenderScope,
+    glyph: TablerIcon,
+    live: impl Fn() -> bool + Copy + 'static,
+    step: impl Fn() + 'static,
+) -> NodeHandle {
+    let __scope = scope;
+    rsx! {
+        div {
+            onclick: move || {
+                if live() {
+                    step()
+                }
+            },
+            style: {move || format!(
+                "width: {CHEVRON_W}px; height: {CHEVRON_H}px; flex-shrink: 0; \
+                 display: flex; align-items: center; justify-content: center; \
+                 color: var(--sla-muted); pointer-events: auto; opacity: {};",
+                if live() { "1" } else { CHEVRON_DIM },
+            )},
+            {icon(__scope, glyph, CHEVRON_PX)}
+        }
     }
 }
 

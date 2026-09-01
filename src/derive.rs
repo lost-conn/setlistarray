@@ -280,6 +280,52 @@ pub fn playing_at(index: usize, len: usize) -> Option<(usize, String)> {
     Some((index, format!("{} / {len}", index + 1)))
 }
 
+/// Whether the set has a song either side of the one being played.
+///
+/// Two bools rather than a tuple of them, because `(true, false)` at a call
+/// site is two chances to read it the wrong way round and the compiler has an
+/// opinion about neither.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Steps {
+    /// There is a song before this one, so `1o`'s ‹ is a control.
+    pub back: bool,
+    /// There is a song after it, so `1o`'s › is a control.
+    pub forward: bool,
+}
+
+/// Which way performance mode can move through the set from here.
+///
+/// The whole of what F2's two chevrons need to know, and it is derived rather
+/// than asked of [`PlaybackStore::next`](crate::store::PlaybackStore::next) and
+/// `prev` — those two clamp, which is the right behaviour for a tap and the
+/// wrong shape for a question, because a call that clamps cannot be asked
+/// whether it *would have* moved without moving.
+///
+/// **The index is clamped first, through [`playing_at`], and that is the whole
+/// reason this is a function and not two comparisons written inline.** The
+/// screen already draws the clamped song — `9` in a set of 3 puts song 3 on the
+/// stand — so a raw `index + 1 < len` would light › over the last song in the
+/// set and offer a move that cannot happen. Deriving both answers from the same
+/// clamp `playing_at` performs is what keeps the chevrons agreeing with the
+/// chart underneath them, exactly as the counter already does.
+///
+/// A set with nothing playable in it goes nowhere in either direction, and so
+/// does a set of one. Both are dimmed at both ends rather than absent: the
+/// chevrons are the only way through the set, and a control that vanishes when
+/// it has nothing to do teaches you it was never there.
+pub fn steps(index: usize, len: usize) -> Steps {
+    match playing_at(index, len) {
+        None => Steps {
+            back: false,
+            forward: false,
+        },
+        Some((index, _)) => Steps {
+            back: index > 0,
+            forward: index + 1 < len,
+        },
+    }
+}
+
 /// The line under the song title in performance mode: `G · capo 2 · 96 bpm`.
 ///
 /// Three facts and no fourth, which is the whole reason this is not
@@ -1022,6 +1068,41 @@ mod tests {
     fn an_empty_set_has_no_position_rather_than_a_nought() {
         assert_eq!(playing_at(0, 0), None);
         assert_eq!(playing_at(3, 0), None);
+    }
+
+    /// The middle of a set moves both ways; the two ends move one way each.
+    /// This is the whole of what F2's chevrons draw, read off a five-song set.
+    #[test]
+    fn the_chevrons_are_live_in_the_direction_the_set_goes() {
+        assert_eq!(steps(0, 5), Steps { back: false, forward: true });
+        assert_eq!(steps(2, 5), Steps { back: true, forward: true });
+        assert_eq!(steps(4, 5), Steps { back: true, forward: false });
+    }
+
+    /// A set of one is at both ends at once, so both chevrons are dim. It is a
+    /// real set — the encore somebody plays on its own — and not a degenerate
+    /// case to be shrugged at.
+    #[test]
+    fn a_set_of_one_song_goes_nowhere_in_either_direction() {
+        assert_eq!(steps(0, 1), Steps { back: false, forward: false });
+    }
+
+    /// A set with nothing playable in it likewise, and without panicking on
+    /// the `len - 1` a naive last-song test would reach for.
+    #[test]
+    fn an_empty_set_offers_no_move_at_all() {
+        assert_eq!(steps(0, 0), Steps { back: false, forward: false });
+        assert_eq!(steps(7, 0), Steps { back: false, forward: false });
+    }
+
+    /// The clamp `playing_at` performs is the one these answers are about. An
+    /// index past the end already puts the *last* song on the stand, so ›
+    /// must be dim over it: lit, it would offer a move the screen cannot make
+    /// and would look exactly like a › that missed the tap.
+    #[test]
+    fn an_index_past_the_end_is_at_the_end_for_the_chevrons_too() {
+        assert_eq!(steps(9, 3), Steps { back: true, forward: false });
+        assert_eq!(steps(usize::MAX, 1), Steps { back: false, forward: false });
     }
 
     /// The line the wireframe draws, from a song that has all three of them.
