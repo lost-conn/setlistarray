@@ -115,6 +115,18 @@ pub struct NavStore {
     /// detail screen stays mounted and visible behind it — that is the whole
     /// reason `1i` was chosen over the two-step wizard.
     pub picking_songs_for: Signal<Option<SetlistId>>,
+    /// The running order (F3), when open over performance mode — the set being
+    /// played, so the sheet can list it without asking which gig is on.
+    ///
+    /// It lives here with the other three for a reason particular to the screen
+    /// that opens it. Performance mode is `Route::full_screen`, so it takes the
+    /// whole window; a sheet nested inside `performance.rs` would be a child of
+    /// that screen's own column and would slide up *inside* it rather than over
+    /// it. Every sheet in this app is mounted in `crate::app` as a sibling
+    /// after the route (see the note there), above everything, which is what
+    /// makes them work over a full-screen route at all — and a sheet mounted
+    /// out there can only be told to open by a signal both ends can see.
+    pub running_order_for: Signal<Option<SetlistId>>,
     /// The setlist card currently in inline rename mode on the Setlists tab
     /// (opened from its long-press/right-click menu), and the text field's
     /// live draft. Screen-transient UI state, same as the two fields above —
@@ -131,6 +143,7 @@ impl NavStore {
             add_to_setlist_for: Signal::new(None),
             sort_sheet_open: Signal::new(false),
             picking_songs_for: Signal::new(None),
+            running_order_for: Signal::new(None),
             renaming_setlist: Signal::new(None),
             rename_draft: Signal::new(String::new()),
         }

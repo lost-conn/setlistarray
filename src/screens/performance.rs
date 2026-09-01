@@ -1,17 +1,35 @@
-//! Performance mode — WIREFRAME (`1o`), cards F1 and F2.
+//! Performance mode — WIREFRAME (`1o`), cards F1, F2 and F3.
 //!
 //! A phone on a music stand, a set being played off it. `1o` draws the whole
-//! screen as two things: a thin top bar carrying `2 / 5`, the song's title with
-//! `G · capo 2 · 96 bpm` beneath it, and a close; and the chart, full-bleed,
-//! filling everything else at larger type than the card on song detail.
+//! screen as four things: a thin top bar carrying `2 / 5`, the song's title with
+//! `G · capo 2 · 96 bpm` beneath it, and a close; the chart, full-bleed, filling
+//! everything else at larger type than the card on song detail; a bottom bar
+//! saying what is up next with a keep-awake toggle and a way into the running
+//! order; and a progress strip along the very bottom.
 //!
-//! ## What is here, and what the wireframe draws that is not
+//! ## The keep-awake toggle is a control with nothing behind it yet (F4)
 //!
-//! `1o` also draws a bottom bar (`up next …`, keep awake, `≡ set`) and a
-//! five-segment progress strip along the very bottom. Neither is here, and both
-//! are absent by decision rather than by oversight: the bar and the strip are
-//! card F3, and the keep-awake chip inside the bar is F4, which is waiting on a
-//! call Rinch does not expose yet (K5).
+//! It reads and flips [`PlaybackStore::keep_awake`](crate::store::PlaybackStore)
+//! and that is the whole of what it does. **The screen does not stay on.** The
+//! call that would keep it on is card F4 and it is waiting on an API Rinch does
+//! not expose (K5, upstream) — there is no way from this crate to hold a wake
+//! lock or set `FLAG_KEEP_SCREEN_ON`.
+//!
+//! Shipping the control ahead of the effect is deliberate and it is the smaller
+//! of two wrongs, but it is a wrong: a toggle that says the screen will stay on
+//! and does not is a promise broken in the middle of a gig, which is the worst
+//! moment this app has. It ships anyway because the alternative — no toggle
+//! until K5 lands — leaves the bar's middle cell empty and gives F4 a screen to
+//! redesign rather than a signal to read. The day K5 lands, F4 is an `Effect`
+//! over this signal and nothing here changes.
+//!
+//! ## The running order is a bottom sheet, and the wireframe does not draw it
+//!
+//! `1o` draws the `≡ set` button and stops. F3 decided it opens a bottom sheet,
+//! matching the three this app already has (`add_to_setlist`, `sort_sheet`,
+//! `setlist_picker`) — same surface, same scrim, same dismiss. See
+//! [`super::running_order`], which is where it lives and why it is mounted in
+//! `crate::app` rather than nested in this file.
 //!
 //! ## The chevrons are the control, not a hint (F2)
 //!
@@ -63,10 +81,12 @@
 use rinch::prelude::*;
 use rinch_tabler_icons::TablerIcon;
 
-use crate::derive::{performance_meta, playing_at, steps};
+use crate::derive::{
+    Segment, performance_meta, playing_at, steps, strip_gap, strip_segments, up_next,
+};
 use crate::model::{AttachmentId, SetlistId, SongId};
 use crate::store::{AttachmentsStore, NavStore, PlaybackStore, Route, SetlistsStore, SongsStore};
-use crate::theme::{T_META, T_META_SMALL, T_ROW_TITLE};
+use crate::theme::{T_CHIP, T_META, T_META_SMALL, T_ROW_TITLE};
 use crate::ui::icon;
 
 use super::chart_surface::{ChartSurface, STAGE_CHART_PX, page_span};
@@ -139,6 +159,40 @@ const CHEVRON_PX: u32 = 22;
 /// `attachment_viewer::page_after` already makes about the last page of a PDF.
 const CHEVRON_DIM: &str = "0.3";
 
+/// How tall the two chips in the bottom bar are.
+///
+/// The same 40 px box the ✕ above the chart sits in, and for the same reason
+/// its note gives: these are bare-ish controls reached for on purpose, on a
+/// phone, by somebody holding an instrument, and 40 px is the touch target the
+/// handoff puts a floor under. The wireframe draws them as 12 px text in 3 px of
+/// padding — about 22 px tall — which is sketch geometry for something being
+/// looked at rather than hit.
+const CHIP_H: u32 = 40;
+
+/// How tall the progress strip is.
+///
+/// Straight from `1o`, which is unusually specific about it, and it survives the
+/// move to the hi-fi language unchanged: 6 px is thick enough to hold a colour
+/// at a metre and thin enough that nobody reads it as a control to be dragged —
+/// which matters, because it is not one. See the strip itself for why.
+const STRIP_H: u32 = 6;
+
+/// The room between the strip and the gesture bar's inset below it.
+///
+/// `1o` draws 10 px there and nothing under it, because a wireframe has no
+/// gesture bar. This is that gap; the inset is added to it, not instead of it,
+/// so the strip is clear of the pill *and* not welded to it.
+const STRIP_GAP_BELOW: u32 = 8;
+
+/// The padding either side of the bar and the strip.
+///
+/// 14 px rather than the 22 px `SCREEN_PAD` every other screen uses. This bar is
+/// the one place in the app where the horizontal room is genuinely contested —
+/// two chips and a song title on a 393 px phone — and `1o` itself draws its
+/// bottom bar at 14 px while drawing everything else wider. The strip takes the
+/// same number so its ends line up with the words above it.
+const BAR_PAD: u32 = 14;
+
 /// The sentence for a song in the set that has no chart to put on the stand.
 ///
 /// A real and ordinary state, not a fault: plenty of songs in a working book
@@ -204,13 +258,13 @@ pub fn Performance(setlist: Option<SetlistId>) -> NodeHandle {
     // runs once per tap. F1 called this only at mount and left a note saying the
     // song F2 moves *to* would need it too; `step` below is where that note is
     // paid off, for exactly the reason the viewer's own ‹ / › handlers carry it.
-    let realise = move || {
-        if let Some(chart) = current(setlists, songs, playback, id).and_then(|now| now.chart)
-            && let Some(directory) = attachments.directory(chart)
-        {
-            crate::pdf::pages::ensure_page(&directory, 1);
-        }
-    };
+    //
+    // It is a free function ([`realise_chart`]) with a closure over it rather
+    // than a closure alone, because F3's running-order sheet moves the index
+    // too, from a component in another file, and a song jumped to from the sheet
+    // needs its first page drawn exactly as much as one stepped to with a
+    // chevron. Two copies of that rule would be one copy to forget.
+    let realise = move || realise_chart(setlists, songs, attachments, playback, id);
     realise();
 
     // How long the set actually is, asked fresh every time rather than closed
@@ -445,6 +499,156 @@ pub fn Performance(setlist: Option<SetlistId>) -> NodeHandle {
                     )}
                 }
             }
+
+            // ── The foot: bottom bar, then progress strip (F3) ────────────
+            //
+            // One box holding both, and the room for the phone's gesture bar
+            // under them as a third — see the spacer at the bottom of it for why
+            // that is a box of its own and not padding on this one.
+            //
+            // **`display: none` when the set has nothing playable in it**, rather
+            // than an `if` around the whole box. Two reasons, and the first is
+            // the same one `crate::app`'s bottom nav gives for the same trick:
+            // the two chips in here are controls, and tearing a control down and
+            // rebuilding it is how a control loses a tap — the chevrons carry
+            // that note too. The second is what an empty set would make this bar
+            // *say*: "up next" with nothing to name, a strip with no segments,
+            // and a `set` button opening a sheet listing nothing. The screen
+            // already says the true thing in words in the middle of the chart
+            // area, and a bar full of blanks under it would be three more ways
+            // of saying nothing.
+            div {
+                style: {move || format!(
+                    "display: {}; flex-direction: column; flex-shrink: 0; \
+                     border-top: 1px solid var(--sla-hairline);",
+                    if playable() == 0 { "none" } else { "flex" },
+                )},
+
+                // ── The bar: up next · keep awake · set ───────────────────
+                div {
+                    style: {format!(
+                        "display: flex; align-items: center; gap: 8px; \
+                         padding: 6px {BAR_PAD}px;"
+                    )},
+
+                    // The left cell takes what is left after the two chips have
+                    // had their natural width, and clips rather than wraps: a
+                    // long title that pushed the chips out of the bar would move
+                    // the two controls somebody reaches for without looking.
+                    div {
+                        style: "flex: 1; min-width: 0; display: flex; \
+                                align-items: baseline; gap: 6px; overflow: hidden;",
+                        for up in up_next(playback.index.get(), &ordered(setlists, songs, id)) {
+                            // Nought-or-one, and the whole line is one item, so
+                            // that "up next Blackbird" and "last song" cannot be
+                            // half-drawn between them — see `derive::up_next`
+                            // for why the two states are an enum.
+                            div {
+                                key: {up.label()},
+                                style: "display: flex; align-items: baseline; gap: 6px; \
+                                        min-width: 0; overflow: hidden;",
+                                span {
+                                    style: {format!("{T_META_SMALL} flex-shrink: 0;")},
+                                    {up.label()}
+                                }
+                                // The title in ink against the muted label, which
+                                // is the whole of `1o`'s two-tone treatment of
+                                // this line and is what makes it readable as a
+                                // *name* at a glance rather than as a sentence.
+                                for title in up.title() {
+                                    span {
+                                        key: {title.clone()},
+                                        style: "font-size: 13px; color: var(--sla-ink); \
+                                                white-space: nowrap; overflow: hidden; \
+                                                text-overflow: ellipsis; min-width: 0;",
+                                        {title.clone()}
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // The control F4 will make true. It reads and flips the
+                    // signal and nothing else — see the module header.
+                    {bar_chip(
+                        __scope,
+                        TablerIcon::Sun,
+                        "keep awake",
+                        move || playback.keep_awake.get(),
+                        move || playback.keep_awake.set(!playback.keep_awake.get()),
+                    )}
+
+                    // The way into the running order. It hands the sheet the set
+                    // rather than letting it work out which gig is on: the sheet
+                    // is mounted out in `crate::app` and this screen is the only
+                    // thing that knows the answer for certain.
+                    {bar_chip(
+                        __scope,
+                        TablerIcon::List,
+                        "set",
+                        || false,
+                        move || nav.running_order_for.set(Some(id)),
+                    )}
+                }
+
+                // ── The progress strip ────────────────────────────────────
+                //
+                // One segment per song — see `derive::strip_segments` for why
+                // not the wireframe's five, and `derive::strip_gap` for what
+                // happens to a twenty- or a sixty-song set.
+                //
+                // It is an indicator and not a control: nothing here takes an
+                // `onclick`. A 6 px-tall segment is under every touch-target
+                // floor there is, on a screen where a mis-tap changes the chart
+                // somebody is playing off, and the thing it would do — jump to a
+                // song — already has a control with room for a title and a
+                // number in the sheet the `set` chip opens.
+                //
+                // Every box in here carries its own height, and the room under
+                // the strip is a box of its own rather than padding on the bar
+                // around it. Both are the fix for a fault seen on the phone on
+                // 2026-09-01 and not on the desktop: with the height on the
+                // strip's container and the gesture-bar inset as its parent's
+                // `padding-bottom`, the segments came out 18 px tall instead of
+                // 6 and ran off the bottom of the glass, under where the gesture
+                // pill lives. Whatever the engine was doing with the container's
+                // height, a `height` on the thing being painted cannot be
+                // stretched by it, and a spacer with a height is a box the
+                // layout has to reserve rather than padding it can eat.
+                div {
+                    style: {move || format!(
+                        "display: flex; flex-shrink: 0; padding: 0 {BAR_PAD}px; gap: {}px;",
+                        strip_gap(playable()),
+                    )},
+                    for (position, segment) in
+                        strip_segments(playback.index.get(), playable()).into_iter().enumerate()
+                    {
+                        div {
+                            key: {position},
+                            style: {format!(
+                                "flex: 1; min-width: 0; height: {STRIP_H}px; \
+                                 border-radius: 3px; background: {};",
+                                segment_ink(segment),
+                            )},
+                        }
+                    }
+                }
+
+                // The gesture bar's room, and the strip's own breathing space
+                // above it. See the note on the strip for why this is a box and
+                // not padding: `Route::full_screen` takes away the bottom nav,
+                // which is what pads `crate::app` clear of the phone's gesture
+                // pill (`safe.bottom.max(NAV_MIN_GAP)` there, and the same `max`
+                // here so the desktop preview keeps the design's own gap), so
+                // this screen has to reserve that room itself or the strip is
+                // drawn under a system control.
+                div {
+                    style: {format!(
+                        "height: {}px; flex-shrink: 0;",
+                        STRIP_GAP_BELOW as f32 + safe.bottom.max(crate::NAV_MIN_GAP),
+                    )},
+                }
+            }
         }
     }
 }
@@ -481,7 +685,16 @@ struct Now {
 /// tells the two apart before it gets this far — see the `SET_GONE` check at
 /// mount — because they need different sentences and only one of them is a
 /// fault.
-fn ordered(setlists: SetlistsStore, songs: SongsStore, id: SetlistId) -> Vec<crate::model::Song> {
+///
+/// `pub(super)` since F3, so the running-order sheet lists exactly this and not
+/// a second resolution of the same set. The sheet draws a numbered list, the
+/// strip draws a segment per entry and the counter says `2 / 4`; all three are
+/// the same list or none of them mean anything.
+pub(super) fn ordered(
+    setlists: SetlistsStore,
+    songs: SongsStore,
+    id: SetlistId,
+) -> Vec<crate::model::Song> {
     let Some(setlist) = setlists.get(id) else {
         return Vec::new();
     };
@@ -603,6 +816,109 @@ fn chevron(
     }
 }
 
+/// One chip in the bottom bar: a glyph, a word, and one state the whole box
+/// carries.
+///
+/// `on` is a closure for the same reason [`chevron`]'s `live` is: the keep-awake
+/// chip has to follow its signal without this component being rebuilt, and a
+/// `bool` read once at mount would be the state the screen opened in for as long
+/// as the gig lasted.
+///
+/// The state is said in the fill and not in the glyph, which is a choice worth
+/// stating because a two-glyph toggle (a sun and a crossed-out sun) was the
+/// obvious alternative. Ink-on-paper for on and fill-with-muted-ink for off is
+/// the language `ui::Chip` already teaches everywhere else in this app — the
+/// filter chips on the library screen are exactly this — and a control on a
+/// stage is not the place to teach a second one. It also keeps the glyph a
+/// constant, so the chip is never torn down and rebuilt to change a picture.
+///
+/// **The ink is declared on the glyph and the word, not on the box they sit
+/// in**, and that is a fault seen on the phone on 2026-09-01 and then fixed
+/// rather than a stylistic preference. With `background` and `color` both on the
+/// chip's own reactive style, tapping the toggle repainted the background and
+/// left the label the colour it had been: `--sla-paper` text on `--sla-fill`,
+/// which is very nearly invisible and looked for all the world like the tap had
+/// half-registered. The rule it implies is the one `crate::app`'s nav item
+/// already obeys by accident — a child whose *own* style closure re-runs
+/// re-resolves its colour, a bare text node under a restyled parent does not —
+/// so every element carrying ink here has a closure of its own.
+///
+/// `onclick` and nothing else; see the module header and
+/// `src/gesture_reachability.rs`.
+fn bar_chip(
+    scope: &mut RenderScope,
+    glyph: TablerIcon,
+    label: &'static str,
+    on: impl Fn() -> bool + Copy + 'static,
+    tap: impl Fn() + 'static,
+) -> NodeHandle {
+    let ink = move || {
+        if on() {
+            "var(--sla-paper)"
+        } else {
+            "var(--sla-ink-2)"
+        }
+    };
+    let __scope = scope;
+    rsx! {
+        div {
+            onclick: move || tap(),
+            style: {move || format!(
+                "{T_CHIP} height: {CHIP_H}px; padding: 0 13px; border-radius: 999px; \
+                 display: flex; align-items: center; gap: 6px; flex-shrink: 0; \
+                 white-space: nowrap; background: {};",
+                if on() { "var(--sla-ink)" } else { "var(--sla-fill)" },
+            )},
+            span {
+                style: {move || format!("display: flex; align-items: center; color: {};", ink())},
+                {icon(__scope, glyph, 15)}
+            }
+            span {
+                style: {move || format!("color: {};", ink())},
+                {label}
+            }
+        }
+    }
+}
+
+/// What one segment of the progress strip is painted in.
+///
+/// The handoff says this in words — *"played segments solid ink, current segment
+/// accent, upcoming muted"* — and every one of the three is a token rather than
+/// a hex, so the strip is right in both themes without a second palette. The
+/// wireframe's own `#ddd9d1` for an upcoming segment is `--sla-hairline` in the
+/// hi-fi set: the lightest thing this app draws that is still a thing.
+pub(super) fn segment_ink(segment: Segment) -> &'static str {
+    match segment {
+        Segment::Played => "var(--sla-ink)",
+        Segment::Current => "var(--sla-accent)",
+        Segment::Upcoming => "var(--sla-hairline)",
+    }
+}
+
+/// Draw the first page of the current song's chart, if it is a PDF that has
+/// never been rendered.
+///
+/// See the long note at the call site in [`Performance`]: this is
+/// `pages::cached_page`'s self-healing pass and it must be called from a
+/// component body or a tap handler, **never from a render closure**. It is out
+/// here rather than inside the component because the running-order sheet moves
+/// the index too, and a song jumped to from the sheet needs its page drawn
+/// exactly as much as one stepped to with a chevron.
+pub(super) fn realise_chart(
+    setlists: SetlistsStore,
+    songs: SongsStore,
+    attachments: AttachmentsStore,
+    playback: PlaybackStore,
+    id: SetlistId,
+) {
+    if let Some(chart) = current(setlists, songs, playback, id).and_then(|now| now.chart)
+        && let Some(directory) = attachments.directory(chart)
+    {
+        crate::pdf::pages::ensure_page(&directory, 1);
+    }
+}
+
 /// The bare ✕ in the corner of the bar.
 ///
 /// Bare rather than `ui::IconButton`'s filled pill, which is what `1o` draws
@@ -646,5 +962,87 @@ fn stranded(scope: &mut RenderScope, sentence: &'static str, close: impl Fn() + 
                 {sentence}
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::derive::{Segment, UpNext, strip_segments, up_next};
+    use crate::model::Song;
+
+    /// A set of three songs, one of which has since been deleted out of the
+    /// library. This is not a contrived state: the song overflow menu's Delete
+    /// is two taps from a setlist and nothing stops it being used while a gig
+    /// is on — card J5 is the schema's promise that the *set* survives it.
+    fn a_set_missing_its_middle_song() -> (SetlistsStore, SongsStore, SetlistId) {
+        let songs = SongsStore::new(vec![
+            Song::new(1, "Carolina", "M. Ward"),
+            Song::new(3, "Blackbird", "The Beatles"),
+        ]);
+        let setlists = SetlistsStore::new(Vec::new());
+        let id = setlists.add("Friday night");
+        setlists.add_song(id, 1);
+        // Song 2 was deleted from the library; the set still holds its id.
+        setlists.add_song(id, 2);
+        setlists.add_song(id, 3);
+        (setlists, songs, id)
+    }
+
+    /// The one definition of "how long is this set" the screen has, and the
+    /// whole reason F3's bar and strip take a list rather than a setlist: a
+    /// song that is not in the library any more cannot be played, cannot be
+    /// counted, and must not be named as the one coming up.
+    #[test]
+    fn a_deleted_song_is_not_in_the_running_order() {
+        let (setlists, songs, id) = a_set_missing_its_middle_song();
+        let set = ordered(setlists, songs, id);
+        let titles: Vec<&str> = set.iter().map(|s| s.title.as_str()).collect();
+        assert_eq!(titles, ["Carolina", "Blackbird"]);
+    }
+
+    /// So the bar names the next song that survives, skipping the hole in the
+    /// set rather than saying "up next" about a chart nobody can put up.
+    #[test]
+    fn up_next_skips_the_hole_a_deleted_song_leaves() {
+        let (setlists, songs, id) = a_set_missing_its_middle_song();
+        let set = ordered(setlists, songs, id);
+        assert_eq!(up_next(0, &set), Some(UpNext::Song("Blackbird".into())));
+        // And the second of the two is the last one, even though the set holds
+        // three ids — the label has to agree with what can actually be played.
+        assert_eq!(up_next(1, &set), Some(UpNext::Last));
+    }
+
+    /// And the strip draws a segment per *playable* song, so the two segments
+    /// under a two-song stand agree with the `1 / 2` above it. Three segments
+    /// here would leave one that could never become the current one.
+    #[test]
+    fn the_strip_counts_what_survives_and_not_what_the_set_holds() {
+        let (setlists, songs, id) = a_set_missing_its_middle_song();
+        let len = ordered(setlists, songs, id).len();
+        assert_eq!(len, 2);
+        assert_eq!(
+            strip_segments(0, len),
+            [Segment::Current, Segment::Upcoming]
+        );
+        assert_eq!(strip_segments(1, len), [Segment::Played, Segment::Current]);
+    }
+
+    /// A set whose songs have *all* been deleted is an empty set as far as
+    /// every one of these is concerned — the screen hides the bar for it and
+    /// says so in words over the chart area instead.
+    #[test]
+    fn a_set_of_nothing_but_deleted_songs_is_an_empty_set() {
+        let songs = SongsStore::new(Vec::new());
+        let setlists = SetlistsStore::new(Vec::new());
+        let id = setlists.add("Friday night");
+        setlists.add_song(id, 1);
+        setlists.add_song(id, 2);
+
+        let set = ordered(setlists, songs, id);
+        assert!(set.is_empty());
+        assert_eq!(up_next(0, &set), None);
+        assert!(strip_segments(0, set.len()).is_empty());
     }
 }

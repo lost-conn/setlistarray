@@ -15,6 +15,10 @@ mod chart_editor;
 mod chart_surface;
 mod library;
 mod performance;
+// The running order (F3): the sheet behind performance mode's `≡ set` chip.
+// A sheet and not a screen, and mounted in `crate::app` beside the other three
+// rather than inside `performance.rs` — its header says why both ways round.
+mod running_order;
 mod setlist_detail;
 mod setlist_picker;
 mod setlists;
@@ -29,6 +33,7 @@ pub use capture::CaptureScreen;
 pub use chart_editor::ChartEditor;
 pub use library::Library;
 pub use performance::Performance;
+pub use running_order::RunningOrderSheet;
 pub use setlist_detail::SetlistDetail;
 pub use setlist_picker::SetlistPicker;
 pub use setlists::Setlists;

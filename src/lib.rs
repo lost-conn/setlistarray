@@ -46,7 +46,8 @@ use db::DataDir;
 use platform::SafeArea;
 use screens::{
     AddToSetlistSheet, AttachmentViewer, CaptureScreen, ChartEditor, Library, Performance,
-    SetlistDetail, SetlistPicker, Setlists, SongDetail, SongForm, SortGroupSheet, Stub,
+    RunningOrderSheet, SetlistDetail, SetlistPicker, Setlists, SongDetail, SongForm,
+    SortGroupSheet, Stub,
 };
 use store::{
     AttachmentsStore, LibraryViewStore, NavStore, PlaybackStore, Route, SettingsStore,
@@ -90,7 +91,12 @@ const FONTS: &[AppFont] = &[
 
 /// The bottom nav's own breathing room, below which the gesture-bar inset is
 /// not allowed to shrink it. A device with no gesture bar reports 0.
-const NAV_MIN_GAP: f32 = 10.0;
+///
+/// `pub(crate)` since F3, because one screen has to pad itself: performance
+/// mode is `Route::full_screen`, so the nav that normally holds this gap is
+/// `display: none` under it, and its progress strip would otherwise be drawn
+/// beneath the phone's gesture pill.
+pub(crate) const NAV_MIN_GAP: f32 = 10.0;
 
 /// What `main` worked out before the window existed. `app` is a component and
 /// takes no arguments, so the command line arrives this way rather than as
@@ -248,12 +254,19 @@ pub fn app() -> NodeHandle {
 
             {bottom_nav(__scope, safe.bottom.max(NAV_MIN_GAP))}
 
-            // The three bottom sheets. All stay mounted for the life of the
+            // The four bottom sheets. All stay mounted for the life of the
             // app, parked below the fold, so that opening one has something to
             // slide. They sit last so they paint over the screen and the nav.
+            //
+            // Being out here, rather than inside the screen that opens each one,
+            // is what lets a sheet cover a `Route::full_screen` screen: the
+            // running order (F3) slides over the whole of performance mode,
+            // scrim and all, and a sheet nested in that screen's own column
+            // could only ever slide up inside the chart. See its header.
             SortGroupSheet {}
             AddToSetlistSheet {}
             SetlistPicker {}
+            RunningOrderSheet {}
         }
     }
 }

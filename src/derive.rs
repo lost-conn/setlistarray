@@ -372,6 +372,149 @@ pub fn performance_meta(song: &Song) -> String {
     parts.join(" · ")
 }
 
+/// What the left of the bottom bar says, in the two states it has.
+///
+/// `1o` draws `up next  Blackbird` and draws nothing else, which leaves the
+/// last song in the set — the one moment this line has something worth saying —
+/// undrawn. The one thing it must not do is print the label with nothing after
+/// it: a word followed by an empty slot, read at a metre with a guitar in your
+/// hands, is indistinguishable from a title that failed to load, and this app
+/// has already decided twice (see `performance_meta`, and the `1o` meta line it
+/// feeds) that an empty slot is not its house style.
+///
+/// So the last song replaces the whole line rather than blanking half of it,
+/// and the two states are an enum rather than a label-and-title pair of strings
+/// precisely so that the dangling half cannot be constructed at all.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UpNext {
+    /// There is another song after this one, and this is its title.
+    Song(String),
+    /// This is the last song in the set.
+    ///
+    /// Said out loud rather than left blank, because it is a fact somebody
+    /// playing wants: whether to reach for the setlist afterwards or start the
+    /// next one from memory is a decision made *during* the last song, not
+    /// after it.
+    Last,
+}
+
+impl UpNext {
+    /// The muted words — the label before a title, or the whole line when there
+    /// is no title to come.
+    pub fn label(&self) -> &'static str {
+        match self {
+            UpNext::Song(_) => "up next",
+            UpNext::Last => "last song",
+        }
+    }
+
+    /// The title in ink after the label, as a nought-or-one vector: `rsx!`'s
+    /// `for` is the only conditional the macro has, and "no title" has to be an
+    /// absent element rather than an empty one.
+    pub fn title(&self) -> Vec<String> {
+        match self {
+            UpNext::Song(title) => vec![title.clone()],
+            UpNext::Last => Vec::new(),
+        }
+    }
+}
+
+/// The next song in the set, given the songs of it that still resolve.
+///
+/// `set` is what `performance::ordered` handed over, and that is the whole
+/// reason this takes a list rather than a setlist: a song deleted out of the
+/// library underneath a running gig is already gone from it, so "up next" names
+/// the next song that can actually be *played* rather than the next id the set
+/// happens to hold. That is the same list [`playing_at`] counts and [`steps`]
+/// measures, which is what keeps `2 / 4`, a live › and this line agreeing with
+/// one another instead of each being right about a different set.
+///
+/// `None` for a set with nothing playable in it. There is no song on the stand,
+/// so there is nothing for a next song to be next to — the screen draws no bar
+/// at all rather than a bar full of blanks. The index is clamped through
+/// [`playing_at`] for the reason `steps` is: the screen already draws the
+/// clamped song, and a line naming the song after an index nothing is drawn at
+/// would be a promise about a chart that is not on the stand.
+pub fn up_next(index: usize, set: &[Song]) -> Option<UpNext> {
+    let (index, _) = playing_at(index, set.len())?;
+    Some(match set.get(index + 1) {
+        Some(next) => UpNext::Song(next.title.clone()),
+        None => UpNext::Last,
+    })
+}
+
+/// One song's worth of the progress strip along the very bottom of `1o`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Segment {
+    /// Behind us — solid ink.
+    Played,
+    /// On the stand — accent.
+    Current,
+    /// Still to come — muted.
+    Upcoming,
+}
+
+/// The whole strip: one segment per song in the set, in order.
+///
+/// **One per song, not five.** `1o` draws five because its example set is five
+/// songs long; a strip that always drew five would be a decoration that lies
+/// about a twelve-song set, which is the one thing a progress indicator cannot
+/// do and still be one.
+///
+/// Empty for a set with nothing playable in it — a strip of no segments is
+/// drawn as nothing at all, which is right: there is no progress through a set
+/// that has nothing in it.
+///
+/// The index is clamped through [`playing_at`], so the accent segment is always
+/// the song actually on the stand. Without that, an index past the end (two
+/// songs removed from the set on another screen while it was playing) would
+/// paint every segment `Played` and leave the strip claiming a gig had finished
+/// while its last chart was still up.
+pub fn strip_segments(index: usize, len: usize) -> Vec<Segment> {
+    let Some((index, _)) = playing_at(index, len) else {
+        return Vec::new();
+    };
+    (0..len)
+        .map(|i| match i.cmp(&index) {
+            std::cmp::Ordering::Less => Segment::Played,
+            std::cmp::Ordering::Equal => Segment::Current,
+            std::cmp::Ordering::Greater => Segment::Upcoming,
+        })
+        .collect()
+}
+
+/// How much space to leave between two segments of the strip, for a set this
+/// long.
+///
+/// The wireframe's 3px gap is right for its five segments and wrong for a real
+/// set, and it is the *gap* that goes wrong first rather than the segments. The
+/// strip has about 365px to live in on the 393px viewport the designs assume
+/// (`SCREEN_PAD`-ish padding off each end), so at a fixed 3px: five songs is 12
+/// of those pixels spent on gaps, twenty is 57, forty is 117, and by sixty the
+/// strip is more gap than segment and every song is a two-pixel sliver between
+/// two three-pixel holes.
+///
+/// So the gap shrinks as the set grows, and — this is the part worth stating —
+/// it is allowed to reach nought. A very long set stops being a row of segments
+/// and becomes one continuous bar with the colour changing where the set has
+/// got to, which is exactly what a progress bar for sixty songs should look
+/// like anyway. It degrades into the right thing instead of into slivers, and
+/// it does it without a second drawing path that would only ever be seen by
+/// somebody with a sixty-song set.
+///
+/// The alternative — capping the segment count, or letting the strip scroll —
+/// was rejected on the same ground: this is a thing glanced at from a metre
+/// away between songs. A strip that has to be scrolled to be read is not a
+/// glance, and a strip that stops counting at 40 is lying again.
+pub fn strip_gap(len: usize) -> u32 {
+    match len {
+        0..=12 => 3,
+        13..=24 => 2,
+        25..=48 => 1,
+        _ => 0,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Setlist song picker (`1i`)
 // ---------------------------------------------------------------------------
@@ -1164,6 +1307,150 @@ mod tests {
         s.key = Some("   ".into());
         s.capo = Some(2);
         assert_eq!(performance_meta(&s), "capo 2");
+    }
+
+    // ── the bottom bar and the progress strip (F3) ──────────────────────
+
+    /// A three-song set, as it comes off `performance::ordered`. The bottom
+    /// bar's own tests and the strip's are both about this list.
+    fn a_set() -> Vec<Song> {
+        vec![
+            song(1, "Carolina", "M. Ward"),
+            song(2, "Angel From Montgomery", "John Prine"),
+            song(3, "Blackbird", "The Beatles"),
+        ]
+    }
+
+    /// The line the wireframe draws, from anywhere but the end of the set.
+    #[test]
+    fn the_bar_names_the_song_that_comes_next() {
+        let set = a_set();
+        assert_eq!(
+            up_next(0, &set),
+            Some(UpNext::Song("Angel From Montgomery".into()))
+        );
+        assert_eq!(up_next(1, &set), Some(UpNext::Song("Blackbird".into())));
+        assert_eq!(up_next(0, &set).unwrap().label(), "up next");
+        assert_eq!(
+            up_next(0, &set).unwrap().title(),
+            ["Angel From Montgomery"]
+        );
+    }
+
+    /// The state the wireframe never drew. The label changes rather than the
+    /// title going blank, because `up next` with nothing after it reads as a
+    /// title that failed to load — and there is no way to *say* it wrongly,
+    /// since the variant with no title carries no title field to leave empty.
+    #[test]
+    fn the_last_song_says_so_rather_than_labelling_an_empty_slot() {
+        let set = a_set();
+        assert_eq!(up_next(2, &set), Some(UpNext::Last));
+        assert_eq!(up_next(2, &set).unwrap().label(), "last song");
+        assert!(up_next(2, &set).unwrap().title().is_empty());
+    }
+
+    /// A set of one is at the end of itself from the first bar of it — the
+    /// encore somebody plays on its own, and not a degenerate case.
+    #[test]
+    fn a_set_of_one_song_is_already_on_its_last_song() {
+        assert_eq!(
+            up_next(0, &[song(1, "Carolina", "M. Ward")]),
+            Some(UpNext::Last)
+        );
+    }
+
+    /// Nothing playable means no line at all, not a line about nothing. The
+    /// screen hides the whole bar for this, which is why `None` is a state and
+    /// not an empty string.
+    #[test]
+    fn an_empty_set_has_no_up_next_line() {
+        assert_eq!(up_next(0, &[]), None);
+        assert_eq!(up_next(4, &[]), None);
+    }
+
+    /// The clamp again, and it matters here for the same reason it matters to
+    /// the chevrons: the screen draws the *last* song for an out-of-range
+    /// index, so the bar has to agree that there is nothing after it.
+    #[test]
+    fn an_index_past_the_end_is_on_the_last_song_for_the_bar_too() {
+        assert_eq!(up_next(9, &a_set()), Some(UpNext::Last));
+        assert_eq!(up_next(usize::MAX, &a_set()), Some(UpNext::Last));
+    }
+
+    /// One segment per song, and the three states in the places the handoff
+    /// puts them: played behind, current here, upcoming ahead.
+    #[test]
+    fn the_strip_is_one_segment_per_song_in_the_set() {
+        use Segment::*;
+        assert_eq!(strip_segments(0, 3), [Current, Upcoming, Upcoming]);
+        assert_eq!(strip_segments(1, 3), [Played, Current, Upcoming]);
+        assert_eq!(strip_segments(2, 3), [Played, Played, Current]);
+    }
+
+    /// Not five. `1o` draws five segments because its example set is five songs
+    /// long, and a strip that always drew five would be a decoration that lies
+    /// about every other set in the book.
+    #[test]
+    fn a_long_set_gets_a_long_strip_rather_than_the_wireframes_five() {
+        assert_eq!(strip_segments(7, 22).len(), 22);
+        assert_eq!(strip_segments(7, 22)[7], Segment::Current);
+        assert_eq!(strip_segments(7, 22)[6], Segment::Played);
+        assert_eq!(strip_segments(7, 22)[8], Segment::Upcoming);
+        assert_eq!(strip_segments(0, 1), [Segment::Current]);
+    }
+
+    /// A set with nothing playable in it draws no strip, rather than one
+    /// segment's worth of nothing.
+    #[test]
+    fn an_empty_set_draws_no_strip_at_all() {
+        assert!(strip_segments(0, 0).is_empty());
+        assert!(strip_segments(5, 0).is_empty());
+    }
+
+    /// An index past the end still marks the song that is actually up. Without
+    /// the clamp every segment would come out `Played` and the strip would say
+    /// the gig had finished while its last chart was still on the stand.
+    #[test]
+    fn an_index_past_the_end_still_marks_the_song_on_the_stand() {
+        use Segment::*;
+        assert_eq!(strip_segments(9, 3), [Played, Played, Current]);
+    }
+
+    /// The gap closes as the set grows, and is allowed to reach nought: past
+    /// roughly fifty songs the strip stops being a row of segments and becomes
+    /// one bar whose colour changes where the set has got to, which is what a
+    /// progress bar for that many songs should look like anyway.
+    #[test]
+    fn the_gap_between_segments_closes_as_the_set_grows() {
+        assert_eq!(strip_gap(5), 3);
+        assert_eq!(strip_gap(12), 3);
+        assert_eq!(strip_gap(13), 2);
+        assert_eq!(strip_gap(24), 2);
+        assert_eq!(strip_gap(25), 1);
+        assert_eq!(strip_gap(48), 1);
+        assert_eq!(strip_gap(49), 0);
+        assert_eq!(strip_gap(200), 0);
+    }
+
+    /// The arithmetic the thresholds were chosen for, checked rather than
+    /// asserted in prose: on the 365px the strip has to live in, no set ever
+    /// spends more than about a third of the strip on the spaces between its
+    /// segments, and every segment stays at least a couple of pixels wide.
+    #[test]
+    fn the_strip_never_becomes_more_gap_than_segment() {
+        const WIDTH: f32 = 365.0;
+        for len in 1..=60usize {
+            let gaps = (len.saturating_sub(1)) as f32 * strip_gap(len) as f32;
+            assert!(
+                gaps < WIDTH * 0.35,
+                "a set of {len} spends {gaps}px of {WIDTH}px on gaps"
+            );
+            let segment = (WIDTH - gaps) / len as f32;
+            assert!(
+                segment >= 2.0,
+                "a set of {len} leaves {segment}px per segment"
+            );
+        }
     }
 
     // ── sort & group sheet ──────────────────────────────────────────────
