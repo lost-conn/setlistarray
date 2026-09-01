@@ -17,6 +17,14 @@ pub const GROUP_PREVIEW: usize = 6;
 
 /// Songs matching a search query, over title, artist and tags. An empty query
 /// matches everything.
+///
+/// Two callers, and neither of them is the library list any more: the song
+/// picker (`1i`) and the search screen (`1p`). Card G1 took the library's
+/// in-place filter out — see [`grouped`] — so this is now the matcher a screen
+/// with a field of its own asks, rather than a rule the book is read through.
+/// The "empty matches everything" answer is right for both of those and wrong
+/// for `1p`'s first frame, which is why [`search_songs`] does not simply call
+/// this one and hope.
 pub fn filter_songs(songs: Vec<Song>, query: &str) -> Vec<Song> {
     let query = query.trim().to_lowercase();
     if query.is_empty() {
@@ -32,15 +40,23 @@ pub fn filter_songs(songs: Vec<Song>, query: &str) -> Vec<Song> {
         .collect()
 }
 
-/// The library list, filtered, grouped and sorted.
+/// The library list, grouped and sorted.
+///
+/// **It no longer takes a query, and that is card G1 removing a behaviour
+/// rather than an oversight.** The library's search field used to filter this
+/// list as you typed; since G1 it is a way in to the search screen (`1p`) and
+/// types nothing. Leaving the filter here would have meant a library that comes
+/// back from a search still showing four of its three hundred songs, with no
+/// field on the screen to say why and nothing to clear — the dead-end H1 spent
+/// its own effort avoiding, one screen over. So the book reads as the whole
+/// book, and a question about it is asked somewhere the answer can be seen.
 pub fn grouped(
     songs: Vec<Song>,
-    query: &str,
     group_by: GroupBy,
     sort_field: SortField,
     sort_dir: SortDir,
 ) -> Vec<Group> {
-    let mut groups = group_songs(filter_songs(songs, query), group_by);
+    let mut groups = group_songs(songs, group_by);
     for group in &mut groups {
         sort_songs(&mut group.songs, sort_field, sort_dir);
     }
@@ -249,6 +265,381 @@ pub fn setlist_summary(setlist: &Setlist, songs: &[Song]) -> String {
         1 => format!("1 song · {}", fmt_duration(total_runtime(&members))),
         n => format!("{n} songs · {}", fmt_duration(total_runtime(&members))),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Search & filter (`1p`)
+// ---------------------------------------------------------------------------
+
+/// One run of a result's display string, and whether the query matched it.
+///
+/// A `Vec<Highlight>` is the whole of what a highlighted row needs: the runs
+/// concatenate back to the original string exactly, so the screen draws them in
+/// order and gives the `matched` ones a background. Splitting the string here
+/// rather than in the screen is what makes the fiddly half testable — see
+/// [`highlight`], which is one `unwrap`-free function and eleven tests.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Highlight {
+    pub text: String,
+    pub matched: bool,
+}
+
+/// Split a display string into matched and unmatched runs, case-insensitively.
+///
+/// The runs are the *original* text, never the lowercased one: `1p` highlights
+/// `Dylan` inside `Bob Dylan` for the query `dylan`, and a row that answered
+/// `bob dylan` would be a search that quietly rewrote the library. Every match
+/// in the string is marked, not just the first.
+///
+/// ## Why this is a byte map and not `to_lowercase().find()`
+///
+/// The obvious implementation lowercases the haystack, finds the needle in it,
+/// and slices the *original* at the byte offsets it got back. That is wrong,
+/// and on this app's content it is wrong in the way that ends a process rather
+/// than the way that returns a wrong answer: `str::to_lowercase` is not
+/// length-preserving. `İ` (U+0130, two bytes) lowercases to `i̇` — two chars,
+/// three bytes — so every offset after it is shifted, and slicing the original
+/// at a shifted offset lands mid-character and panics. Card K34 is about a flat
+/// sign surviving a capture; this app ships Unicode in titles, artists, tags and
+/// set names, and a search field is where all four are typed at.
+///
+/// So the lowercased haystack is built one character at a time alongside a map
+/// from each of its bytes back to the byte that character *started* at in the
+/// original. A match's start and end are both looked up through it, which means
+/// both ends are always original character boundaries whatever the case folding
+/// did to the lengths in between.
+///
+/// The one thing the map cannot do is highlight *half* a character. A query of
+/// `i` against `İstanbul` finds a match inside the expansion of that first
+/// character, whose start and end map to the same original byte; there is no
+/// substring of the original that is the matched part, so that match is skipped
+/// and the scan moves on. It is a wrong answer for one letter in one alphabet,
+/// arrived at deliberately, and it is not a panic — which is the trade the whole
+/// function is here to make.
+pub fn highlight(text: &str, query: &str) -> Vec<Highlight> {
+    // Trimmed to match [`filter_songs`] exactly. The matcher decided a row is
+    // in the list by trimming the query; if the highlighter did not, a query
+    // typed with a trailing space would put rows on screen with nothing marked
+    // on them, and the field would look broken by one invisible character.
+    let needle = query.trim().to_lowercase();
+    let whole = |text: &str| match text.is_empty() {
+        true => Vec::new(),
+        false => vec![Highlight {
+            text: text.to_string(),
+            matched: false,
+        }],
+    };
+    if needle.is_empty() {
+        return whole(text);
+    }
+
+    let mut hay = String::with_capacity(text.len());
+    // `map[i]` is the byte in `text` that `hay`'s byte `i` came from; the extra
+    // entry at the end is what lets a match that runs to the end of the string
+    // be looked up the same way as every other one.
+    let mut map: Vec<usize> = Vec::with_capacity(text.len() + 1);
+    for (at, ch) in text.char_indices() {
+        let before = hay.len();
+        for lowered in ch.to_lowercase() {
+            hay.push(lowered);
+        }
+        for _ in before..hay.len() {
+            map.push(at);
+        }
+    }
+    map.push(text.len());
+
+    let mut runs: Vec<Highlight> = Vec::new();
+    let mut cursor = 0; // into `hay`
+    let mut kept = 0; // into `text`: the start of the unmatched run being gathered
+    while let Some(at) = hay[cursor..].find(&needle) {
+        let (from, to) = (cursor + at, cursor + at + needle.len());
+        cursor = to;
+        let (from, to) = (map[from], map[to]);
+        // Half a character, or a match already covered — see the module note
+        // above. Skipped rather than sliced.
+        if to <= from || from < kept {
+            continue;
+        }
+        if from > kept {
+            runs.push(Highlight {
+                text: text[kept..from].to_string(),
+                matched: false,
+            });
+        }
+        runs.push(Highlight {
+            text: text[from..to].to_string(),
+            matched: true,
+        });
+        kept = to;
+    }
+
+    if runs.is_empty() {
+        return whole(text);
+    }
+    if kept < text.len() {
+        runs.push(Highlight {
+            text: text[kept..].to_string(),
+            matched: false,
+        });
+    }
+    runs
+}
+
+/// The songs `1p` lists, in the order it lists them.
+///
+/// **An empty query matches nothing here, where [`filter_songs`] matches
+/// everything.** That difference is the screen's first frame: the library is a
+/// list you are shown and a filter narrows it, but a search screen with nothing
+/// typed has not been asked anything yet, and answering "all three hundred of
+/// them" is a result set that means nothing and buries the one row the user is
+/// about to make appear. The screen draws its own empty state instead.
+///
+/// Sorted by title A–Z rather than by the library's own sort, which is the same
+/// call [`picker_songs`] makes and for the same two reasons: the list is flat,
+/// so the grouping the library sort exists to pair with is not here; and a
+/// search is made with something already in mind, which is a thing you scan for
+/// by name. The count line says so out loud — see [`search_count_line`].
+pub fn search_songs(songs: Vec<Song>, query: &str) -> Vec<Song> {
+    if query.trim().is_empty() {
+        return Vec::new();
+    }
+    let mut found = filter_songs(songs, query);
+    sort_songs(&mut found, SortField::Title, SortDir::Asc);
+    found
+}
+
+/// The setlists `1p` lists, over the set name alone.
+///
+/// The name and nothing else, deliberately: a set's songs are already in the
+/// Songs group above it, so matching a set on its members would list `Dylan
+/// night` under Setlists because it contains a Dylan song, which is a different
+/// claim from the one the row appears to make and the same rows twice over.
+///
+/// A–Z by name, for the same reason the songs are A–Z by title, and the empty
+/// query answers empty for the same reason too.
+pub fn search_setlists(setlists: Vec<Setlist>, query: &str) -> Vec<Setlist> {
+    if query.trim().is_empty() {
+        return Vec::new();
+    }
+    let mut found = filter_setlists(setlists, query);
+    found.sort_by_key(|s| s.name.to_lowercase());
+    found
+}
+
+/// One song on `1p`, with the query already segmented out of the two strings
+/// the row prints.
+///
+/// **The segmentation is part of the row's data, and that is a reactivity
+/// decision rather than a tidiness one.** Rinch's keyed `for` preserves the DOM
+/// of an item whose key survives a change and re-renders one whose *data*
+/// changed (`for_each_dom`'s equality pass). A row keyed by song id survives
+/// every keystroke that leaves the song matching — `dyl` to `dyla` — so if the
+/// highlight were computed inside the row body from a signal, it would be built
+/// once and then never again, and the mark would stay frozen on `Dyl` under a
+/// field reading `dyla`. That is not a hypothetical: it is what card G1 shipped
+/// to the phone first and had to be shown, and the tell was subtle — the list
+/// narrowed correctly, so everything *looked* live except the three pixels
+/// under the mark.
+///
+/// Putting the runs in the item makes the highlight part of what `PartialEq`
+/// compares, so the same pass that keeps a row's DOM when nothing about it
+/// changed rebuilds it the moment its mark moves — and rebuilds only those.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SongHit {
+    pub song: Song,
+    pub title: Vec<Highlight>,
+    pub meta: Vec<Highlight>,
+}
+
+/// One setlist on `1p`, segmented for the same reason [`SongHit`] is.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SetlistHit {
+    pub setlist: Setlist,
+    pub name: Vec<Highlight>,
+    pub summary: String,
+}
+
+/// The song rows `1p` draws, in order, with their marks.
+///
+/// The second line is [`Song::meta_line`] — `Artist · key · tempo` — and not
+/// the `meta_line_played` variant a library row falls back to. A result's meta
+/// line has a second job the library's does not: it is where you see *why* this
+/// row is in the list, which for a query like `dylan` is the artist and can
+/// never be `played May`. So the line that always leads with the artist is the
+/// one that gets highlighted.
+pub fn song_hits(songs: Vec<Song>, query: &str) -> Vec<SongHit> {
+    search_songs(songs, query)
+        .into_iter()
+        .map(|song| SongHit {
+            title: highlight(&song.title, query),
+            meta: highlight(&song.meta_line(), query),
+            song,
+        })
+        .collect()
+}
+
+/// The setlist rows `1p` draws, with their marks and their `9 songs · 32:04`.
+///
+/// `songs` is the library, needed only to add up the sub-line — the same
+/// [`setlist_summary`] the add-to-setlist sheet prints, so a set reads the same
+/// wherever it is listed. The summary is not highlighted: it is a count and a
+/// clock, and a query that matched digits in it would be marking a coincidence.
+pub fn setlist_hits(setlists: Vec<Setlist>, songs: &[Song], query: &str) -> Vec<SetlistHit> {
+    search_setlists(setlists, query)
+        .into_iter()
+        .map(|setlist| SetlistHit {
+            name: highlight(&setlist.name, query),
+            summary: setlist_summary(&setlist, songs),
+            setlist,
+        })
+        .collect()
+}
+
+/// `1p`'s count line: `6 of 300 songs · 1 of 2 setlists · sorted A–Z`.
+///
+/// The wireframe draws `6 of 300 songs · sorted by title`, from a search screen
+/// that only ever listed songs. Two things about it had to change once setlists
+/// were in the results.
+///
+/// **What it counts.** Both groups, each against its own total, rather than one
+/// number over a total that mixes two kinds of thing. `7 of 302` is arithmetic
+/// nobody asked for: a book has three hundred songs and two sets, those are not
+/// three hundred and two of anything, and the whole value of this line is
+/// telling you how much of the book you are looking at.
+///
+/// **Its last clause.** `sorted by title` is true of the songs and meaningless
+/// for a setlist, which has a name. `sorted A–Z` is the same promise in a word
+/// that is true of both rows, and it is a promise worth printing because the
+/// order is *not* the library's — see [`search_songs`].
+///
+/// The setlist clause is dropped entirely from a book with no sets in it. `0 of
+/// 0 setlists` is not a fact about a search, it is a fact about a user who has
+/// never made a setlist, and it does not belong on the line that says how the
+/// search went.
+pub fn search_count_line(
+    songs_found: usize,
+    songs_total: usize,
+    setlists_found: usize,
+    setlists_total: usize,
+) -> String {
+    let counted = |found: usize, total: usize, noun: &str| match total {
+        1 => format!("{found} of 1 {noun}"),
+        _ => format!("{found} of {total} {noun}s"),
+    };
+    let mut parts = vec![counted(songs_found, songs_total, "song")];
+    if setlists_total > 0 {
+        parts.push(counted(setlists_found, setlists_total, "setlist"));
+    }
+    parts.push("sorted A–Z".to_string());
+    parts.join(" · ")
+}
+
+/// One row of `1p`'s scrolling area, empty states included.
+///
+/// **The whole area is one list rather than four conditional blocks, and that
+/// is a bug this card walked into rather than a preference.** The obvious
+/// shape — an `if` for the Songs group, an `if` for the Setlists group, an `if`
+/// for "nothing typed" and an `if` for "nothing matched", four siblings in one
+/// scrolling column — was built, and on the phone the last of them did not
+/// always appear when its condition turned true. Typing `d` (six songs and a
+/// set), then `y`, emptied the list and left the screen blank: no rows, and no
+/// "Nothing matches" either, with the count line above it correctly reading
+/// `0 of 26 songs`. The same transition from a *different* starting state drew
+/// it. Four `show_dom` markers inserting and removing siblings in one parent is
+/// evidently not a shape to rely on here, and this card is not the place to fix
+/// rinch's `if`.
+///
+/// A keyed `for` is the mechanism this app already leans on everywhere and
+/// which is exercised by every list screen in it, so the area became one of
+/// those: every row, heading and empty panel alike, is an item with a key, and
+/// what is on screen is a value this module produces and tests rather than four
+/// conditions evaluated in a layout. Card G2's "Inside attachments" group is a
+/// heading and some rows appended in the same function.
+// `Default` because the screen draws each row through a component that takes
+// one as a prop, and the rsx macro builds every prop struct with
+// `..Default::default()`. `Prompt` is the variant to default to: it is the row
+// an untouched screen is made of.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum SearchRow {
+    /// A group heading and how many rows sit under it.
+    Heading {
+        label: &'static str,
+        count: usize,
+        /// The first heading is accent-coloured, later ones muted — the same
+        /// rule the library's own group headers follow.
+        first: bool,
+    },
+    Song(SongHit),
+    Setlist(SetlistHit),
+    /// Nothing typed yet.
+    #[default]
+    Prompt,
+    /// Typed, and nothing in the book answers to it. Carries the trimmed query
+    /// so the panel can name it back — and so that the row's *data* changes on
+    /// every keystroke, which is what makes rinch rebuild it rather than leave
+    /// a panel quoting the query before last.
+    NoMatch(String),
+}
+
+impl SearchRow {
+    /// The `key:` the screen gives this row.
+    ///
+    /// Stable across keystrokes on purpose: a row that survives a change keeps
+    /// its DOM, and the equality pass rebuilds it only if what it draws moved.
+    /// The two panels are singletons and say so.
+    pub fn key(&self) -> String {
+        match self {
+            SearchRow::Heading { label, .. } => format!("h:{label}"),
+            SearchRow::Song(hit) => format!("s:{}", hit.song.id),
+            SearchRow::Setlist(hit) => format!("l:{}", hit.setlist.id),
+            SearchRow::Prompt => "prompt".to_string(),
+            SearchRow::NoMatch(_) => "nomatch".to_string(),
+        }
+    }
+}
+
+/// Everything `1p` scrolls, in order.
+///
+/// Three states, and each is the whole list rather than a layer over the
+/// others: nothing typed is one [`SearchRow::Prompt`]; a query with no answer
+/// is one [`SearchRow::NoMatch`]; anything else is a heading and its rows per
+/// group that has any. A group with no matches contributes nothing at all — not
+/// a heading over nothing, which is the same rule this screen applies to card
+/// G2's absent "Inside attachments" group and for the same reason.
+pub fn search_rows(songs: Vec<Song>, setlists: Vec<Setlist>, query: &str) -> Vec<SearchRow> {
+    if query.trim().is_empty() {
+        return vec![SearchRow::Prompt];
+    }
+
+    let sets = setlist_hits(setlists, &songs, query);
+    let found = song_hits(songs, query);
+    if found.is_empty() && sets.is_empty() {
+        return vec![SearchRow::NoMatch(query.trim().to_string())];
+    }
+
+    let mut rows = Vec::new();
+    if !found.is_empty() {
+        rows.push(SearchRow::Heading {
+            label: "Songs",
+            count: found.len(),
+            first: true,
+        });
+        rows.extend(found.into_iter().map(SearchRow::Song));
+    }
+    if !sets.is_empty() {
+        // `first: false` even with no songs above it, so the two headings never
+        // trade colours depending on what the query happened to find — a
+        // heading that is accent in one search and muted in the next reads as a
+        // state rather than as a label.
+        rows.push(SearchRow::Heading {
+            label: "Setlists",
+            count: sets.len(),
+            first: false,
+        });
+        rows.extend(sets.into_iter().map(SearchRow::Setlist));
+    }
+    rows
 }
 
 // ---------------------------------------------------------------------------
@@ -1161,6 +1552,432 @@ mod tests {
         assert_eq!(titles(&filter_songs(songs.clone(), "campfire")), ["Ripple"]);
         assert_eq!(filter_songs(songs.clone(), "   ").len(), 3);
         assert!(filter_songs(songs, "nothing here").is_empty());
+    }
+
+    // ── search & filter screen (`1p`) ───────────────────────────────────
+
+    /// The runs of a highlight, flattened to something an assertion can read.
+    fn runs(text: &str, query: &str) -> Vec<(String, bool)> {
+        highlight(text, query)
+            .into_iter()
+            .map(|h| (h.text, h.matched))
+            .collect()
+    }
+
+    /// The invariant every other highlight test is written on top of: whatever
+    /// the segmentation does, putting the runs back together has to give the
+    /// original string back, byte for byte. A highlighter that drops or
+    /// duplicates a character is a search that rewrites the library.
+    fn rejoins(text: &str, query: &str) {
+        let joined: String = highlight(text, query).into_iter().map(|h| h.text).collect();
+        assert_eq!(joined, text, "runs of {text:?} against {query:?}");
+    }
+
+    #[test]
+    fn an_empty_query_marks_nothing_and_keeps_the_whole_string() {
+        assert_eq!(runs("Blackbird", ""), [("Blackbird".to_string(), false)]);
+        assert_eq!(runs("Blackbird", "   "), [("Blackbird".to_string(), false)]);
+    }
+
+    #[test]
+    fn an_empty_string_has_no_runs_at_all() {
+        // A song with no artist draws no meta line rather than an empty one.
+        assert!(highlight("", "dylan").is_empty());
+        assert!(highlight("", "").is_empty());
+    }
+
+    #[test]
+    fn a_query_longer_than_the_text_matches_nothing() {
+        assert_eq!(
+            runs("Bob", "Bob Dylan and then some"),
+            [("Bob".to_string(), false)]
+        );
+        rejoins("Bob", "Bob Dylan and then some");
+    }
+
+    #[test]
+    fn a_match_at_the_very_start_leads_with_the_marked_run() {
+        assert_eq!(
+            runs("Blackbird", "black"),
+            [("Black".to_string(), true), ("bird".to_string(), false)]
+        );
+    }
+
+    #[test]
+    fn a_match_at_the_very_end_trails_with_the_marked_run() {
+        assert_eq!(
+            runs("Blackbird", "bird"),
+            [("Black".to_string(), false), ("bird".to_string(), true)]
+        );
+    }
+
+    /// The case `1p` actually draws: `Dylan` inside `Bob Dylan`, marked in the
+    /// middle of the string rather than at either end.
+    #[test]
+    fn a_match_in_the_middle_is_marked_where_it_sits() {
+        assert_eq!(
+            runs("Bob Dylan and The Band", "dylan"),
+            [
+                ("Bob ".to_string(), false),
+                ("Dylan".to_string(), true),
+                (" and The Band".to_string(), false),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_whole_string_matching_leaves_one_marked_run() {
+        assert_eq!(runs("Ripple", "ripple"), [("Ripple".to_string(), true)]);
+    }
+
+    #[test]
+    fn every_occurrence_is_marked_not_only_the_first() {
+        assert_eq!(
+            runs("Row, row, row your boat", "row"),
+            [
+                ("Row".to_string(), true),
+                (", ".to_string(), false),
+                ("row".to_string(), true),
+                (", ".to_string(), false),
+                ("row".to_string(), true),
+                (" your boat".to_string(), false),
+            ]
+        );
+    }
+
+    /// Two adjacent matches must not be run together into one marked span with
+    /// nothing between them, and must not lose the character that separates
+    /// them either.
+    #[test]
+    fn back_to_back_matches_stay_two_runs() {
+        assert_eq!(
+            runs("abab", "ab"),
+            [("ab".to_string(), true), ("ab".to_string(), true)]
+        );
+        rejoins("abab", "ab");
+    }
+
+    #[test]
+    fn case_differs_in_either_direction_and_the_book_keeps_its_own_spelling() {
+        // Query shouted at a quietly spelled book...
+        assert_eq!(
+            runs("the beatles", "BEAT"),
+            [("the ".to_string(), false), ("beat".to_string(), true), ("les".to_string(), false)]
+        );
+        // ...and the other way round. The run is the library's spelling, never
+        // the query's.
+        assert_eq!(
+            runs("The Beatles", "beat"),
+            [("The ".to_string(), false), ("Beat".to_string(), true), ("les".to_string(), false)]
+        );
+    }
+
+    #[test]
+    fn a_query_padded_with_spaces_marks_what_the_matcher_matched_on() {
+        // `filter_songs` trims before it decides a row is in the list, so the
+        // highlighter has to trim too or the row arrives with nothing marked.
+        assert_eq!(
+            runs("Blackbird", "  black  "),
+            [("Black".to_string(), true), ("bird".to_string(), false)]
+        );
+    }
+
+    /// Multi-byte characters, which is where a byte-index slip is a panic
+    /// rather than a wrong answer. Every one of these strings is the kind of
+    /// thing this app really holds: an accented artist, a flat sign in a key
+    /// (card K34), a title in a script with no ASCII in it at all.
+    #[test]
+    fn a_query_with_characters_that_are_not_ascii_does_not_slip_a_byte() {
+        // A match *after* a multi-byte character: every byte offset past the
+        // é is shifted, which is what the map exists to survive.
+        assert_eq!(
+            runs("Café Society", "society"),
+            [("Café ".to_string(), false), ("Society".to_string(), true)]
+        );
+        // The non-ASCII character inside the match itself, case-folded.
+        assert_eq!(
+            runs("Für Elise", "FÜR"),
+            [("Für".to_string(), true), (" Elise".to_string(), false)]
+        );
+        // A flat sign — not a letter, three bytes, and the exact character
+        // card K34 is about.
+        assert_eq!(
+            runs("E♭ Major", "♭"),
+            [("E".to_string(), false), ("♭".to_string(), true), (" Major".to_string(), false)]
+        );
+        // No ASCII anywhere, and a query that is a strict substring of it.
+        assert_eq!(
+            runs("さくらさくら", "くら"),
+            [
+                ("さ".to_string(), false),
+                ("くら".to_string(), true),
+                ("さ".to_string(), false),
+                ("くら".to_string(), true),
+            ]
+        );
+
+        for (text, query) in [
+            ("Café Society", "society"),
+            ("Für Elise", "FÜR"),
+            ("E♭ Major", "♭"),
+            ("さくらさくら", "くら"),
+            ("Blowin' In The Wind", "’"),
+            ("Ünïcödé", "cö"),
+        ] {
+            rejoins(text, query);
+        }
+    }
+
+    /// The one case the byte map cannot answer, pinned so that it stays a wrong
+    /// answer rather than becoming a panic. `İ` (U+0130) lowercases to two
+    /// characters, so a query of `i` matches half of it and there is no
+    /// substring of the original that is the matched part.
+    #[test]
+    fn a_match_inside_one_characters_case_expansion_is_skipped_not_sliced() {
+        assert_eq!(runs("İstanbul", "i"), [("İstanbul".to_string(), false)]);
+        rejoins("İstanbul", "i");
+
+        // The rest of the same string still highlights normally, which is the
+        // proof that the skip is one match and not the whole scan.
+        assert_eq!(
+            runs("İstanbul", "stan"),
+            [
+                ("İ".to_string(), false),
+                ("stan".to_string(), true),
+                ("bul".to_string(), false),
+            ]
+        );
+        rejoins("İstanbul", "stan");
+    }
+
+    #[test]
+    fn an_untyped_query_finds_nothing_where_the_library_filter_finds_everything() {
+        let songs = vec![song(1, "Blackbird", "The Beatles"), song(2, "Ripple", "GD")];
+        let sets = vec![set(1, "Porch, Saturday", vec![]), set(2, "Quiet set", vec![])];
+
+        // The difference this pair of functions exists for: a screen that has
+        // not been asked anything must not answer "all of them".
+        assert_eq!(filter_songs(songs.clone(), "").len(), 2);
+        assert!(search_songs(songs.clone(), "").is_empty());
+        assert!(search_songs(songs, "   ").is_empty());
+
+        assert_eq!(filter_setlists(sets.clone(), "").len(), 2);
+        assert!(search_setlists(sets.clone(), "").is_empty());
+        assert!(search_setlists(sets, "  ").is_empty());
+    }
+
+    #[test]
+    fn results_are_a_to_z_by_title_whatever_the_library_sort_is() {
+        let songs = vec![
+            song(1, "Zimmerman", "Bob Dylan"),
+            song(2, "Absolutely Sweet Marie", "Bob Dylan"),
+            song(3, "Ripple", "Grateful Dead"),
+            song(4, "buckets of rain", "Bob Dylan"),
+        ];
+        assert_eq!(
+            titles(&search_songs(songs, "dylan")),
+            ["Absolutely Sweet Marie", "buckets of rain", "Zimmerman"]
+        );
+    }
+
+    #[test]
+    fn matching_setlists_are_a_to_z_by_name() {
+        let sets = vec![
+            set(1, "Wedding, second set", vec![]),
+            set(2, "wedding, first set", vec![]),
+            set(3, "Porch, Saturday", vec![]),
+        ];
+        let names: Vec<String> = search_setlists(sets, "wedding")
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
+        assert_eq!(names, ["wedding, first set", "Wedding, second set"]);
+    }
+
+    #[test]
+    fn a_query_can_find_a_song_and_a_setlist_at_once() {
+        let songs = vec![
+            song(1, "Don't Think Twice", "Bob Dylan"),
+            song(2, "Ripple", "Grateful Dead"),
+        ];
+        let sets = vec![set(1, "Dylan night", vec![1]), set(2, "Quiet set", vec![])];
+
+        assert_eq!(titles(&search_songs(songs, "dylan")), ["Don't Think Twice"]);
+        assert_eq!(search_setlists(sets, "dylan").len(), 1);
+    }
+
+    /// Which kinds of row a query produces, in order. The labels are enough to
+    /// pin the shape of the screen without restating every hit.
+    fn shape(rows: &[SearchRow]) -> Vec<String> {
+        rows.iter()
+            .map(|row| match row {
+                SearchRow::Heading { label, count, first } => {
+                    format!("heading {label} {count} first={first}")
+                }
+                SearchRow::Song(hit) => format!("song {}", hit.song.title),
+                SearchRow::Setlist(hit) => format!("setlist {}", hit.setlist.name),
+                SearchRow::Prompt => "prompt".to_string(),
+                SearchRow::NoMatch(q) => format!("nomatch {q}"),
+            })
+            .collect()
+    }
+
+    fn book() -> (Vec<Song>, Vec<Setlist>) {
+        let songs = vec![
+            song(1, "Don't Think Twice", "Bob Dylan"),
+            song(2, "Ripple", "Grateful Dead"),
+            song(3, "Buckets Of Rain", "Bob Dylan"),
+        ];
+        let sets = vec![set(1, "Dylan night", vec![1, 3]), set(2, "Quiet set", vec![])];
+        (songs, sets)
+    }
+
+    #[test]
+    fn an_untouched_screen_is_one_prompt_row_and_nothing_else() {
+        let (songs, sets) = book();
+        assert_eq!(shape(&search_rows(songs.clone(), sets.clone(), "")), ["prompt"]);
+        assert_eq!(shape(&search_rows(songs, sets, "   ")), ["prompt"]);
+    }
+
+    #[test]
+    fn a_query_nothing_answers_to_is_one_row_naming_it_back() {
+        let (songs, sets) = book();
+        // Trimmed, because the panel prints it and a quoted trailing space is
+        // an answer that looks like a bug.
+        assert_eq!(
+            shape(&search_rows(songs, sets, "  wedding ")),
+            ["nomatch wedding"]
+        );
+    }
+
+    #[test]
+    fn a_query_that_finds_both_gets_a_heading_over_each_group() {
+        let (songs, sets) = book();
+        assert_eq!(
+            shape(&search_rows(songs, sets, "dylan")),
+            [
+                "heading Songs 2 first=true",
+                "song Buckets Of Rain",
+                "song Don't Think Twice",
+                "heading Setlists 1 first=false",
+                "setlist Dylan night",
+            ]
+        );
+    }
+
+    /// A group with no matches contributes nothing — not a heading over
+    /// nothing. The same rule the absent "Inside attachments" group follows.
+    #[test]
+    fn a_group_with_no_matches_has_no_heading() {
+        let (songs, sets) = book();
+        assert_eq!(
+            shape(&search_rows(songs.clone(), sets.clone(), "ripple")),
+            ["heading Songs 1 first=true", "song Ripple"]
+        );
+        assert_eq!(
+            shape(&search_rows(songs, sets, "quiet")),
+            ["heading Setlists 1 first=false", "setlist Quiet set"]
+        );
+    }
+
+    #[test]
+    fn every_row_has_a_key_and_no_two_rows_share_one() {
+        let (songs, sets) = book();
+        for query in ["", "nothing at all", "dylan", "e"] {
+            let rows = search_rows(songs.clone(), sets.clone(), query);
+            let mut keys: Vec<String> = rows.iter().map(|r| r.key()).collect();
+            let total = keys.len();
+            keys.sort();
+            keys.dedup();
+            assert_eq!(keys.len(), total, "duplicate key for query {query:?}");
+        }
+    }
+
+    /// The key is what makes rinch keep a row's DOM across a keystroke, and the
+    /// mark is what has to change under it. So the key must be stable while the
+    /// runs must not be — this pins both halves at once.
+    #[test]
+    fn a_row_keeps_its_key_across_a_keystroke_and_changes_its_marks() {
+        let (songs, sets) = book();
+        let before = search_rows(songs.clone(), sets.clone(), "dyl");
+        let after = search_rows(songs, sets, "dyla");
+
+        let song_key = |rows: &[SearchRow]| {
+            rows.iter()
+                .find(|r| matches!(r, SearchRow::Song(_)))
+                .map(|r| r.key())
+        };
+        assert_eq!(song_key(&before), song_key(&after));
+        assert_ne!(before, after);
+    }
+
+    #[test]
+    fn a_result_marks_the_artist_in_its_meta_line_the_way_the_wireframe_does() {
+        let hits = song_hits(vec![song(1, "Buckets Of Rain", "Bob Dylan")], "dylan");
+        assert_eq!(hits.len(), 1);
+        // Nothing in the title matches, so it is one unmarked run...
+        assert_eq!(
+            hits[0].title,
+            [Highlight {
+                text: "Buckets Of Rain".into(),
+                matched: false
+            }]
+        );
+        // ...and the mark is on the artist, mid-line, which is exactly what
+        // `1p` draws.
+        assert_eq!(
+            hits[0].meta,
+            [
+                Highlight {
+                    text: "Bob ".into(),
+                    matched: false
+                },
+                Highlight {
+                    text: "Dylan".into(),
+                    matched: true
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_setlist_result_carries_the_same_sub_line_the_sheet_prints() {
+        let songs = vec![durated(1, 224), durated(2, 138)];
+        let hits = setlist_hits(vec![set(1, "Dylan night", vec![1, 2])], &songs, "night");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].summary, "2 songs · 6:02");
+        // The summary is a count and a clock and is never marked, even when the
+        // query would match digits in it.
+        let digits = setlist_hits(vec![set(1, "Set 2", vec![1, 2])], &songs, "2");
+        assert_eq!(digits[0].summary, "2 songs · 6:02");
+    }
+
+    #[test]
+    fn the_count_line_counts_each_group_against_its_own_total() {
+        // The wireframe's own example, plus the setlist half it never had.
+        assert_eq!(
+            search_count_line(6, 300, 1, 2),
+            "6 of 300 songs · 1 of 2 setlists · sorted A–Z"
+        );
+    }
+
+    #[test]
+    fn the_count_line_says_song_and_setlist_when_the_book_holds_one_of_each() {
+        // Pluralised on the total, not on the number found: "1 of 300 song"
+        // would be a sentence about the wrong number.
+        assert_eq!(
+            search_count_line(1, 300, 0, 2),
+            "1 of 300 songs · 0 of 2 setlists · sorted A–Z"
+        );
+        assert_eq!(
+            search_count_line(1, 1, 1, 1),
+            "1 of 1 song · 1 of 1 setlist · sorted A–Z"
+        );
+    }
+
+    #[test]
+    fn the_count_line_drops_the_setlist_clause_for_a_book_with_no_sets() {
+        assert_eq!(search_count_line(2, 25, 0, 0), "2 of 25 songs · sorted A–Z");
     }
 
     // ── truncation ──────────────────────────────────────────────────────

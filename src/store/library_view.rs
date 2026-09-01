@@ -236,6 +236,29 @@ pub struct Group {
 /// it persisted, in the one Preferences row — see `src/db/prefs.rs`.
 #[derive(Clone, Copy)]
 pub struct LibraryViewStore {
+    /// What is typed into the search field — which since card G1 is the field
+    /// on the search screen (`1p`) rather than the one on the library, and
+    /// which no longer narrows [`grouped`](Self::grouped).
+    ///
+    /// **It stayed here, and it stayed persisted, and both halves of that were
+    /// decisions.** The obvious home for a query the library no longer reads is
+    /// a transient signal on `NavStore` beside `rename_draft` — a question you
+    /// asked once, not a preference. What settles it the other way is what
+    /// retiring this field would actually cost: it is a column of the one
+    /// `Preferences` row (`src/db/prefs.rs`, `src/db/schema.rhype`), and rhypedb
+    /// refuses to open a library whose schema has *lost* a field unless the app
+    /// passes `OpenOptions::allow_schema_shrink(true)` — which its own error
+    /// text calls one-way and irreversible. Measured, not assumed: dropping the
+    /// line from `schema.rhype` and reopening a library made once with it fails
+    /// with `schema would drop catalog entries (fields=["Preferences.query"])`.
+    ///
+    /// Turning a permanent destructive switch on in [`crate::db::open`], for
+    /// every user's library forever, to retire one string that already has a
+    /// perfectly good reader — is not a trade this card is entitled to make. So
+    /// the query is still library view state, still restored with the rest of
+    /// it, and the only screen that reads or writes it is `1p`. Reopening
+    /// search finds the last thing you looked for still in the field, with the
+    /// ✕ beside it that clears it.
     pub query: Signal<String>,
     pub group_by: Signal<GroupBy>,
     pub sort_field: Signal<SortField>,
@@ -340,10 +363,15 @@ impl LibraryViewStore {
     /// The library list, grouped and sorted. Derived on read — the rules live
     /// in [`crate::derive`] as plain functions so they can be tested without a
     /// window.
+    ///
+    /// [`query`](Self::query) is deliberately not one of the inputs any more.
+    /// Card G1 moved the typing to the search screen (`1p`) and left the
+    /// library showing the whole book; `crate::derive::grouped`'s own header
+    /// carries the argument for why a library that stays filtered behind a
+    /// field that no longer types is the worse of the two.
     pub fn grouped(self, all: Vec<Song>) -> Vec<Group> {
         crate::derive::grouped(
             all,
-            &self.query.get(),
             self.group_by.get(),
             self.sort_field.get(),
             self.sort_dir.get(),

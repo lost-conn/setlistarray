@@ -46,6 +46,30 @@ pub enum Route {
     /// `AttachmentsStore`'s header), so the only place that pairing exists is
     /// the route.
     ViewAttachment { song: SongId, attachment: AttachmentId },
+    /// Search & filter (`1p`, card G1) — the screen behind the library's
+    /// search field.
+    ///
+    /// **It carries nothing, and the query it is a screen for lives in
+    /// [`LibraryViewStore::query`](crate::store::LibraryViewStore).** That is
+    /// the one design decision this variant makes, and it is made against the
+    /// obvious alternative — `Search { query: String }` — for two reasons that
+    /// are both about this enum rather than about search.
+    ///
+    /// `Route` is `Copy`. Every variant above carries an id or two and nothing
+    /// else, which is what lets `nav.route.get()` be read in half a dozen
+    /// reactive closures a frame, matched on in `crate::app`, and passed by
+    /// value to [`crate::derive::dark_chrome`] and [`crate::keep_awake::wanted`]
+    /// without a clone anywhere. A `String` in here takes that away from every
+    /// other variant too.
+    ///
+    /// And a query on the route makes every keystroke a navigation. The field
+    /// updates as you type — that is the whole of what `1p` promises — so
+    /// `Route::Search { query }` would mean `route.set(...)` per character,
+    /// with every screen-level effect keyed on the route recomputing behind it,
+    /// to move a value that no other screen has any business reading. Routes
+    /// here answer *which screen*, and the answer does not change while you
+    /// type.
+    Search,
     /// Performance mode (`1o`, card F1) — the set being played, a song at a
     /// time. Carries the setlist and not the song, because *which* song is
     /// `PlaybackStore::index` and that has to survive being changed from

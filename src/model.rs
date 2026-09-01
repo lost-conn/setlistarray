@@ -392,7 +392,10 @@ fn one_decimal(value: f64) -> String {
     text.strip_suffix(".0").unwrap_or(&text).to_string()
 }
 
-#[derive(Clone, Debug, PartialEq)]
+// `Default` for the same reason `Song` has one, one card later: card G1's
+// search screen draws a setlist result from a `SetlistHit` prop, and the rsx
+// macro builds every prop struct with `..Default::default()`.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Setlist {
     pub id: SetlistId,
     pub name: String,

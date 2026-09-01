@@ -55,8 +55,8 @@ use db::DataDir;
 use platform::SafeArea;
 use screens::{
     AddToSetlistSheet, AttachmentViewer, CaptureScreen, ChartEditor, Library, Performance,
-    RunningOrderSheet, SetlistDetail, SetlistPicker, Settings, Setlists, SongDetail, SongForm,
-    SortGroupSheet,
+    RunningOrderSheet, Search, SetlistDetail, SetlistPicker, Settings, Setlists, SongDetail,
+    SongForm, SortGroupSheet,
 };
 use store::{
     AttachmentsStore, LibraryViewStore, NavStore, PlaybackStore, Route, SettingsStore,
@@ -276,6 +276,10 @@ pub fn app() -> NodeHandle {
                 // The real screen since card H1; its header is where the
                 // rows `1q` draws that are *not* here are accounted for.
                 Route::Settings => Settings {},
+                // Search & filter (`1p`, G1). Carries nothing: the query it is
+                // a screen for is `LibraryViewStore::query`, for the reasons
+                // the variant's own doc comment gives.
+                Route::Search => Search {},
                 // One screen, two doors: adding starts blank, editing arrives
                 // carrying the song it is about to overwrite.
                 Route::AddSong => SongForm {},

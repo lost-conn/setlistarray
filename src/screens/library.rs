@@ -45,21 +45,31 @@ pub fn Library() -> NodeHandle {
                 }
             }
 
-            // Search — opens the search & filter screen on tap, but types in
-            // place for now.
+            // Search — a door, not a field.
+            //
+            // It used to be a real `<input>` that filtered this list as you
+            // typed, through `view.grouped` and `derive::grouped`. Card G1 took
+            // that out: tapping it opens the search & filter screen (`1p`,
+            // `super::search`), which is where the typing, the live results,
+            // the match highlighting and the count line now are, and where a
+            // setlist can be a result too — which this list, being a list of
+            // songs, could never have shown.
+            //
+            // It is a `div` with an `onclick` rather than an input carrying
+            // one, and that is not cosmetic. An `<input>` on Android raises the
+            // IME on focus; an input with no `oninput` would raise the keyboard
+            // and then swallow every key, which is a worse field than no field.
+            // The placeholder is drawn as ordinary muted text for the same
+            // reason — there is nothing here for a real placeholder to be the
+            // absence of.
             div {
+                onclick: move || nav.go(Route::Search),
                 style: {format!("margin: 0 {SCREEN_PAD}; background: var(--sla-fill); border-radius: 14px; \
                                  padding: 11px 14px; display: flex; align-items: center; gap: 9px;")},
                 span { style: "color: var(--sla-muted); display: flex;", {icon(__scope, TablerIcon::Search, 17)} }
-                input {
-                    r#type: "text",
-                    style: "flex: 1; border: none; outline: none; background: transparent; \
-                            font-family: var(--sla-font-ui); font-size: 15px; color: var(--sla-ink);",
-                    placeholder: "Search title, artist, tag…",
-                    value: {|| view.query.get()},
-                    // Through the store, not straight at the signal: the query
-                    // is remembered between launches like the rest of the view.
-                    oninput: move |value: String| view.set_query(value),
+                span {
+                    style: "flex: 1; font-family: var(--sla-font-ui); font-size: 15px; color: var(--sla-muted);",
+                    "Search title, artist, tag…"
                 }
             }
 
@@ -215,7 +225,13 @@ fn expand_group(view: LibraryViewStore, songs: SongsStore, index: usize) {
 }
 
 /// The badge a row's thumb shows, or `None` for the dashed empty thumb.
-fn primary_kind(attachments: AttachmentsStore, song: &Song) -> Option<AttachmentKind> {
+///
+/// `pub(super)` since card G1, because the search screen (`1p`) draws the same
+/// row and has to reach the same answer. One copy of the rule rather than two —
+/// a second implementation that read `primary_attachment` directly would give a
+/// different badge for a song whose primary chart names nothing, and the two
+/// screens would disagree about a library they are both looking at.
+pub(super) fn primary_kind(attachments: AttachmentsStore, song: &Song) -> Option<AttachmentKind> {
     // `Song::primary` is the same rule the card on song detail reads, including
     // its fallback for a `primary_attachment` that names nothing — so a row's
     // badge and the card it opens can never disagree about which chart is the
