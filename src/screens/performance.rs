@@ -69,13 +69,25 @@
 //! The obvious thing to do, having just built `1k`, is to give `1o` the same
 //! dark chrome regardless of theme. The handoff says otherwise in words:
 //! *"performance mode defaults to following the app theme, with a Settings
-//! option to force it dark"*. So nothing here re-declares a palette — the
-//! screen inherits `crate::app`'s tokens like every other screen, and the
-//! forced-dark setting already has a home in `SettingsStore::performance_theme`
-//! waiting for the Settings screen to grow the switch that sets it.
+//! option to force it dark"*. So by default nothing here re-declares a palette —
+//! the screen inherits `crate::app`'s tokens like every other screen.
 //!
 //! That distinction is why `Route::full_screen` and `Route::dark_chrome` are
 //! two questions rather than one; see the note on the latter.
+//!
+//! **The switch exists now (H1), and this screen reads it.** The root below
+//! re-declares [`theme::DARK_NEUTRALS`] when — and only when — Settings →
+//! Performance mode theme says Always dark, exactly the way the attachment
+//! viewer re-declares them unconditionally: custom properties inherit and the
+//! nearest declaration wins, so every `var(--sla-*)` under this screen resolves
+//! dark without a second palette existing or a hex being written twice.
+//!
+//! The condition is [`crate::derive::dark_chrome`] and not a comparison written
+//! out here, because the same answer is needed in two other places — the strip
+//! behind the status bar, and whether Android draws its clock in dark glyphs,
+//! both in `crate::app` — and a screen that painted itself dark while the strip
+//! above it stayed cream is precisely the seam D5 found and fixed the first
+//! time. One rule, three readers, unit-tested against every route the app has.
 //!
 //! ## The chart is drawn by the same component the viewer uses
 //!
@@ -92,8 +104,10 @@ use crate::derive::{
     Segment, performance_meta, playing_at, steps, strip_gap, strip_segments, up_next,
 };
 use crate::model::{AttachmentId, SetlistId, SongId};
-use crate::store::{AttachmentsStore, NavStore, PlaybackStore, Route, SetlistsStore, SongsStore};
-use crate::theme::{T_CHIP, T_META, T_META_SMALL, T_ROW_TITLE};
+use crate::store::{
+    AttachmentsStore, NavStore, PlaybackStore, Route, SetlistsStore, SettingsStore, SongsStore,
+};
+use crate::theme::{DARK_NEUTRALS, T_CHIP, T_META, T_META_SMALL, T_ROW_TITLE};
 use crate::ui::icon;
 
 use super::chart_surface::{ChartSurface, STAGE_CHART_PX, page_span};
@@ -231,6 +245,9 @@ pub fn Performance(setlist: Option<SetlistId>) -> NodeHandle {
     let songs = use_store::<SongsStore>();
     let attachments = use_store::<AttachmentsStore>();
     let playback = use_store::<PlaybackStore>();
+    // Read for one thing only: whether this screen forces itself dark. See the
+    // "Theme" section of the header.
+    let settings = use_store::<SettingsStore>();
 
     let id = setlist.unwrap_or_default();
 
@@ -308,7 +325,23 @@ pub fn Performance(setlist: Option<SetlistId>) -> NodeHandle {
     }
 
     rsx! {
-        div { style: "flex: 1; display: flex; flex-direction: column; min-height: 0;",
+        div {
+            style: {move || format!(
+                "flex: 1; display: flex; flex-direction: column; min-height: 0; {}",
+                // Reactive, not decided at mount: dark mode and this setting can
+                // both be flipped from Settings while a set is open behind them,
+                // and a palette chosen once when the gig started would not
+                // follow. Empty in the default case so the screen inherits the
+                // app's tokens untouched — see the header.
+                if crate::derive::dark_chrome(
+                    Route::Performance(id),
+                    settings.performance_theme.get(),
+                ) {
+                    format!("{DARK_NEUTRALS} background: var(--sla-paper); color: var(--sla-ink);")
+                } else {
+                    String::new()
+                },
+            )},
 
             // ── Top bar: 2 / 5 · title / key · ✕ ──────────────────────────
             //

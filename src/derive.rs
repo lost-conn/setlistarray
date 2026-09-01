@@ -7,8 +7,10 @@
 
 use rinch_tabler_icons::TablerIcon;
 
-use crate::model::{Confidence, Day, Setlist, Song, fmt_duration};
-use crate::store::{Group, GroupBy, SortDir, SortField};
+use crate::model::{Confidence, Day, Setlist, Song, fmt_bytes, fmt_duration};
+use crate::store::{
+    AccentChoice, Density, Group, GroupBy, PerformanceTheme, Route, SortDir, SortField,
+};
 
 /// How many rows a group shows before "Show N more".
 pub const GROUP_PREVIEW: usize = 6;
@@ -905,6 +907,125 @@ pub fn parse_tags(text: &str) -> Vec<String> {
 /// The tag list back into the one line the field edits.
 pub fn format_tags(tags: &[String]) -> String {
     tags.join(", ")
+}
+
+// ---------------------------------------------------------------------------
+// Settings (`1q`)
+// ---------------------------------------------------------------------------
+//
+// Every right-hand side of a settings row is here rather than in the screen,
+// for the reason card X1 gives: a summary computed inside `rsx!` is a sentence
+// nothing can test, and these are the sentences that tell somebody what state
+// their app is actually in. The screen is a list of labels and controls; what
+// the controls *say* is below.
+
+/// The right-hand side of "Attachments on device".
+///
+/// [`fmt_bytes`] was written for this row — its own doc comment cites the
+/// `248 MB ›` the wireframe draws — so the only thing added here is the empty
+/// case. A book with no charts in it reads `Nothing yet` rather than `0 B`,
+/// because `0 B` is a measurement of a thing that is not there and reads like a
+/// fault; a fresh install is not a fault.
+pub fn attachments_note(bytes: u64) -> String {
+    if bytes == 0 {
+        return "Nothing yet".to_string();
+    }
+    fmt_bytes(bytes)
+}
+
+/// The right-hand side of "Saved webpages" — a count, or the same admission.
+pub fn saved_pages_note(pages: usize) -> String {
+    match pages {
+        0 => "None yet".to_string(),
+        n => n.to_string(),
+    }
+}
+
+/// What a switch row says beside its switch.
+///
+/// The wireframe writes this lowercase (`off ▾`, from a sketch face that has no
+/// case of its own to speak of); the hi-fi type set does not, and every other
+/// value in this app's rows is sentence case. So `On` and `Off`.
+///
+/// It exists at all — rather than the switch alone carrying the state — because
+/// a switch is a shape and this is a word, and on a phone at arm's length in a
+/// pub the word is the one that survives.
+pub fn on_off(on: bool) -> &'static str {
+    if on { "On" } else { "Off" }
+}
+
+/// The right-hand side of "Library sort": `Artist · A to Z`.
+///
+/// Both halves come from [`SortField`]'s own vocabulary — the label the sort
+/// sheet draws and the direction sentence it draws beside it — so this row and
+/// the sheet it opens can never describe the same state in two different sets
+/// of words.
+pub fn library_sort_note(field: SortField, dir: SortDir) -> String {
+    format!("{} · {}", field.label(), field.direction_label(dir))
+}
+
+/// What one density is called on screen.
+///
+/// Deliberately not [`Density::name`], which is the name the value is *stored*
+/// under and must not be reworded — the same split `GroupBy` already makes and
+/// says why.
+pub fn density_label(density: Density) -> &'static str {
+    match density {
+        Density::Comfortable => "Comfortable",
+        Density::Compact => "Compact",
+    }
+}
+
+/// What one performance-mode theme is called on screen.
+///
+/// `Follow app` rather than `Automatic`: the handoff's sentence is *"performance
+/// mode defaults to following the app theme, with a Settings option to force it
+/// dark"*, and "follow the app" is the thing that is actually true. "Automatic"
+/// would suggest something is being worked out from the room or the hour, and
+/// nothing is.
+pub fn performance_theme_label(theme: PerformanceTheme) -> &'static str {
+    match theme {
+        PerformanceTheme::FollowApp => "Follow app",
+        PerformanceTheme::AlwaysDark => "Always dark",
+    }
+}
+
+/// The name of the accent the app is *painted in*, which is not always the name
+/// of the accent that was *chosen*.
+///
+/// [`AccentChoice::FromSystem`] resolves to Rust today, because the wallpaper
+/// extraction it names is a platform call Rinch does not expose (see the TODO
+/// on `AccentChoice::resolve`). Reporting the resolved name rather than
+/// "System" is the honest half of that: the row says Rust because the screen is
+/// rust-coloured. Card H2 owns the picker where the difference between "I chose
+/// Rust" and "the system gave me Rust" becomes visible and worth stating.
+pub fn accent_note(accent: AccentChoice) -> &'static str {
+    accent.resolve().name
+}
+
+/// Whether the chrome around a route is dark **whatever the app's theme says**.
+///
+/// [`Route::dark_chrome`] used to be the whole of this rule and is now half of
+/// it, which is exactly the split its own doc comment predicted: *"the day the
+/// Settings screen grows that toggle this stops being a question the route alone
+/// can answer — it becomes route and `SettingsStore::performance_theme`"*. H1 is
+/// that day.
+///
+/// The route half is the attachment viewer (`1k`), which the handoff fixes as
+/// dark chrome regardless of theme. The setting half is performance mode (`1o`),
+/// which follows the app theme unless somebody has said otherwise — and a
+/// person who has said otherwise is standing in front of an audience with a
+/// phone on a stand, which is the whole reason the option exists.
+///
+/// It is a free function taking both, rather than a method on either, because
+/// its three call sites do not share a type: two are in [`crate::app`] (the
+/// strip behind the status bar, and whether Android draws its clock in dark
+/// glyphs) and the third is performance mode's own root. A rule read in three
+/// places is a rule that has to be written once.
+pub fn dark_chrome(route: Route, performance_theme: PerformanceTheme) -> bool {
+    route.dark_chrome()
+        || (matches!(route, Route::Performance(_))
+            && performance_theme == PerformanceTheme::AlwaysDark)
 }
 
 #[cfg(test)]
@@ -1905,6 +2026,114 @@ mod tests {
             picker_empty_note(SongFilter::All, None, ""),
             "Your book has no songs in it yet."
         );
+    }
+
+    // ── Settings (`1q`) ─────────────────────────────────────────────────
+
+    #[test]
+    fn an_empty_library_reports_nothing_rather_than_zero_bytes() {
+        assert_eq!(attachments_note(0), "Nothing yet");
+        assert_eq!(saved_pages_note(0), "None yet");
+    }
+
+    #[test]
+    fn the_storage_rows_report_what_is_there() {
+        // The wireframe's own two numbers, so the row it drew is the row this
+        // produces: `248 MB` and `37`.
+        assert_eq!(attachments_note(248_000_000), "248 MB");
+        assert_eq!(saved_pages_note(37), "37");
+        // A file that exists never rounds down to nothing.
+        assert_eq!(attachments_note(1), "1 B");
+    }
+
+    #[test]
+    fn a_switch_row_says_on_or_off_in_sentence_case() {
+        assert_eq!(on_off(true), "On");
+        assert_eq!(on_off(false), "Off");
+    }
+
+    #[test]
+    fn the_library_sort_row_speaks_the_sort_sheets_own_words() {
+        assert_eq!(
+            library_sort_note(SortField::Artist, SortDir::Asc),
+            "Artist \u{b7} A to Z"
+        );
+        // A date field ascends into "newest first", which is the sheet's
+        // wording and not a direction arrow reinterpreted here.
+        assert_eq!(
+            library_sort_note(SortField::LastPlayed, SortDir::Asc),
+            "Last played \u{b7} newest first"
+        );
+        assert_eq!(
+            library_sort_note(SortField::Tempo, SortDir::Desc),
+            "Tempo \u{b7} fast to slow"
+        );
+    }
+
+    #[test]
+    fn the_choice_rows_label_every_value_they_can_hold() {
+        assert_eq!(density_label(Density::Comfortable), "Comfortable");
+        assert_eq!(density_label(Density::Compact), "Compact");
+        assert_eq!(
+            performance_theme_label(PerformanceTheme::FollowApp),
+            "Follow app"
+        );
+        assert_eq!(
+            performance_theme_label(PerformanceTheme::AlwaysDark),
+            "Always dark"
+        );
+    }
+
+    #[test]
+    fn a_display_label_is_not_the_name_a_value_is_stored_under() {
+        // The two are equal for `Density` today and must be allowed to drift:
+        // the stored name is a schema value and the label is copy. This test
+        // exists so that rewording one does not silently reword the other.
+        for density in [Density::Comfortable, Density::Compact] {
+            assert!(!density_label(density).is_empty());
+            assert!(!density.name().is_empty());
+        }
+    }
+
+    #[test]
+    fn the_accent_row_names_the_colour_actually_on_screen() {
+        assert_eq!(accent_note(AccentChoice::Named(1)), "Pine");
+        // `FromSystem` has no wallpaper to read yet, so what is on screen is
+        // Rust and that is what the row says.
+        assert_eq!(accent_note(AccentChoice::FromSystem), "Rust");
+        // Out of range resolves to the last accent rather than panicking, the
+        // same as `AccentChoice::resolve` — a preferences row that has been
+        // edited by hand must not take the app down.
+        assert_eq!(accent_note(AccentChoice::Named(99)), "Plum");
+    }
+
+    #[test]
+    fn forcing_performance_mode_dark_darkens_the_chrome_and_nothing_else() {
+        let gig = Route::Performance(1);
+        assert!(!dark_chrome(gig, PerformanceTheme::FollowApp));
+        assert!(dark_chrome(gig, PerformanceTheme::AlwaysDark));
+
+        // The viewer is dark either way — that half is the route's, and the
+        // setting must not be able to lighten it.
+        let viewer = Route::ViewAttachment {
+            song: 1,
+            attachment: 1,
+        };
+        assert!(dark_chrome(viewer, PerformanceTheme::FollowApp));
+        assert!(dark_chrome(viewer, PerformanceTheme::AlwaysDark));
+
+        // And no ordinary screen is darkened by a setting about performance
+        // mode, which is the mistake the whole two-argument shape prevents.
+        for route in [
+            Route::Library,
+            Route::Setlists,
+            Route::Settings,
+            Route::SongDetail(1),
+            Route::SetlistDetail(1),
+            Route::AddSong,
+        ] {
+            assert!(!dark_chrome(route, PerformanceTheme::AlwaysDark));
+        }
     }
 
     // ── helpers ─────────────────────────────────────────────────────────

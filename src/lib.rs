@@ -55,8 +55,8 @@ use db::DataDir;
 use platform::SafeArea;
 use screens::{
     AddToSetlistSheet, AttachmentViewer, CaptureScreen, ChartEditor, Library, Performance,
-    RunningOrderSheet, SetlistDetail, SetlistPicker, Setlists, SongDetail, SongForm,
-    SortGroupSheet, Stub,
+    RunningOrderSheet, SetlistDetail, SetlistPicker, Settings, Setlists, SongDetail, SongForm,
+    SortGroupSheet,
 };
 use store::{
     AttachmentsStore, LibraryViewStore, NavStore, PlaybackStore, Route, SettingsStore,
@@ -178,11 +178,20 @@ pub fn app() -> NodeHandle {
     // viewer is left again.
     //
     // `dark_chrome` rather than `full_screen`, since F1: performance mode is
-    // full-screen too and is *not* dark — it follows the app theme, which the
-    // handoff asked for — so asking the wrong one of the two questions here
-    // would have put white system glyphs on a cream `1o` in light mode.
+    // full-screen too and is *not* dark by default — it follows the app theme,
+    // which the handoff asked for — so asking the wrong one of the two
+    // questions here would have put white system glyphs on a cream `1o` in
+    // light mode.
+    //
+    // Since H1 it is `derive::dark_chrome` and takes two arguments, because the
+    // route stopped being able to answer on its own the moment the Settings
+    // screen grew the switch that forces `1o` dark. Three signals in one effect
+    // now: the mode, the route, and the performance theme. `Route::dark_chrome`
+    // is still the route half of it and still says the viewer is dark whatever
+    // anybody sets.
     Effect::new(move || {
-        let light = !settings.dark_mode.get() && !nav.route.get().dark_chrome();
+        let light = !settings.dark_mode.get()
+            && !derive::dark_chrome(nav.route.get(), settings.performance_theme.get());
         platform::set_light_system_bars(light);
     });
 
@@ -245,8 +254,13 @@ pub fn app() -> NodeHandle {
                     //
                     // `dark_chrome`, not `full_screen`: performance mode (F1)
                     // is the other full-screen route and it takes the app's own
-                    // theme, so this strip stays cream above a cream `1o`.
-                    if nav.route.get().dark_chrome() {
+                    // theme, so this strip stays cream above a cream `1o` —
+                    // unless somebody has set Settings → Performance mode theme
+                    // to Always dark, which is the second argument and the
+                    // reason this is `derive::dark_chrome` rather than the
+                    // method on `Route`. Get that pair wrong and a forced-dark
+                    // gig wears a cream band under the phone's clock.
+                    if derive::dark_chrome(nav.route.get(), settings.performance_theme.get()) {
                         format!("{DARK_NEUTRALS} background: var(--sla-paper);")
                     } else {
                         "background: var(--sla-paper);".to_string()
@@ -259,7 +273,9 @@ pub fn app() -> NodeHandle {
                 Route::Setlists => Setlists {},
                 Route::SongDetail(song_id) => SongDetail { id: {song_id} },
                 Route::SetlistDetail(setlist_id) => SetlistDetail { id: {setlist_id} },
-                Route::Settings => Stub { title: "Settings", wireframe: "1q" },
+                // The real screen since card H1; its header is where the
+                // rows `1q` draws that are *not* here are accounted for.
+                Route::Settings => Settings {},
                 // One screen, two doors: adding starts blank, editing arrives
                 // carrying the song it is about to overwrite.
                 Route::AddSong => SongForm {},

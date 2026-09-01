@@ -91,11 +91,15 @@ impl Route {
     /// Performance mode says no, and that is the handoff's answer rather than a
     /// simplification: *"performance mode defaults to following the app theme,
     /// with a Settings option to force it dark"*. So `1o` in light mode is a
-    /// cream screen with a cream strip above it, which is exactly right, and
-    /// the day the Settings screen grows that toggle this stops being a
-    /// question the route alone can answer — it becomes route *and*
-    /// `SettingsStore::performance_theme`, and the two call sites in
-    /// `crate::app` are where that pair gets read.
+    /// cream screen with a cream strip above it, which is exactly right.
+    ///
+    /// **That day has come.** Card H1 built the Settings screen and with it the
+    /// switch that forces `1o` dark, so this is no longer the whole question —
+    /// it is the route half of [`crate::derive::dark_chrome`], which asks route
+    /// *and* `SettingsStore::performance_theme` together. Everything that wants
+    /// the real answer calls that; this stays exactly as narrow as it reads,
+    /// "dark because of where you are, whatever anybody has set", and the viewer
+    /// is still the only route that says yes to it.
     pub fn dark_chrome(self) -> bool {
         matches!(self, Route::ViewAttachment { .. })
     }

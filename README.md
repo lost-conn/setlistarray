@@ -227,27 +227,65 @@ nothing in the UI code assumes either platform. See "Android" below.
   collapsed row is the only place a title shows and two rows reading
   `lyrics · typed` would be unusable.
 
+- **Settings** — wireframe `1q`, card H1. Grouped rows and no account section,
+  reached from the gear in both tab headers and from nowhere else. **Storage**
+  states what is on the device (bytes, and how many saved pages) and carries the
+  re-check switch; **Defaults** holds the library sort — which states the sort
+  and opens the sheet that already owns it, rather than growing a second way to
+  set the same two signals — library density, keep-screen-awake, the accent, the
+  performance-mode theme and dark mode. Every switch persists through
+  `SettingsStore`/`LibraryViewStore` and takes effect where it is supposed to:
+  density changes the library's rows, keep-awake seeds the toggle in `1o`'s
+  bottom bar when a set starts, and the performance theme darkens `1o` and the
+  strip above it while the rest of the app stays cream.
+
+  The rows `1q` draws that are **not** here belong to cards that do not exist
+  yet, and the screen's module header names which card each is waiting on rather
+  than leaving them as an omission — export, import and last export are Phase I;
+  the storage rows' `›` chevrons want a breakdown screen nobody has specified;
+  and default tuning has no card at all and needs one.
+
+  The footer is the app's central promise, verbatim, and a test holds it against
+  the handoff word for word.
+
 See [docs/PLAN.md](docs/PLAN.md) for the phased plan to finish the rest.
 
 ## What is not
 
-Each of these has a `Stub` screen naming its wireframe: Settings (`1q`),
-Performance view (`1o`). Not yet started: attachment viewer (`1k`), search &
-filter (`1p`), first run (`1r`).
+Nothing routes to the `Stub` screen any more — Settings (`1q`) was the last one
+still on it, and card H1 replaced it with the real screen. Not yet started:
+search & filter (`1p`), first run (`1r`).
 
-Offline webpage capture (`1l`) has its **engine** — `src/capture/`, tested and
-proven against eight real chord sites — and none of its UI. It runs on both
-targets: the manifest declares `android.permission.INTERNET` for it, which is
-the decision written up in [docs/CAPTURE.md](docs/CAPTURE.md). What it captures
-is narrower than "any chord site", and the site table there says which kinds of
-page survive.
+Offline webpage capture (`1l`) has both halves now: the **engine**
+(`src/capture/`, tested and proven against eight real chord sites) and the
+screen in front of it — card E2's capture screen and its state machine, E3's
+reader-text-or-full-page choice taken *before* the bytes are kept, and E5's
+rendering of a saved page in the card and the viewer. It runs on both targets:
+the manifest declares `android.permission.INTERNET` for it, which is the
+decision written up in [docs/CAPTURE.md](docs/CAPTURE.md). What it captures is
+narrower than "any chord site", and the site table there says which kinds of
+page survive. What is still missing is the unhappy path — card E4's failure
+states, and E6's re-check of pages that may have changed under the app.
 
 Also outstanding:
 
 - **Backup.** Export/import as a zip of the database and the attachments
   directory (Phase I).
 - **Accent from the system.** `AccentChoice::FromSystem` falls back to Rust
-  until Rinch exposes the wallpaper colour.
+  until Rinch exposes the wallpaper colour. Settings offers the four named
+  accents and deliberately does *not* offer this one as a fifth swatch: choosing
+  it would silently mean Rust, which is a control that lies. Card H2 owns the
+  picker where it becomes a real choice.
+- **Dark mode following the system**, which the handoff asks for by name. There
+  is no API anywhere in this app or in Rinch that reports what Android's night
+  mode is set to — `rinch-theme` has a `dark_mode` flag an app *sets* and
+  nothing that reads one — so Settings ships a plain on/off switch instead. The
+  same missing platform call as the accent above, and it should land with it.
+- **A default tuning for new songs.** `1q` draws the row; nothing behind it
+  exists — no field in `Preferences`, no line in `schema.rhype`, no prefill in
+  the add/edit form — and `Song::tuning` being free text means the row needs a
+  decision (a list of what, or a text field?) before it needs plumbing. Card H1
+  left it out rather than guessing; it wants a card of its own.
 - **Most of the gestures in the handoff.** Drag-to-reorder, swipe-to-remove and
   swipe between songs in performance mode cannot be built on this framework's
   Android backend today, and each has an explicit tap-driven stand-in instead.

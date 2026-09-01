@@ -22,6 +22,7 @@ mod running_order;
 mod setlist_detail;
 mod setlist_picker;
 mod setlists;
+mod settings;
 mod song_detail;
 mod song_form;
 mod sort_sheet;
@@ -37,7 +38,11 @@ pub use running_order::RunningOrderSheet;
 pub use setlist_detail::SetlistDetail;
 pub use setlist_picker::SetlistPicker;
 pub use setlists::Setlists;
+pub use settings::Settings;
 pub use song_detail::SongDetail;
 pub use song_form::SongForm;
 pub use sort_sheet::SortGroupSheet;
+// No route points at this since H1 built the real Settings screen; its own
+// header says why it is still here and when to delete it.
+#[allow(unused_imports)]
 pub use stub::Stub;

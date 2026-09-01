@@ -43,7 +43,7 @@ use rinch_tabler_icons::TablerIcon;
 
 use crate::derive::{cumulative_starts, prep_facts, total_runtime};
 use crate::model::{SetlistId, Song, SongId, fmt_duration};
-use crate::store::{NavStore, PlaybackStore, Route, SetlistsStore, SongsStore};
+use crate::store::{NavStore, PlaybackStore, Route, SetlistsStore, SettingsStore, SongsStore};
 use crate::theme::{SCREEN_PAD, T_META, T_META_SMALL, T_SECTION_CAPS, T_SETLIST_TITLE};
 use crate::ui::{IconButton, icon};
 
@@ -64,6 +64,8 @@ pub fn SetlistDetail(id: Option<SetlistId>) -> NodeHandle {
     let setlists = use_store::<SetlistsStore>();
     let songs = use_store::<SongsStore>();
     let playback = use_store::<PlaybackStore>();
+    // Read for one thing: the keep-awake preference handed to `start` below.
+    let settings = use_store::<SettingsStore>();
 
     let id = id.unwrap_or_default();
 
@@ -288,7 +290,10 @@ pub fn SetlistDetail(id: Option<SetlistId>) -> NodeHandle {
                 style: {format!("padding: 12px {SCREEN_PAD} 24px; border-top: 1px solid var(--sla-hairline);")},
                 div {
                     onclick: move || {
-                        playback.start(id);
+                        // The keep-awake preference is the user's, so it is read at the
+                        // moment the set starts rather than left at whatever the last
+                        // gig's bottom bar was set to.
+                        playback.start(id, settings.keep_awake.get());
                         nav.go(Route::Performance(id));
                     },
                     style: "background: var(--sla-accent); color: var(--sla-on-accent); border-radius: 16px; \

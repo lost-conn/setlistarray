@@ -5,7 +5,7 @@ use rinch_tabler_icons::TablerIcon;
 
 use crate::menu::{FULL_WIDTH_TARGET, MENU_SURFACE, SetlistMenuItems};
 use crate::model::fmt_duration;
-use crate::store::{NavStore, PlaybackStore, Route, SetlistsStore, SongsStore};
+use crate::store::{NavStore, PlaybackStore, Route, SetlistsStore, SettingsStore, SongsStore};
 use crate::theme::{SCREEN_PAD, T_META, T_META_SMALL, T_ROW_TITLE, T_SCREEN_TITLE};
 use crate::ui::{IconButton, icon};
 
@@ -15,6 +15,8 @@ pub fn Setlists() -> NodeHandle {
     let setlists = use_store::<SetlistsStore>();
     let songs = use_store::<SongsStore>();
     let playback = use_store::<PlaybackStore>();
+    // Read for one thing: the keep-awake preference handed to `start` below.
+    let settings = use_store::<SettingsStore>();
 
     rsx! {
         div { style: "flex: 1; display: flex; flex-direction: column; min-height: 0; position: relative;",
@@ -156,7 +158,10 @@ pub fn Setlists() -> NodeHandle {
                                     }
                                     div {
                                         onclick: move || {
-                                            playback.start(id);
+                                            // The keep-awake preference is the user's, so it is read at the
+                        // moment the set starts rather than left at whatever the last
+                        // gig's bottom bar was set to.
+                        playback.start(id, settings.keep_awake.get());
                                             nav.go(Route::Performance(id));
                                         },
                                         style: "width: 38px; height: 38px; border-radius: 12px; background: var(--sla-fill); \
