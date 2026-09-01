@@ -41,7 +41,7 @@ local path dependencies, so `Cargo.toml` expects three checkouts side by side:
 ```
 projects/personal/
 ├── setlistarray/     ← this
-├── rinch-fixes/      ← github.com/joeleaver/rinch, branch carrying #245, #246, #266, #267, #270, #274, #281, #286, #292, #298, #317, #342, #344, #353, #402
+├── rinch-fixes/      ← github.com/joeleaver/rinch, branch carrying #245, #246, #266, #267, #270, #274, #281, #286, #292, #298, #317, #342, #344, #353, #402, #417
 └── rhypedb-main/     ← github.com/joeleaver/rhypedb, main
 ```
 
@@ -759,6 +759,19 @@ diff no longer needed; the rest are still waiting on review.
 - [joeleaver/rinch#317](https://github.com/joeleaver/rinch/pull/317) — a dropdown menu's dismiss backdrop sits under the panel it belongs to, which is what made every menu item dead. Based on #292's branch rather than `main`, because #292 is what makes the fault visible and #292 should not ship without it
 - [joeleaver/rinch#353](https://github.com/joeleaver/rinch/pull/353) — four gates between a finished image decode and the screen, each enough on its own to leave an `<img>` permanently blank: the loader never woke a `ControlFlow::Wait` loop, `resolve_and_repaint` returned early on an undirty tree, `resolve_layout` discarded `drain_pending_images`'s `bool`, and the Android loop gated on a `pending_layout` a decode never sets. Card D4; found showing a rasterised PDF page on the phone
 - [joeleaver/rinch#344](https://github.com/joeleaver/rinch/pull/344) — four things the software painter drew that could not be seen: an `opacity: 0` subtree painted in full, a fully transparent `background-color` rasterised as a fill, a clip mask intersected across the whole surface rather than the clip's own bounds, and a blurred `box-shadow` filled under the element instead of around it. Card K24; 316ms to 63ms on the device
+- [joeleaver/rinch#417](https://github.com/joeleaver/rinch/pull/417) — a Rinch
+  app on Android had no way to ask that the screen stay on. `RinchActivity`
+  gains `setKeepScreenOn(boolean)`, posted through `runOnUiThread` like the
+  keyboard and system-bar calls beside it, behind a `rinch_android::screen`
+  wrapper. Deliberately `FLAG_KEEP_SCREEN_ON` on the window rather than a
+  `PowerManager.WakeLock`: the flag is scoped to the activity and the system
+  drops it when that activity stops, so the worst it can leak is a lit screen
+  somebody is looking at, where a leaked wake lock is a flat battery in a bag.
+  Card K5, for F4 — a phone on a music stand that sleeps in the middle of a
+  song is the failure this app exists to avoid. Named `screen` and not `wake`
+  because `local/both-fixes` already carries a `wake.rs` about waking the
+  *frame loop*; upstream `main` has no such file, so the PR argues the naming
+  on its own terms.
 - [joeleaver/rinch#402](https://github.com/joeleaver/rinch/pull/402) — the two
   painters disagreed about what an `opacity` layer clips, and only one of them
   was right. `paint/mod.rs` handed `push_layer` the element's own border box as
