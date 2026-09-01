@@ -568,6 +568,20 @@ mod tests {
         assert_eq!(setlists.last_removal.get(), None);
     }
 
+    /// Card J7's route-level rule reads this same signal — `SetlistsStore::get`
+    /// coming back `None` is what tells `crate::derive::route_orphaned` that
+    /// `SetlistDetail`/`Performance` have nothing left to show. That rule is
+    /// unit-tested on its own against a closure standing in for this method
+    /// (`derive`'s tests), and this is the other half: the method itself,
+    /// against the real store, once a delete has actually gone through it.
+    #[test]
+    fn a_deleted_setlist_is_a_setlist_the_store_no_longer_returns() {
+        let (setlists, id) = five();
+        assert!(setlists.get(id).is_some(), "the setup is a set that exists");
+        setlists.delete(id);
+        assert!(setlists.get(id).is_none());
+    }
+
     #[test]
     fn there_is_nothing_to_undo_before_anything_has_been_removed() {
         let (setlists, _) = five();

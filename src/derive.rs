@@ -7,7 +7,7 @@
 
 use rinch_tabler_icons::TablerIcon;
 
-use crate::model::{Confidence, Day, Setlist, Song, fmt_bytes, fmt_duration};
+use crate::model::{Confidence, Day, Setlist, SetlistId, Song, SongId, fmt_bytes, fmt_duration};
 use crate::store::{
     AccentChoice, Density, Group, GroupBy, PerformanceTheme, Route, SortDir, SortField,
 };
@@ -1417,6 +1417,49 @@ pub fn dark_chrome(route: Route, performance_theme: PerformanceTheme) -> bool {
     route.dark_chrome()
         || (matches!(route, Route::Performance(_))
             && performance_theme == PerformanceTheme::AlwaysDark)
+}
+
+/// Whether a route's subject — the song or setlist it is a screen for — has
+/// been deleted out from under it.
+///
+/// Card J7: delete a song from its own detail screen and the delete commits
+/// but the screen does not know to leave, because nothing told the *route* to.
+/// `song_detail.rs`'s "This song is gone." was the only answer there was, and
+/// it only ever caught a route arrived at some other way — it cannot save you
+/// from a delete that fires while you are looking at the very row being
+/// deleted, because a handler that fires the delete and a handler that leaves
+/// the screen are two different pieces of code, and `SongMenuItems`' delete
+/// item is shared with a library row's long-press, which must *not* navigate.
+/// So this is asked of the route, the same shape as [`dark_chrome`] above it
+/// and [`crate::keep_awake::wanted`]: a pure recomputation of "does this
+/// screen still have something to show", with no handler anywhere that has to
+/// remember to ask it.
+///
+/// `song_exists`/`setlist_exists` are handed in rather than a store, so the
+/// rule can be checked against every `Route` variant with a plain closure over
+/// a `Vec` or a `HashSet` and no database, exactly the way [`keep_awake::wanted`]
+/// is checked against a recorded sequence rather than a screen lock. The one
+/// caller that matters, `crate::app`'s effect, hands in `SongsStore::get` and
+/// `SetlistsStore::get` themselves.
+///
+/// Matched without a wildcard arm on purpose: a new route that carries a song
+/// or a setlist and is added here without a line in this function is a
+/// compile error, not a screen that quietly forgets to leave.
+pub fn route_orphaned(
+    route: Route,
+    song_exists: impl Fn(SongId) -> bool,
+    setlist_exists: impl Fn(SetlistId) -> bool,
+) -> bool {
+    match route {
+        Route::SongDetail(id) | Route::EditSong(id) => !song_exists(id),
+        Route::TypeChart { song, .. }
+        | Route::CaptureWebpage { song }
+        | Route::ViewAttachment { song, .. } => !song_exists(song),
+        Route::SetlistDetail(id) | Route::Performance(id) => !setlist_exists(id),
+        Route::Library | Route::Setlists | Route::Settings | Route::AddSong | Route::Search => {
+            false
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2950,6 +2993,79 @@ mod tests {
             Route::AddSong,
         ] {
             assert!(!dark_chrome(route, PerformanceTheme::AlwaysDark));
+        }
+    }
+
+    // ── J7: a route outliving its subject ──────────────────────────────
+
+    /// Every route that names a song, checked against a song that is there
+    /// and one that is not. Written as one table rather than one test per
+    /// variant so that a new song-carrying variant added to the match in
+    /// `route_orphaned` without a line added here is a glaring gap instead of
+    /// a silent one.
+    #[test]
+    fn a_route_naming_a_song_is_orphaned_only_when_the_song_is_gone() {
+        let has_song = |id: SongId| id == 1;
+        let no_song = |_: SongId| false;
+        let has_setlist = |_: SetlistId| true;
+
+        for route in [
+            Route::SongDetail(1),
+            Route::EditSong(1),
+            Route::TypeChart { song: 1, chart: None },
+            Route::TypeChart { song: 1, chart: Some(9) },
+            Route::CaptureWebpage { song: 1 },
+            Route::ViewAttachment { song: 1, attachment: 9 },
+        ] {
+            assert!(
+                !route_orphaned(route, has_song, has_setlist),
+                "{route:?} must not be orphaned while its song is there"
+            );
+            assert!(
+                route_orphaned(route, no_song, has_setlist),
+                "{route:?} must be orphaned once its song is gone"
+            );
+        }
+    }
+
+    /// The setlist-carrying half of the same rule, including performance
+    /// mode: `Performance(id)` is a screen for a setlist exactly as much as
+    /// `SetlistDetail(id)` is, and a set deleted underneath a gig in progress
+    /// has to leave this screen too.
+    #[test]
+    fn a_route_naming_a_setlist_is_orphaned_only_when_the_setlist_is_gone() {
+        let has_setlist = |id: SetlistId| id == 1;
+        let no_setlist = |_: SetlistId| false;
+        let has_song = |_: SongId| true;
+
+        for route in [Route::SetlistDetail(1), Route::Performance(1)] {
+            assert!(
+                !route_orphaned(route, has_song, has_setlist),
+                "{route:?} must not be orphaned while its setlist is there"
+            );
+            assert!(
+                route_orphaned(route, has_song, no_setlist),
+                "{route:?} must be orphaned once its setlist is gone"
+            );
+        }
+    }
+
+    /// Every subject-less route, whatever the closures say. `AddSong` is the
+    /// trap named in the card: there is no song yet, so it must never be
+    /// caught by this rule no matter how the closures answer.
+    #[test]
+    fn a_route_with_no_subject_is_never_orphaned() {
+        let always_gone_song = |_: SongId| false;
+        let always_gone_setlist = |_: SetlistId| false;
+
+        for route in [
+            Route::Library,
+            Route::Setlists,
+            Route::Settings,
+            Route::AddSong,
+            Route::Search,
+        ] {
+            assert!(!route_orphaned(route, always_gone_song, always_gone_setlist));
         }
     }
 

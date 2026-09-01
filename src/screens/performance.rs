@@ -320,6 +320,12 @@ pub fn Performance(setlist: Option<SetlistId>) -> NodeHandle {
     // it: nothing on this screen can delete the set it is playing. Everything
     // *inside* the set is read reactively below, because F2 will move through
     // it without leaving the route.
+    //
+    // A net, not the only answer, since card J7: `crate::app` carries an
+    // effect that leaves `Route::Performance` the moment `setlists.get(id)`
+    // starts coming back `None`, calling `PlaybackStore::stop` on the way out
+    // exactly as `close` below does — so this sentence is what a frame in
+    // between looks like, not where the set-deleted-mid-gig story ends.
     if setlists.get(id).is_none() {
         return stranded(__scope, SET_GONE, close);
     }

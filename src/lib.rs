@@ -156,8 +156,8 @@ pub fn app() -> NodeHandle {
     // on `SongsStore::attachments`), so there is no wiring-up step and no
     // half-built store either of them can be observed in.
     let attachments = create_store(AttachmentsStore::restored(storage, loaded.attachments));
-    create_store(SongsStore::restored(storage, attachments, loaded.songs));
-    create_store(SetlistsStore::restored(storage, loaded.setlists));
+    let songs = create_store(SongsStore::restored(storage, attachments, loaded.songs));
+    let setlists = create_store(SetlistsStore::restored(storage, loaded.setlists));
     create_store(LibraryViewStore::restored(storage));
     let playback = create_store(PlaybackStore::new());
     let nav = create_store(NavStore::new());
@@ -217,6 +217,47 @@ pub fn app() -> NodeHandle {
     // desktop's D-Bus inhibit part company.
     Effect::new(move || {
         keep_awake::set(keep_awake::wanted(nav.route.get(), playback.keep_awake.get()));
+    });
+
+    // A route can outlive the record it is a screen for (card J7). Delete a
+    // song from its own detail screen and, before this effect existed, the
+    // delete committed, the library underneath was correct, and the screen
+    // stayed open on a row the store would no longer return — because the
+    // handler that deletes it (`SongMenuItems`, in `crate::menu`) is shared
+    // with a library row's long-press, which must *not* navigate, so putting
+    // `nav.back()` there would have fixed one caller by breaking the other.
+    //
+    // Up here the question is asked of the *route* instead, the same move
+    // the two effects above it both make: "does this screen still have
+    // something to show" is a recomputation, not an event, so every way the
+    // record underneath a route can vanish — the ⋮ menu on the very screen
+    // showing it, a delete from the list it was opened from, one day an undo
+    // that goes the wrong way — is the same recomputation rather than a
+    // handler somewhere that has to remember to call `nav.back()`.
+    // `derive::route_orphaned` is the pure half of that rule and is
+    // unit-tested against every route the app has; what only a live effect
+    // can add is the two stores it is asked to check against.
+    //
+    // Performance mode's own ✕ (`close`, in `screens::performance`) lands on
+    // `Route::SetlistDetail(id)` on purpose, because there is a set to go back
+    // to. Here there is not — the setlist that route names is the one that is
+    // gone — so this stops the gig the ordinary way (`PlaybackStore::stop`,
+    // clearing `index` along with it) and then falls through to `nav.back()`
+    // like every other orphaned route, landing on the Setlists tab rather than
+    // on a "This setlist is gone." screen for a setlist nobody can get back.
+    Effect::new(move || {
+        let route = nav.route.get();
+        let orphaned = derive::route_orphaned(
+            route,
+            |id| songs.get(id).is_some(),
+            |id| setlists.get(id).is_some(),
+        );
+        if orphaned {
+            if matches!(route, Route::Performance(_)) {
+                playback.stop();
+            }
+            nav.back();
+        }
     });
 
     rsx! {

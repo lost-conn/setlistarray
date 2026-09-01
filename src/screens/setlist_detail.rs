@@ -77,6 +77,13 @@ pub fn SetlistDetail(id: Option<SetlistId>) -> NodeHandle {
 
     // Checked once, at mount: nothing on this screen can delete the set it is
     // showing, so a set that existed when the route changed still does.
+    //
+    // A net, not the only answer, since card J7: `crate::app` carries an
+    // effect that leaves `Route::SetlistDetail` (and `Route::Performance`)
+    // the moment `setlists.get(id)` starts coming back `None`, wherever the
+    // delete came from. What this still catches is the one frame between that
+    // delete committing and the effect firing, and a route arrived at with the
+    // setlist already gone.
     if setlists.get(id).is_none() {
         return rsx! {
             div { style: {format!("padding: {SCREEN_PAD}; {T_META}")}, "This setlist is gone." }

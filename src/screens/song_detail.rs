@@ -46,6 +46,14 @@ pub fn SongDetail(id: Option<SongId>) -> NodeHandle {
 
     let id = id.unwrap_or_default();
 
+    // A net, not the only answer, since card J7: `crate::app` carries an
+    // effect that leaves this route the moment `songs.get(id)` starts coming
+    // back `None`, so in the ordinary case nobody sees this sentence at all —
+    // deleting from the ⋮ menu right here lands you back on the library
+    // before this line would ever run again. What it still catches is the one
+    // frame between the delete committing and that effect firing, and a route
+    // arrived at some other way with a song already gone (a stale deep link,
+    // one day; nothing today constructs one).
     let Some(song) = songs.get(id) else {
         return rsx! {
             div { style: {format!("padding: {SCREEN_PAD}; {T_META}")}, "This song is gone." }
