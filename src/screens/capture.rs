@@ -910,7 +910,7 @@ pub fn attach_captured(
         kind: AttachmentKind::CapturedPage,
         title: page_title(page),
         bytes_on_disk: expected,
-        // A saved page has no pages. `attachment_viewer::page_span` already
+        // A saved page has no pages. `chart_surface::page_span` already
         // reads one for a `CapturedPage` whatever this says, and filling it in
         // with 1 would make `song_detail`'s subtitle read `primary · 1 page`,
         // which is a PDF's sentence.

@@ -45,8 +45,8 @@ use rinch_tabler_icons::TablerIcon;
 use db::DataDir;
 use platform::SafeArea;
 use screens::{
-    AddToSetlistSheet, AttachmentViewer, CaptureScreen, ChartEditor, Library, SetlistDetail,
-    SetlistPicker, Setlists, SongDetail, SongForm, SortGroupSheet, Stub,
+    AddToSetlistSheet, AttachmentViewer, CaptureScreen, ChartEditor, Library, Performance,
+    SetlistDetail, SetlistPicker, Setlists, SongDetail, SongForm, SortGroupSheet, Stub,
 };
 use store::{
     AttachmentsStore, LibraryViewStore, NavStore, PlaybackStore, Route, SettingsStore,
@@ -161,8 +161,13 @@ pub fn app() -> NodeHandle {
     // vanish into the viewer's own black bars the moment a chart was opened.
     // Reading both signals in one effect is what makes them come back when the
     // viewer is left again.
+    //
+    // `dark_chrome` rather than `full_screen`, since F1: performance mode is
+    // full-screen too and is *not* dark — it follows the app theme, which the
+    // handoff asked for — so asking the wrong one of the two questions here
+    // would have put white system glyphs on a cream `1o` in light mode.
     Effect::new(move || {
-        let light = !settings.dark_mode.get() && !nav.route.get().full_screen();
+        let light = !settings.dark_mode.get() && !nav.route.get().dark_chrome();
         platform::set_light_system_bars(light);
     });
 
@@ -198,7 +203,11 @@ pub fn app() -> NodeHandle {
                     // written outside `theme` — this strip sits *above* the
                     // viewer's own root, so it cannot inherit the override the
                     // viewer makes for everything inside it.
-                    if nav.route.get().full_screen() {
+                    //
+                    // `dark_chrome`, not `full_screen`: performance mode (F1)
+                    // is the other full-screen route and it takes the app's own
+                    // theme, so this strip stays cream above a cream `1o`.
+                    if nav.route.get().dark_chrome() {
                         format!("{DARK_NEUTRALS} background: var(--sla-paper);")
                     } else {
                         "background: var(--sla-paper);".to_string()
@@ -231,7 +240,10 @@ pub fn app() -> NodeHandle {
                     song: {song_id},
                     attachment: {attachment},
                 },
-                Route::Performance(_) => Stub { title: "Performance", wireframe: "1o" },
+                // Performance mode (`1o`, F1). Takes the setlist and nothing
+                // else: where in it we are is `PlaybackStore::index`, which
+                // the two entry points set with `start` before they navigate.
+                Route::Performance(setlist_id) => Performance { setlist: {setlist_id} },
             }
 
             {bottom_nav(__scope, safe.bottom.max(NAV_MIN_GAP))}

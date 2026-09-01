@@ -7,7 +7,14 @@ mod capture;
 // page looks like, the way one rasterised PNG makes them agree about a PDF.
 mod captured_page;
 mod chart_editor;
+// Not a screen and has no route either: the one place a chart is drawn
+// full-screen, mounted by `attachment_viewer` and by `performance`. See its
+// header — the same "one component is how two screens are made to agree"
+// argument `captured_page` makes, applied to the picture rather than to one
+// kind of it.
+mod chart_surface;
 mod library;
+mod performance;
 mod setlist_detail;
 mod setlist_picker;
 mod setlists;
@@ -21,6 +28,7 @@ pub use attachment_viewer::AttachmentViewer;
 pub use capture::CaptureScreen;
 pub use chart_editor::ChartEditor;
 pub use library::Library;
+pub use performance::Performance;
 pub use setlist_detail::SetlistDetail;
 pub use setlist_picker::SetlistPicker;
 pub use setlists::Setlists;

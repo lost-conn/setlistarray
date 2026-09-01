@@ -14,6 +14,20 @@
 //! dropdown, which this app styles through `menu::MENU_SURFACE` — resolves dark
 //! without a hex being written twice or a second set of tokens existing.
 //!
+//! ## The picture is not drawn here any more
+//!
+//! It was, until card F1. Performance mode (`1o`) needs the same three
+//! attachment kinds drawn the same way at a different size, and the one thing
+//! this app has never allowed is two implementations of the same picture that
+//! can drift apart — so the scrolling box and everything in it moved out to
+//! [`super::chart_surface::ChartSurface`], which both screens mount. Its header
+//! is where the seam is argued; what stayed here is the chrome, which is the
+//! part `1k` and `1o` genuinely do not share. Several of the notes below are
+//! still about the drawing, and they stay because they are about *why the
+//! viewer asks for what it asks for* — the zoom ladder, the rotation, and the
+//! rule about where a rasterise may be called from, all of which are this
+//! screen's controls and this screen's responsibility.
+//!
 //! ## The chrome's state machine, and why a tap only ever brings it back
 //!
 //! [`Chrome`] is a two-state machine with a generation counter, and it is a
@@ -84,7 +98,8 @@
 //! ## Rotate, and the framework gap it shares with zoom
 //!
 //! Rotation is `transform: rotate()` on the `<img>` with the surrounding box
-//! sized to the turned page — [`page_box`] does that arithmetic. Nothing is
+//! sized to the turned page — [`page_box`](super::chart_surface::page_box) does
+//! that arithmetic. Nothing is
 //! re-rendered, which is right for the reason rotate exists at all: a chart
 //! that arrives on its side is a *scanning* accident, and turning the bitmap
 //! back upright loses nothing because the pixels were always upright.
@@ -97,9 +112,11 @@
 //! other axis arrives as a `known_dimension`, and a percentage does not survive
 //! the content-sizing pass as one.
 //!
-//! This screen uses `song_detail`'s workaround rather than a third idea: state
-//! **both** axes in pixels, computed from the PNG's IHDR via
-//! `pages::page_pixels`, so Taffy never calls the measure function at all.
+//! The workaround is `song_detail`'s rather than a third idea: state **both**
+//! axes in pixels, computed from the PNG's IHDR via `pages::page_pixels`, so
+//! Taffy never calls the measure function at all. It lives in `chart_surface`
+//! now, with the drawing it is part of, and is recorded here because this is
+//! the card that hit it.
 //!
 //! It is worth saying plainly why fixing K28 upstream was *not* the smaller job
 //! here, since a full-screen viewer is exactly where you would expect it to be.
@@ -149,12 +166,12 @@ use rinch::prelude::*;
 use rinch_tabler_icons::TablerIcon;
 
 use crate::menu::{AttachmentMenuItems, MENU_SURFACE};
-use crate::model::{Attachment, AttachmentId, AttachmentKind, SongId};
+use crate::model::{AttachmentId, AttachmentKind, SongId};
 use crate::store::{AttachmentsStore, NavStore, Route, SongsStore};
 use crate::theme::{DARK_NEUTRALS, T_META, T_META_SMALL};
 use crate::ui::icon;
 
-use super::captured_page::CapturedPageView;
+use super::chart_surface::{CHART_BASE_PX, ChartSurface, PAGE_GUTTER, page_span};
 
 /// How long the chrome stays up with nothing happening, in milliseconds.
 ///
@@ -178,25 +195,6 @@ const CHROME_LINGER_MS: u32 = 4000;
 /// there is nothing below 100 % because the bottom rung already fits the page
 /// to the screen and a smaller chart is not a thing anybody wants.
 pub const ZOOM_STEPS: [u32; 4] = [100, 150, 200, 300];
-
-/// The type size a typed chart is drawn at, at 100 %, in CSS pixels.
-///
-/// `theme::T_CHART` renders a chart at 12.5 px inside the card on song detail
-/// and `chart_editor` types into it at 13.5 px. This screen is the one place a
-/// chart is the *only* thing on the display, so it starts a shade larger again
-/// and the zoom ladder goes up from there.
-const CHART_BASE_PX: f32 = 14.5;
-
-/// Space kept clear either side of the page at 100 %.
-///
-/// Zero, and deliberately. D4 picked its 1080 px cache width as "a full-bleed
-/// page on a 393 pt-wide phone at 2.75×, which is what D5's viewer needs" — so
-/// any inset here would be downscaling the cache by exactly the amount inset
-/// and throwing away the pixel-for-pixel match that width was chosen to get.
-/// `1k` draws a 14 px gutter, but it draws it around a white page on a *light*
-/// grey backdrop, where the page needs an edge to be a page. On this screen's
-/// dark backdrop it already has one.
-const PAGE_GUTTER: u32 = 0;
 
 /// What the chrome is doing, and which hide-timer is allowed to change it.
 ///
@@ -253,23 +251,6 @@ impl Chrome {
     }
 }
 
-/// How many pages this attachment has, as far as the viewer is concerned.
-///
-/// A PDF's count comes from D3's import and can be absent — `crate::pdf`'s
-/// header is explicit that a file hayro cannot parse is still a file the user
-/// chose to keep, and it is stored with `page_count: None`. Such a chart is one
-/// page here, and that one page will fail to draw and say so, which is a better
-/// answer than a viewer that refuses to open.
-///
-/// Everything else is one page. A typed chart and a captured page are a single
-/// flow of text; paging through them is not a concept they have.
-pub fn page_span(attachment: &Attachment) -> u32 {
-    match attachment.kind {
-        AttachmentKind::Pdf => attachment.page_count.unwrap_or(1).max(1),
-        AttachmentKind::Text | AttachmentKind::CapturedPage => 1,
-    }
-}
-
 /// The page a move lands on, which is never outside the document.
 ///
 /// Clamping rather than wrapping. A chart is a physical object in the reader's
@@ -303,153 +284,6 @@ pub fn zoom_out(percent: u32) -> u32 {
 /// A quarter turn anticlockwise, which is the direction `1k`'s ⟲ points.
 pub fn turned(quarter: u8) -> u8 {
     (quarter + 3) % 4
-}
-
-/// Where a page goes: the two axes of the `<img>`, the box it occupies once it
-/// has been turned, and how far to turn it.
-///
-/// Both of the first two are needed rather than one. The `<img>`'s own size has
-/// to be stated on both axes because of K28 (module header). The frame's size
-/// is what the *layout* has to reserve, and it is not the same thing the moment
-/// the page is on its side — a `transform` moves paint and hit-testing, and
-/// leaves the box where it was, so a page turned 90° inside a box shaped like
-/// the untuned one would overhang it by exactly the difference.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PageBox {
-    /// The `<img>`'s width and height, in CSS pixels.
-    pub image: (u32, u32),
-    /// The width and height the turned page occupies, in CSS pixels.
-    pub frame: (u32, u32),
-    /// Clockwise degrees for `transform: rotate()`.
-    pub degrees: u32,
-}
-
-impl PageBox {
-    /// Whether the page is wider than the screen it is being read on, which is
-    /// only ever true once it has been zoomed.
-    ///
-    /// This decides one thing and it is not cosmetic. The page sits in a flex
-    /// column that centres its items, and a centred item wider than its
-    /// container overflows *both* sides — while the scrollable range only ever
-    /// runs from zero to the overflow on the far side. So the left half of a
-    /// zoomed page ends up outside the scroll range and is unreachable: a
-    /// 150 %-zoomed chart lost its first three characters on every line, with
-    /// a horizontal drag that did nothing at all, measured on `:99` on
-    /// 2026-08-28.
-    ///
-    /// The fix is to stop centring exactly when centring is what breaks it:
-    /// a page that fits is centred, a page that does not starts at the left
-    /// edge, and then all of its overflow is on the scrollable side.
-    pub fn wider_than(self, column: u32) -> bool {
-        self.frame.0 > column
-    }
-}
-
-/// Fit a page of `pixels` into a `column`-wide screen, at `zoom` percent, after
-/// `quarter` quarter-turns.
-///
-/// **Fit to width, always, and let the height run off the bottom.** The screen's
-/// height never appears in this function and that is a decision rather than an
-/// omission: Rinch surfaces no viewport height to app code, and fitting the
-/// *whole* page into the display would make a chord chart's lyrics too small to
-/// read at the exact moment somebody is trying to read them at arm's length.
-/// Width-fitting is also self-correcting for the only case that would overflow
-/// — anything taller than about 16:9 scrolls, which is the right answer for a
-/// foldout chart and the wrong answer for nothing.
-///
-/// Turning the page swaps which of the bitmap's axes the column constrains.
-/// Upright, the column is the page's width; on its side, the column is the
-/// page's *height*, because that is the edge now running left to right.
-pub fn page_box(pixels: (u32, u32), column: u32, zoom: u32, quarter: u8) -> PageBox {
-    let (page_w, page_h) = pixels;
-    let quarter = quarter % 4;
-    let degrees = quarter as u32 * 90;
-
-    // A page with a zero axis cannot come out of `page_pixels`, which rejects
-    // one — but this function is public arithmetic and a caller that has not
-    // been through that check must not get a division by zero out of it.
-    if page_w == 0 || page_h == 0 {
-        return PageBox {
-            image: (0, 0),
-            frame: (0, 0),
-            degrees,
-        };
-    }
-
-    let across = ((column as u64 * zoom as u64) / 100).max(1) as u32;
-
-    // Rounded up on both branches, so a page is never a pixel shorter than its
-    // own shape and never leaves a hairline of backdrop inside its own edge —
-    // the same reasoning `song_detail::page_image` records.
-    if quarter % 2 == 0 {
-        let down = (across as u64 * page_h as u64).div_ceil(page_w as u64) as u32;
-        PageBox {
-            image: (across, down),
-            frame: (across, down),
-            degrees,
-        }
-    } else {
-        // On its side the image's own *height* is what spans the column, so
-        // that is the axis `across` is assigned to, and its width follows from
-        // the page's shape.
-        let image_w = (across as u64 * page_w as u64).div_ceil(page_h as u64) as u32;
-        PageBox {
-            image: (image_w, across),
-            frame: (across, image_w),
-            degrees,
-        }
-    }
-}
-
-/// A typed or captured chart, one line per entry, ready for `rsx!`'s `for`.
-///
-/// A blank line becomes a single space for the same reason `song_detail` does
-/// it: an empty `div` collapses to no height, and the blank lines between a
-/// verse and a chorus are part of how a chart is read.
-pub fn chart_lines(body: &str) -> Vec<(usize, String)> {
-    body.lines()
-        .enumerate()
-        .map(|(index, line)| {
-            let text = if line.trim().is_empty() {
-                " ".to_string()
-            } else {
-                line.to_string()
-            };
-            (index, text)
-        })
-        .collect()
-}
-
-/// The sentence shown in place of a chart, when there is no chart to show.
-///
-/// Every branch here is a real state on somebody's phone, and each one gets its
-/// own words rather than a shared "couldn't load". `song_detail::note` makes the
-/// same argument about the card; this is the viewer's version, and it can be
-/// more specific because it knows which page was asked for.
-pub fn nothing_to_show(kind: AttachmentKind, page: u32, span: u32) -> String {
-    match kind {
-        // The self-healing render in the component body and in the page
-        // handlers has already run and come back with nothing, so unlike the
-        // card's version of this sentence there is no "not yet" about it:
-        // hayro was handed this page and could not draw it. `docs/PDF.md` is
-        // explicit that a 0.x rasteriser will meet a file it cannot draw, and
-        // `pages::draw` catches the panic rather than taking the process, so
-        // this is the state that catch lands in.
-        AttachmentKind::Pdf if span > 1 => {
-            format!("Page {page} of this PDF could not be drawn.")
-        }
-        AttachmentKind::Pdf => "This PDF could not be drawn.".to_string(),
-        AttachmentKind::Text => "Nothing typed yet.".to_string(),
-        // Unreachable since E5, and left as a panic-free empty string rather
-        // than a sentence so that it stays that way: a captured page is drawn
-        // by `captured_page::CapturedPageView`, which owns the page, the text
-        // it falls back to when the files are gone, and both of the sentences
-        // for when there is neither. `empty_state` returns before it can get
-        // here. A fourth wording of the same state, chosen in a file that can
-        // no longer tell which of the two faults it is looking at, would be
-        // worse than none.
-        AttachmentKind::CapturedPage => String::new(),
-    }
 }
 
 /// One bare glyph in the top or bottom bar.
@@ -704,17 +538,12 @@ pub fn AttachmentViewer(song: Option<SongId>, attachment: Option<AttachmentId>) 
 
             // ── The chart ─────────────────────────────────────────────────
             //
-            // The tap target for "bring the chrome back" is this whole area,
-            // which is most of the screen — the one gesture the handoff names
-            // should not need aiming.
+            // Drawn by `chart_surface::ChartSurface`, which performance mode
+            // (`1o`) mounts as well — see its header for why the seam is where
+            // it is. Everything this screen still decides is a number passed
+            // into it.
             //
-            // Both overflow axes scroll. Vertical is the page that is taller
-            // than the display, which is most pages; horizontal only appears
-            // once the page is zoomed past the column, and Rinch's Android
-            // recogniser does produce horizontal deltas (`touch_gesture.rs`),
-            // so a zoomed chart can be panned with a finger rather than only
-            // read down the middle.
-            // The scrolling box is inside a one-element `for` whose key is the
+            // The surface is inside a one-element `for` whose key is the
             // page, the zoom and the rotation, which forces the framework to
             // build a **new node** whenever any of those change. That is a
             // strange-looking thing to want, and it is here for a fault found
@@ -741,103 +570,30 @@ pub fn AttachmentViewer(song: Option<SongId>, attachment: Option<AttachmentId>) 
             // everywhere else in the app. That is a Rinch change, not a viewer
             // change, and it is written up in the card rather than made here.
             for view in [format!("{}:{}:{}", page.get(), zoom.get(), quarter.get())] {
-            div {
-                key: {view.clone()},
-                onclick: rouse,
-                style: {format!(
-                    "flex: 1; min-height: 0; overflow-y: auto; overflow-x: auto; \
-                     display: flex; flex-direction: column; align-items: center; \
-                     padding: {};",
-                    // A page brings its own margins — it is a picture of a
-                    // sheet of paper, and `PAGE_GUTTER` explains why nothing is
-                    // added around it. Typed text does not: without this the
-                    // first line of a chart sits against the underside of the
-                    // top bar and the last against the top of the bottom one.
-                    // The bottom is the deeper of the two so the final line
-                    // clears the chrome when it comes back.
-                    if pdf { format!("{PAGE_GUTTER}px") } else { "18px 16px 28px".to_string() },
-                )},
-
-                for spread in page_spread(attachments, id, pdf, page, zoom, quarter, column) {
-                    div {
-                        key: {spread.0.clone()},
-                        // The frame the turned page occupies. `flex-shrink: 0`
-                        // because this is a flex column and the default would
-                        // squeeze a tall page rather than let it scroll.
-                        style: {format!(
-                            "width: {}px; height: {}px; flex-shrink: 0; align-self: {}; \
-                             display: flex; align-items: center; justify-content: center;",
-                            spread.1.frame.0,
-                            spread.1.frame.1,
-                            // See `PageBox::wider_than`: centring a page that
-                            // overflows puts half of it outside the scroll
-                            // range, where no gesture can reach it.
-                            if spread.1.wider_than(column) { "flex-start" } else { "center" },
-                        )},
-                        img {
-                            src: {spread.0.clone()},
-                            // Both axes in pixels — K28, module header. The
-                            // rotation is paint-only, about the image's own
-                            // centre (Rinch's `transform-origin` default), and
-                            // the centre is where the flex box above has just
-                            // put it, so a quarter turn lands exactly inside
-                            // the frame with no translate to get wrong.
-                            style: {format!(
-                                "width: {}px; height: {}px; flex-shrink: 0; transform: rotate({}deg);",
-                                spread.1.image.0, spread.1.image.1, spread.1.degrees
-                            )},
-                        }
-                    }
+                ChartSurface {
+                    key: {view.clone()},
+                    attachment: {id},
+                    // Cloned per rebuild rather than read per rebuild. See
+                    // `ChartSurface`'s note on this prop: the read is off the
+                    // database and this subtree is rebuilt on every press of
+                    // `A+`.
+                    body: {body.get()},
+                    page: {page.get()},
+                    zoom: {zoom.get()},
+                    quarter: {quarter.get()},
+                    column: {column},
+                    // The zoom ladder is a *type* control on a typed or
+                    // captured chart — `1k` draws its two zoom buttons as `A−`
+                    // and `A+`, which is the wireframe saying so — and a scale
+                    // control on a page. One number does both because both are
+                    // "the same thing, this much bigger".
+                    base_px: {CHART_BASE_PX * zoom.get() as f32 / 100.0},
+                    span: {span},
+                    // The tap target for "bring the chrome back" is the whole
+                    // chart, which is most of the screen — the one gesture the
+                    // handoff names should not need aiming.
+                    onclick: rouse,
                 }
-
-                // E5: the saved page itself, at the size the zoom ladder
-                // asks for. Mounted inside the keyed `for` above, so a zoom
-                // step rebuilds this node and the page is rendered again
-                // against the new `base_px` — which is what makes `A+` scale
-                // the images and the headings and not only the prose.
-                for captured in captured_of(kind, id) {
-                    CapturedPageView {
-                        key: {view.clone()},
-                        attachment: {captured},
-                        base_px: {CHART_BASE_PX * zoom.get() as f32 / 100.0},
-                        // The scrolling box pads itself by 16 px each side for
-                        // typed text (see the `padding` above), and that is
-                        // width an image inside the page genuinely does not
-                        // have.
-                        column_px: {column.saturating_sub(32).max(1)},
-                        budget: {crate::capture::render::VIEWER_ELEMENTS},
-                        style: "align-self: stretch;",
-                    }
-                }
-
-                for (index, line) in text_of(body, pdf) {
-                    div {
-                        key: {index},
-                        // `white-space: pre` and a monospaced face are what
-                        // keep a chord over its syllable — `theme::T_CHART`
-                        // makes the same argument. What is deliberately *not*
-                        // carried over from it is `overflow: hidden`: the card
-                        // on song detail clips a long line rather than widen
-                        // itself, and this screen is the one place the whole
-                        // line is supposed to be reachable.
-                        style: {move || format!(
-                            "font-family: var(--sla-font-mono); white-space: pre; \
-                             line-height: 1.5; align-self: flex-start; \
-                             font-size: {:.1}px;",
-                            CHART_BASE_PX * zoom.get() as f32 / 100.0
-                        )},
-                        {line.clone()}
-                    }
-                }
-
-                for sentence in empty_state(attachments, id, kind, pdf, body, page, span) {
-                    div {
-                        key: {sentence.clone()},
-                        style: {format!("{T_META} padding: 40px 22px; text-align: center;")},
-                        {sentence.clone()}
-                    }
-                }
-            }
             }
 
             // ── Bottom bar: ‹ · 1 / 2 · › · | · A− · A+ · ⟲ ───────────────
@@ -925,119 +681,9 @@ fn gone(scope: &mut RenderScope, nav: NavStore, song: SongId) -> NodeHandle {
     }
 }
 
-/// The page on screen, as `(src, geometry)` — or nothing, for every kind that
-/// is not a PDF and every PDF page that is not on disk.
-///
-/// A nought-or-one vector because `rsx!`'s `for` is the only reactive
-/// conditional the macro has; `song_detail` uses the same shape for the same
-/// reason.
-///
-/// **Nothing in here can rasterise.** `cached_page` is one `stat` and
-/// `page_pixels` is 24 bytes off the front of a file. That is what makes this
-/// safe to call from a render closure, which it is: reading `page`, `zoom` and
-/// `quarter` here is exactly what re-runs it when any of the three changes.
-fn page_spread(
-    attachments: AttachmentsStore,
-    id: AttachmentId,
-    pdf: bool,
-    page: Signal<u32>,
-    zoom: Signal<u32>,
-    quarter: Signal<u8>,
-    column: u32,
-) -> Vec<(String, PageBox)> {
-    if !pdf {
-        return Vec::new();
-    }
-    let Some(directory) = attachments.directory(id) else {
-        return Vec::new();
-    };
-    let Some(path) = crate::pdf::pages::cached_page(&directory, page.get()) else {
-        return Vec::new();
-    };
-    let Some(pixels) = crate::pdf::pages::page_pixels(&path) else {
-        return Vec::new();
-    };
-    vec![(
-        path.to_string_lossy().into_owned(),
-        page_box(pixels, column, zoom.get(), quarter.get()),
-    )]
-}
-
-/// The attachment to hand `CapturedPageView`, or nothing — the nought-or-one
-/// shape everything reactive on this screen uses, because `rsx!`'s `for` is the
-/// only conditional the macro has.
-fn captured_of(kind: AttachmentKind, id: AttachmentId) -> Vec<AttachmentId> {
-    match kind {
-        AttachmentKind::CapturedPage => vec![id],
-        _ => Vec::new(),
-    }
-}
-
-/// The lines of a typed chart, and nothing at all for anything else.
-///
-/// A captured page used to come through here as its extracted text; since E5 it
-/// is drawn as the page by `captured_page::CapturedPageView`, which falls back
-/// to that same text itself when the saved file is gone. One of the two has to
-/// own it or the screen draws it twice.
-fn text_of(body: Signal<String>, pdf: bool) -> Vec<(usize, String)> {
-    if pdf {
-        return Vec::new();
-    }
-    chart_lines(&body.get())
-}
-
-/// The one honest sentence, when neither a page nor a line came back.
-///
-/// Nought-or-one again. Checked against the same two functions the content
-/// branches use, so it is impossible for this to appear beside a chart or to be
-/// missing when there is nothing else on the screen.
-fn empty_state(
-    attachments: AttachmentsStore,
-    id: AttachmentId,
-    kind: AttachmentKind,
-    pdf: bool,
-    body: Signal<String>,
-    page: Signal<u32>,
-    span: u32,
-) -> Vec<String> {
-    // A captured page answers this question for itself. `CapturedPageView`
-    // knows whether it found a `page.html`, whether it fell back to the text
-    // and whether the files were expected to be there, and it says the
-    // corresponding one of its own sentences — none of which this function can
-    // tell apart from out here.
-    if kind == AttachmentKind::CapturedPage {
-        return Vec::new();
-    }
-    let shown = if pdf {
-        attachments
-            .directory(id)
-            .and_then(|directory| crate::pdf::pages::cached_page(&directory, page.get()))
-            .is_some()
-    } else {
-        !body.get().trim().is_empty()
-    };
-    if shown {
-        return Vec::new();
-    }
-    vec![nothing_to_show(kind, page.get(), span)]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn chart(kind: AttachmentKind, pages: Option<u32>) -> Attachment {
-        Attachment {
-            id: 1,
-            kind,
-            title: "tab.pdf".into(),
-            bytes_on_disk: 4096,
-            page_count: pages,
-            source_url: None,
-            captured_at: None,
-            body: None,
-        }
-    }
 
     // -- The chrome ---------------------------------------------------------
 
@@ -1116,27 +762,6 @@ mod tests {
 
     // -- Page bounds --------------------------------------------------------
 
-    #[test]
-    fn a_pdf_has_as_many_pages_as_the_import_counted() {
-        assert_eq!(page_span(&chart(AttachmentKind::Pdf, Some(6))), 6);
-    }
-
-    /// A PDF hayro could not parse is stored with no page count — `crate::pdf`
-    /// keeps the file anyway — and the viewer must still open it. One page,
-    /// which then fails to draw and says so.
-    #[test]
-    fn a_pdf_with_no_page_count_is_one_page_rather_than_none() {
-        assert_eq!(page_span(&chart(AttachmentKind::Pdf, None)), 1);
-        assert_eq!(page_span(&chart(AttachmentKind::Pdf, Some(0))), 1);
-    }
-
-    /// Typed text and a captured page are one flow, whatever is in the column.
-    #[test]
-    fn text_and_captures_are_a_single_page_even_if_a_count_got_written() {
-        assert_eq!(page_span(&chart(AttachmentKind::Text, Some(9))), 1);
-        assert_eq!(page_span(&chart(AttachmentKind::CapturedPage, Some(9))), 1);
-    }
-
     /// Both ends clamp rather than wrap. A `›` on the last page that jumped to
     /// the first would be indistinguishable from a `›` that missed the tap.
     #[test]
@@ -1176,138 +801,5 @@ mod tests {
         }
         assert_eq!(quarter, 0);
         assert_eq!(turned(0), 3, "⟲ points anticlockwise");
-    }
-
-    // -- Geometry -----------------------------------------------------------
-
-    /// The K28 workaround, as arithmetic: a US Letter page out of D4's cache,
-    /// in the 393 px window the designs assume, comes out 393 x 509 — and both
-    /// numbers are stated, because `width: 100%` would lay this node out at the
-    /// bitmap's own 1398 px.
-    #[test]
-    fn an_upright_page_fits_the_column_and_keeps_its_shape() {
-        let box_ = page_box((1080, 1398), 393, 100, 0);
-        assert_eq!(box_.image, (393, 509));
-        assert_eq!(box_.frame, box_.image, "upright, the frame is the page");
-        assert_eq!(box_.degrees, 0);
-    }
-
-    /// Zoom is the same page, wider. Nothing is re-rendered — see the module
-    /// header for why the softness that buys is the trade the reader asked for.
-    #[test]
-    fn zooming_multiplies_both_axes_and_leaves_the_shape_alone() {
-        let hundred = page_box((1080, 1398), 393, 100, 0);
-        let two_hundred = page_box((1080, 1398), 393, 200, 0);
-        assert_eq!(two_hundred.image.0, 786);
-        assert_eq!(two_hundred.image.0, hundred.image.0 * 2);
-        // Within a pixel of double, allowing for each having rounded up once.
-        assert!(two_hundred.image.1.abs_diff(hundred.image.1 * 2) <= 1);
-    }
-
-    /// On its side, the column constrains the page's *height*, because that is
-    /// the edge now running across the screen. A portrait page turned a quarter
-    /// turn is a landscape frame, and if the frame did not swap with it the
-    /// `transform` — which moves paint, not layout — would hang the page over
-    /// its own box by the difference.
-    #[test]
-    fn a_turned_page_swaps_which_axis_the_column_binds() {
-        let turned_ = page_box((1080, 1398), 393, 100, 1);
-        assert_eq!(turned_.image.1, 393, "the image's height spans the column");
-        assert_eq!(turned_.image.0, 304);
-        assert_eq!(turned_.frame, (393, 304), "and the frame is landscape");
-        assert_eq!(turned_.degrees, 90);
-    }
-
-    /// Half a turn is upright again, so the geometry is the untuned geometry
-    /// with a different `rotate()`. This is the case a naive "swap on any
-    /// rotation" would get wrong.
-    #[test]
-    fn a_half_turn_is_the_same_box_upside_down() {
-        let upright = page_box((1080, 1398), 393, 100, 0);
-        let inverted = page_box((1080, 1398), 393, 100, 2);
-        assert_eq!(inverted.image, upright.image);
-        assert_eq!(inverted.frame, upright.frame);
-        assert_eq!(inverted.degrees, 180);
-    }
-
-    /// A page only stops being centred once it is too wide to be — which is
-    /// the state that made the left of a zoomed chart unreachable on `:99`
-    /// before `wider_than` existed.
-    #[test]
-    fn a_page_is_centred_until_it_is_wider_than_the_screen() {
-        assert!(!page_box((1080, 1398), 393, 100, 0).wider_than(393));
-        assert!(page_box((1080, 1398), 393, 150, 0).wider_than(393));
-        // Turned on its side it is the *frame* that has to be measured, not
-        // the image: at 300 % the image is 1179 px tall and 911 px wide, and
-        // only one of those is across the screen.
-        let turned_ = page_box((1080, 1398), 393, 300, 1);
-        assert_eq!(turned_.frame.0, 1179);
-        assert!(turned_.wider_than(393));
-    }
-
-    /// `page_pixels` rejects a zero axis, so this cannot arrive from the cache
-    /// — but the arithmetic is public and must not divide by zero for anyone.
-    #[test]
-    fn a_page_with_no_pixels_is_a_box_with_no_size_rather_than_a_panic() {
-        assert_eq!(page_box((0, 0), 393, 100, 0).image, (0, 0));
-        assert_eq!(page_box((1080, 0), 393, 100, 1).frame, (0, 0));
-    }
-
-    // -- What is drawn when there is nothing to draw ------------------------
-
-    /// The page that could not be drawn says which page it was, because in a
-    /// six-page chart "this could not be drawn" beside a `4 / 6` is a sentence
-    /// about the wrong thing.
-    #[test]
-    fn a_page_that_will_not_render_says_which_page_it_was() {
-        assert_eq!(
-            nothing_to_show(AttachmentKind::Pdf, 4, 6),
-            "Page 4 of this PDF could not be drawn."
-        );
-        assert_eq!(
-            nothing_to_show(AttachmentKind::Pdf, 1, 1),
-            "This PDF could not be drawn."
-        );
-    }
-
-    /// A typed chart has its own reason for being empty and gets its own words,
-    /// the same argument `song_detail::note` makes about the card.
-    #[test]
-    fn an_empty_typed_chart_says_why_it_is_empty() {
-        assert_eq!(nothing_to_show(AttachmentKind::Text, 1, 1), "Nothing typed yet.");
-    }
-
-    /// The third kind no longer answers here at all. E5 gave a captured page
-    /// its own component, and that component is the only thing that can tell a
-    /// deleted `assets/` directory apart from a `page.html` with nothing in it
-    /// — so it owns both sentences and this screen asks it nothing.
-    #[test]
-    fn a_captured_page_is_not_this_screen_s_empty_state_to_write() {
-        let attachments = AttachmentsStore::new(Vec::new());
-        let body = Signal::new(String::new());
-        assert!(
-            empty_state(
-                attachments,
-                1,
-                AttachmentKind::CapturedPage,
-                false,
-                body,
-                Signal::new(1),
-                1,
-            )
-            .is_empty()
-        );
-        assert_eq!(captured_of(AttachmentKind::CapturedPage, 7), vec![7]);
-        assert!(captured_of(AttachmentKind::Text, 7).is_empty());
-    }
-
-    /// A blank line is a line. The gap between a verse and a chorus is part of
-    /// how a chart is read, and an empty `div` has no height.
-    #[test]
-    fn blank_lines_in_a_chart_keep_their_height() {
-        let lines = chart_lines("G      C\n\nlyrics here");
-        assert_eq!(lines.len(), 3);
-        assert_eq!(lines[1].1, " ");
-        assert_eq!(lines[0].1, "G      C", "and the chord spacing is untouched");
     }
 }

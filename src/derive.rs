@@ -250,6 +250,83 @@ pub fn setlist_summary(setlist: &Setlist, songs: &[Song]) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Performance mode (`1o`)
+// ---------------------------------------------------------------------------
+
+/// Which song of a set is being played, and the `2 / 5` that says so.
+///
+/// `index` is `PlaybackStore::index` and `len` is how many songs the set
+/// actually resolves to — songs deleted out of the library underneath it are
+/// already gone by the time this is asked, which is why the length is passed
+/// rather than read off `Setlist::song_ids`.
+///
+/// Two rules, and both are about a number that has no business being out of
+/// range but can be:
+///
+/// * **A set with nothing playable in it has no position at all**, so this
+///   returns `None` and the screen says so in words. `0 / 0` would be a
+///   counter, and a counter is a promise that there is something to count.
+/// * **An index past the end is clamped to the last song** rather than
+///   blanking the screen or panicking. It can happen for real: the set was
+///   playing at song 5 of 6 and somebody removed two songs from it on another
+///   screen. Clamping keeps a chart on the stand, and because the label is
+///   derived from the *clamped* index the counter cannot then disagree with
+///   what is under it.
+pub fn playing_at(index: usize, len: usize) -> Option<(usize, String)> {
+    if len == 0 {
+        return None;
+    }
+    let index = index.min(len - 1);
+    Some((index, format!("{} / {len}", index + 1)))
+}
+
+/// The line under the song title in performance mode: `G · capo 2 · 96 bpm`.
+///
+/// Three facts and no fourth, which is the whole reason this is not
+/// [`Song::meta_line`] with a capo bolted on. The other meta lines in the app
+/// answer "which song is this?" and so they lead with the artist; this one is
+/// read *while playing it*, when the question has already been answered by the
+/// chart filling the rest of the screen, and the only things left worth a
+/// glance are the three you have to do something about with your hands. The
+/// artist is deliberately absent for that reason and not by omission —
+/// `1o` draws exactly these three and nothing else.
+///
+/// Everything is optional, so every part can be missing, and a song with none
+/// of the three returns an empty string rather than a stray separator or a
+/// line of nothing. The caller is expected to draw no line at all for that,
+/// which is why this returns `""` instead of a placeholder: an empty slot is
+/// not this app's house style, and a blank second row under a centred title
+/// would push the title off centre in the top bar for no information at all.
+pub fn performance_meta(song: &Song) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(key) = &song.key {
+        // A key typed as spaces is a key nobody set. The form trims what it
+        // stores, but a library restored from a backup or written by an older
+        // build has no such promise, and " · capo 2" is a worse answer than
+        // "capo 2".
+        let key = key.trim();
+        if !key.is_empty() {
+            parts.push(key.to_string());
+        }
+    }
+    if let Some(capo) = song.capo {
+        // `parse_count` already refuses a nought — a capo on the nut is no
+        // capo — but the field is a plain `u8` and a row can arrive from
+        // anywhere, so the rule is re-stated where it is read rather than
+        // trusted to have been applied where it was written.
+        if capo > 0 {
+            parts.push(format!("capo {capo}"));
+        }
+    }
+    if let Some(tempo) = song.tempo {
+        if tempo > 0 {
+            parts.push(format!("{tempo} bpm"));
+        }
+    }
+    parts.join(" · ")
+}
+
+// ---------------------------------------------------------------------------
 // Setlist song picker (`1i`)
 // ---------------------------------------------------------------------------
 
@@ -914,6 +991,98 @@ mod tests {
             setlist_summary(&set(1, "Set", vec![1, 99]), &songs),
             "1 song · 3:44"
         );
+    }
+
+    // ── performance mode (`1o`) ─────────────────────────────────────────
+
+    /// The counter the wireframe draws, and the fact that it is 1-based while
+    /// the index behind it is not.
+    #[test]
+    fn the_position_counter_counts_from_one() {
+        assert_eq!(playing_at(1, 5), Some((1, "2 / 5".to_string())));
+        assert_eq!(playing_at(0, 5), Some((0, "1 / 5".to_string())));
+        assert_eq!(playing_at(4, 5), Some((4, "5 / 5".to_string())));
+        assert_eq!(playing_at(0, 1), Some((0, "1 / 1".to_string())));
+    }
+
+    /// An index past the end keeps a chart on the stand instead of blanking
+    /// the screen — two songs removed from the set on another screen while it
+    /// was playing at song 5 is the way this actually happens — and the label
+    /// follows the clamp, so the counter can never disagree with the song
+    /// underneath it.
+    #[test]
+    fn an_index_past_the_end_lands_on_the_last_song_and_says_so() {
+        assert_eq!(playing_at(9, 3), Some((2, "3 / 3".to_string())));
+        assert_eq!(playing_at(usize::MAX, 2), Some((1, "2 / 2".to_string())));
+    }
+
+    /// A set with nothing playable in it has no position, because `0 / 0` is a
+    /// counter and a counter promises there is something to count.
+    #[test]
+    fn an_empty_set_has_no_position_rather_than_a_nought() {
+        assert_eq!(playing_at(0, 0), None);
+        assert_eq!(playing_at(3, 0), None);
+    }
+
+    /// The line the wireframe draws, from a song that has all three of them.
+    #[test]
+    fn the_performance_meta_line_is_the_one_the_wireframe_draws() {
+        let mut s = song(1, "Angel From Montgomery", "John Prine");
+        s.key = Some("G".into());
+        s.capo = Some(2);
+        s.tempo = Some(96);
+        assert_eq!(performance_meta(&s), "G · capo 2 · 96 bpm");
+    }
+
+    /// Every part is optional, and dropping one must not leave the separator
+    /// it was sitting next to behind. Each of these is a real song in a real
+    /// book — a piano part with a key and a tempo and no capo to speak of, a
+    /// tune somebody has only ever written the capo down for.
+    #[test]
+    fn a_missing_part_takes_its_separator_with_it() {
+        let mut key_and_tempo = song(1, "A", "B");
+        key_and_tempo.key = Some("D".into());
+        key_and_tempo.tempo = Some(120);
+        assert_eq!(performance_meta(&key_and_tempo), "D · 120 bpm");
+
+        let mut capo_only = song(2, "A", "B");
+        capo_only.capo = Some(4);
+        assert_eq!(performance_meta(&capo_only), "capo 4");
+
+        let mut key_only = song(3, "A", "B");
+        key_only.key = Some("Am".into());
+        assert_eq!(performance_meta(&key_only), "Am");
+    }
+
+    /// A song with none of the three gets no line at all rather than an empty
+    /// one. The top bar centres a title against this string, and a blank row
+    /// under it would move the title off centre to say nothing.
+    #[test]
+    fn a_song_with_nothing_to_say_says_nothing() {
+        assert_eq!(performance_meta(&song(1, "Untitled", "Nobody")), "");
+    }
+
+    /// The same two "not really set" values `parse_count` refuses on the way
+    /// in, refused again on the way out — a capo on the nut is no capo, and
+    /// nought beats a minute is no tempo. A row can arrive from a backup or an
+    /// older build without having been through the form.
+    #[test]
+    fn a_nought_capo_or_tempo_is_not_a_fact_about_the_song() {
+        let mut s = song(1, "A", "B");
+        s.key = Some("E".into());
+        s.capo = Some(0);
+        s.tempo = Some(0);
+        assert_eq!(performance_meta(&s), "E");
+    }
+
+    /// A key stored as whitespace is a key nobody set, and it must not put a
+    /// leading separator in front of the capo.
+    #[test]
+    fn a_blank_key_is_no_key() {
+        let mut s = song(1, "A", "B");
+        s.key = Some("   ".into());
+        s.capo = Some(2);
+        assert_eq!(performance_meta(&s), "capo 2");
     }
 
     // ── sort & group sheet ──────────────────────────────────────────────
