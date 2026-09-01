@@ -156,6 +156,14 @@ pub const LIGHT_NEUTRALS: &str = "--sla-paper: #FBF7F0;\
      --sla-card-shadow: 0 2px 10px -4px rgba(28,25,23,.14), 0 0 0 1px rgba(28,25,23,.06);\
      --sla-danger: #BA1B1B;";
 
+/// `--sla-paper`, on its own. The two neutrals blocks above are one CSS-ready
+/// string each, so pulling the same hex out of them at runtime is a parse for
+/// no reason — these exist so `contrast_ratio`'s tests (and J3, which widens
+/// them) have something to check `accent`-as-text against directly, at the
+/// cost of the hex appearing twice in the file. Change one, change both.
+const LIGHT_PAPER: &str = "#FBF7F0";
+const DARK_PAPER: &str = "#181512";
+
 /// The full token block, as an inline `style` value for the app root.
 ///
 /// Everything downstream reads `var(--sla-*)`; nothing hard-codes a hex.
@@ -223,3 +231,148 @@ pub const T_CHIP: &str = "font-weight: 500; font-size: 13px;";
 pub const T_CHART: &str = "font-family: var(--sla-font-mono); font-size: 12.5px; \
      line-height: 1.5; white-space: pre; overflow: hidden;";
 pub const T_NAV_LABEL: &str = "font-size: 11px; letter-spacing: 0.04em;";
+
+// ---------------------------------------------------------------------------
+// Contrast — the handoff's rule as arithmetic, not just as a comment.
+// ---------------------------------------------------------------------------
+//
+// The header above states the rule in prose ("every text token clears 4.5:1
+// against its own background") and until now nothing checked it. Card H2
+// ships three accents whose card explicitly demands a contrast check before
+// they ship, which is the immediate reason this exists — but it is written to
+// be the one piece of arithmetic card J3 needs and not a one-off: J3's whole
+// job is "assert every text token clears 4.5:1 on its background, in both
+// modes and for every accent, as a unit test over the token table", and it
+// should import `contrast_ratio` from here rather than re-deriving WCAG
+// relative luminance a second time. H2's own tests below use it for the
+// accent family only — the pairs `theme::Accent` actually defines as text on
+// a background — and leave the neutrals (muted, ink, ink-2 on paper/card) for
+// J3 to widen this into.
+
+/// Parses a `#RRGGBB` string into its three channels. Every hex in this file
+/// is authored in that exact shape, so a value that is not is a typo in the
+/// token table worth a panic rather than a silently-wrong contrast number.
+fn hex_rgb(hex: &str) -> (u8, u8, u8) {
+    let digits = hex
+        .strip_prefix('#')
+        .unwrap_or_else(|| panic!("token hex must start with '#': {hex}"));
+    assert_eq!(digits.len(), 6, "token hex must be #RRGGBB: {hex}");
+    let channel = |range: std::ops::Range<usize>| {
+        u8::from_str_radix(&digits[range], 16).unwrap_or_else(|_| panic!("bad hex digit in {hex}"))
+    };
+    (channel(0..2), channel(2..4), channel(4..6))
+}
+
+/// WCAG 2.x relative luminance of one sRGB channel (0..=255 in, 0.0..=1.0 out).
+fn channel_luminance(c: u8) -> f64 {
+    let c = f64::from(c) / 255.0;
+    if c <= 0.03928 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+/// WCAG 2.x relative luminance of a `#RRGGBB` colour.
+fn relative_luminance(hex: &str) -> f64 {
+    let (r, g, b) = hex_rgb(hex);
+    0.2126 * channel_luminance(r) + 0.7152 * channel_luminance(g) + 0.0722 * channel_luminance(b)
+}
+
+/// WCAG 2.x contrast ratio between two `#RRGGBB` colours. Order of the two
+/// arguments does not matter — the lighter one is always the numerator — so a
+/// call site can read `contrast_ratio(text, background)` without having to
+/// know or care which of the two is lighter.
+pub fn contrast_ratio(a: &str, b: &str) -> f64 {
+    let (la, lb) = (relative_luminance(a), relative_luminance(b));
+    let (lighter, darker) = if la >= lb { (la, lb) } else { (lb, la) };
+    (lighter + 0.05) / (darker + 0.05)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The handoff's own numbers, as a sanity check on the arithmetic itself
+    /// before trusting it with the accents: `muted` on light `paper` is
+    /// claimed as roughly 5.4:1 and dark `muted` on dark `paper` as 5.9:1 (the
+    /// handoff states 5.9:1 outright for the dark pairing).
+    #[test]
+    fn contrast_ratio_matches_the_handoffs_worked_numbers_for_muted() {
+        let light = contrast_ratio("#6E645A", "#FBF7F0");
+        let dark = contrast_ratio("#9B9188", "#181512");
+        assert!((light - 5.4).abs() < 0.2, "light muted ratio drifted: {light}");
+        assert!((dark - 5.9).abs() < 0.2, "dark muted ratio drifted: {dark}");
+    }
+
+    #[test]
+    fn contrast_ratio_does_not_care_which_argument_is_lighter() {
+        assert_eq!(
+            contrast_ratio("#FBF7F0", "#1C1917"),
+            contrast_ratio("#1C1917", "#FBF7F0")
+        );
+    }
+
+    /// Every accent's two text-on-accent pairs — `accent-on-tint` on
+    /// `accent-tint`, and `on-accent` on `accent` itself — clear the
+    /// handoff's 4.5:1, in both modes. This is the contrast check card H2's
+    /// own card text demands before Pine, Indigo and Plum ship: their `base`
+    /// is authored in the handoff ("proof the base holds") but the other five
+    /// values per accent are derived here, and derived is exactly what this
+    /// test is allowed to send back for adjustment if it ever fails.
+    #[test]
+    fn every_accents_text_on_accent_pairs_clear_4_5_to_1_in_both_modes() {
+        for accent in ACCENTS {
+            let on_tint_light = contrast_ratio(accent.on_tint, accent.tint);
+            assert!(
+                on_tint_light >= 4.5,
+                "{}: on_tint vs tint (light) is only {on_tint_light:.2}:1",
+                accent.name
+            );
+
+            let on_tint_dark = contrast_ratio(accent.on_tint_dark, accent.tint_dark);
+            assert!(
+                on_tint_dark >= 4.5,
+                "{}: on_tint_dark vs tint_dark (dark) is only {on_tint_dark:.2}:1",
+                accent.name
+            );
+
+            let on_accent_light = contrast_ratio(accent.on_accent, accent.base);
+            assert!(
+                on_accent_light >= 4.5,
+                "{}: on_accent vs base (light) is only {on_accent_light:.2}:1",
+                accent.name
+            );
+
+            let on_accent_dark = contrast_ratio(accent.on_accent_dark, accent.base_dark);
+            assert!(
+                on_accent_dark >= 4.5,
+                "{}: on_accent_dark vs base_dark (dark) is only {on_accent_dark:.2}:1",
+                accent.name
+            );
+        }
+    }
+
+    /// `accent` itself is also used as text — group labels and "Show 38 more"
+    /// sit directly on `paper`/`card`, per the handoff's step 2 rule ("Material
+    /// You primary … darkened until it clears 4.5:1 against paper"), which this
+    /// applies to every accent rather than only the one it was written about.
+    #[test]
+    fn every_accents_base_clears_4_5_to_1_as_text_on_paper_in_both_modes() {
+        for accent in ACCENTS {
+            let light = contrast_ratio(accent.base, LIGHT_PAPER);
+            assert!(
+                light >= 4.5,
+                "{}: base vs light paper is only {light:.2}:1",
+                accent.name
+            );
+
+            let dark = contrast_ratio(accent.base_dark, DARK_PAPER);
+            assert!(
+                dark >= 4.5,
+                "{}: base_dark vs dark paper is only {dark:.2}:1",
+                accent.name
+            );
+        }
+    }
+}

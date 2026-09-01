@@ -79,27 +79,36 @@
 //! is here, because the handoff says in as many words that density is "set in
 //! Settings → Library density".
 //!
-//! ## The accent row is four swatches and not a door
+//! ## The accent row is four named chips, and still not a door
 //!
-//! Card H2 owns the accent picker. The judgement this card had to make is what
-//! goes here in the meantime, and the answer is: the control itself, inline.
+//! Card H1 shipped this as four bare 24px swatches on one line — colour alone
+//! naming nothing, with the row's right edge (`derive::accent_note`) the only
+//! place the *chosen* one was named. Card H2 owns the accent picker itself and
+//! turns each swatch into a chip: a small dot plus the accent's name (Rust ·
+//! Pine · Indigo · Plum), so a red/green colour-blind reader — or anyone who
+//! has not memorised which hex is which — can tell them apart without relying
+//! on a caption that only ever names one of the four.
 //!
 //! `SettingsStore::accent` already resolves through `AccentChoice::resolve`,
 //! already persists, and already repaints the entire app the moment it changes —
 //! `crate::app`'s root style closure reads `accent_resolved()`, so a tap here is
-//! a live theme change with nothing left to wire. `theme::ACCENTS` holds exactly
-//! four values. Four swatches fit on one row. A row that instead opened a screen
-//! H2 has not built would be the dead row this card exists to avoid, and a row
-//! that only *printed* the accent name would be strictly less than what the
-//! state can already do.
+//! a live theme change with nothing left to wire. That live repaint is *why* this
+//! stays one tap on this screen rather than moving behind a picker sheet: a sheet
+//! would hide the very thing that makes the control legible, which is watching
+//! the whole app change colour under your thumb. `theme::ACCENTS` holds exactly
+//! four values, so four chips is the whole picker; a row that instead opened a
+//! screen H2 has not built would be the dead row H1's header was written to
+//! avoid, and a row that only *printed* the accent name would be strictly less
+//! than what the state can already do. See `accent_row` for the chip styling
+//! itself and why it is not `crate::ui::Chip`.
 //!
-//! What H2 still owns is everything the four swatches cannot say: the names, the
-//! previews, and above all `AccentChoice::FromSystem` — the wallpaper extraction
-//! that resolves to Rust today because Rinch exposes no platform call for it.
-//! `FromSystem` is deliberately **not** offered as a fifth swatch here: choosing
-//! it would silently mean Rust, which is a control that lies. The row's right
-//! edge names the colour actually on screen (`derive::accent_note`), so a fresh
-//! install reads "Rust" and is telling the truth about the pixels.
+//! What is still deliberately absent is `AccentChoice::FromSystem` — the
+//! wallpaper extraction that resolves to Rust today because Rinch exposes no
+//! platform call for it (`AccentChoice::resolve`'s own comment carries the
+//! rest of this). It is not offered as a fifth chip: choosing it would
+//! silently mean Rust, which is a control that lies. The row's own note
+//! (`derive::accent_note`) still names the colour actually on screen, so a
+//! fresh install reads "Rust" and is telling the truth about the pixels.
 //!
 //! ## Every reactive control carries its own colour
 //!
@@ -399,49 +408,84 @@ fn choice_row<T: Copy + PartialEq + 'static>(
     }
 }
 
-/// The accent row: the name of the colour on screen, then the four swatches.
+/// The accent row: label and the name of the colour on screen on their own
+/// line, then the four named chips wrapping beneath.
 ///
-/// Each swatch is a 24px circle inside a 40px box, because 24px is the size the
-/// dot wants to be and 40px is the size a finger needs; the same trade
-/// `ui::IconButton` makes for the same reason. The hexes come out of
-/// `theme::ACCENTS` — the token table itself — rather than being written here,
-/// which is the rule "nothing downstream hard-codes a hex" actually asks for.
-/// Four colours cannot each be a CSS variable when the point of the row is to
-/// show all four at once.
+/// Two lines rather than one, which is what H1's single-line row of four bare
+/// swatches used to fit into. A named chip (dot + word) is wider than a bare
+/// 24px circle, and cramming "Accent", its note, and four of them onto one
+/// 44px row either truncates the note or crowds the chips into a scroll a
+/// four-option control has no business needing. So "Accent" and the note keep
+/// `choice_row`'s label/value baseline on their own line, and the chips wrap
+/// beneath at the handoff's own "wrapping, 7px gaps" rhythm — the same rule
+/// every other chip row on this screen already follows.
+///
+/// This does not reuse `crate::ui::Chip`: that component paints every chip it
+/// draws in one of two shared colours (ink-on-paper for `active`, fill-on-
+/// muted-or-ink-2 for the rest), which is right for a row where every chip is
+/// choosing among values that share a single accent — sort field, filter
+/// facet — but wrong here, where the four chips *are* four different accents
+/// and Rust's dot has to read as rust-coloured even while Pine is selected.
+/// So this borrows `choice_row`'s shape instead — `T_CHIP`, `999px` radius,
+/// `accent-tint`/`accent-on-tint` for the chosen one, `fill`/`muted` for the
+/// rest — and keys the tint/on-tint pair to *that chip's own* accent rather
+/// than to the one shared `--sla-accent-tint` variable, which only ever holds
+/// the accent currently live. The dot's own fill is always that accent's real
+/// hex for the same reason: it has to stay Pine-coloured regardless of which
+/// chip is selected, which a CSS custom property that follows the live theme
+/// cannot do.
+///
+/// No swatch-preview widget: the live repaint already is the preview. Tapping
+/// a chip calls `settings.set_accent`, which flips `accent_resolved()`, which
+/// `crate::app`'s root style closure reads to repaint the entire screen tree —
+/// see the module header. A second, smaller preview here would just be a
+/// slower copy of the one the whole screen already gives for free.
 fn accent_row(scope: &mut RenderScope, settings: SettingsStore) -> NodeHandle {
     let __scope = scope;
     rsx! {
-        div { style: {ROW},
-            span { style: {format!("{T_BODY} flex: 1;")}, "Accent" }
-            span { style: {format!("{T_META_SMALL}")}, {move || accent_note(settings.accent.get()).to_string()} }
-            div { style: "display: flex; flex-shrink: 0; margin-right: -8px;",
+        div {
+            style: "display: flex; flex-direction: column; gap: 10px; padding: 12px 0; \
+                    border-bottom: 1px solid var(--sla-hairline-soft);",
+            div { style: "display: flex; align-items: center; gap: 12px;",
+                span { style: {format!("{T_BODY} flex: 1;")}, "Accent" }
+                span { style: {format!("{T_META_SMALL}")}, {move || accent_note(settings.accent.get()).to_string()} }
+            }
+            div { style: "display: flex; flex-wrap: wrap; gap: 7px;",
                 for index in 0..ACCENTS.len() {
                     let accent = ACCENTS[index];
+                    let chosen = move || settings.accent_resolved() == accent;
                     div {
                         key: index,
                         onclick: move || settings.set_accent(AccentChoice::Named(index)),
-                        style: "width: 40px; height: 40px; display: flex; \
-                                align-items: center; justify-content: center;",
+                        style: {move || format!(
+                            "{T_CHIP} display: flex; align-items: center; gap: 6px; \
+                             border-radius: 999px; padding: 6px 11px; white-space: nowrap; \
+                             background: {};",
+                            if chosen() {
+                                if settings.dark_mode.get() { accent.tint_dark } else { accent.tint }
+                            } else {
+                                "var(--sla-fill)"
+                            },
+                        )},
                         div {
-                            style: {move || {
-                                let fill = if settings.dark_mode.get() {
-                                    accent.base_dark
-                                } else {
-                                    accent.base
-                                };
-                                // The ring is drawn as two shadows rather than a
-                                // border so it sits *outside* the circle and the
-                                // four swatches stay the same size whichever one
-                                // is chosen — a border would move the other three
-                                // by a pixel every time the accent changed.
-                                let ring = if settings.accent_resolved() == accent {
-                                    "box-shadow: 0 0 0 2px var(--sla-paper), 0 0 0 4px var(--sla-ink);"
-                                } else {
-                                    ""
-                                };
-                                format!("width: 24px; height: 24px; border-radius: 999px; \
-                                         background: {fill}; {ring}")
-                            }},
+                            style: {move || format!(
+                                "width: 10px; height: 10px; border-radius: 999px; flex-shrink: 0; \
+                                 background: {};",
+                                if settings.dark_mode.get() { accent.base_dark } else { accent.base },
+                            )},
+                        }
+                        // Its own colour, for the F3 reason in the module
+                        // header: this span repaints with the chip, so its
+                        // `color` is a closure of its own rather than an
+                        // inherited value the parent's restyle would leave
+                        // behind.
+                        span {
+                            style: {move || format!("color: {};", if chosen() {
+                                if settings.dark_mode.get() { accent.on_tint_dark } else { accent.on_tint }
+                            } else {
+                                "var(--sla-muted)"
+                            })},
+                            {accent.name}
                         }
                     }
                 }

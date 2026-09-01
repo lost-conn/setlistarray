@@ -18,9 +18,40 @@ impl AccentChoice {
         match self {
             // TODO: wallpaper extraction is a platform call Rinch does not
             // expose yet — falls through to the default until it does.
+            //
+            // Card H2 kept `FromSystem` off the Settings accent picker for
+            // exactly this reason: offering it as a fifth option would mean
+            // Rust today regardless of what the user picked, which is a
+            // control that lies about what it does. That is fine while
+            // `FromSystem` is the *only* value `Preferences` can hold before
+            // a user ever touches the picker — nobody has "chosen" Rust, the
+            // app just hasn't been told otherwise. It stops being fine the
+            // day K8 gives this arm a real wallpaper colour: at that point
+            // whoever has tapped Rust/Pine/Indigo/Plum in Settings is on
+            // `Named(_)` forever, with no control anywhere that sets them
+            // back to `FromSystem`, because H2 built no such control. Adding
+            // that fifth "follow the system" option to the picker is K8's
+            // work, not a gap left here — but it is a real piece of that
+            // card's scope, not a footnote, so it is written down here where
+            // whoever picks up K8 will be reading this match arm anyway.
             AccentChoice::FromSystem => RUST,
             AccentChoice::Named(i) => ACCENTS[i.min(ACCENTS.len() - 1)],
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pins today's answer so K8 changing it — the day wallpaper extraction
+    /// exists — is a deliberate edit to this test rather than a silent
+    /// behaviour change nobody noticed. See the long comment on `resolve`
+    /// above for why this arm is temporary and what has to accompany the day
+    /// it changes.
+    #[test]
+    fn accent_choice_from_system_resolves_to_rust_until_wallpaper_extraction_lands() {
+        assert_eq!(AccentChoice::FromSystem.resolve(), RUST);
     }
 }
 
