@@ -456,6 +456,47 @@ mod tests {
         );
     }
 
+    /// The phone gets the GPU painter, and nothing about that is visible in a
+    /// test run on a laptop — which is the reason to assert it here.
+    ///
+    /// A revert to the software shell would build, install, run, and draw the
+    /// identical screen. The only symptom is that the app is slower on a
+    /// device nobody is holding at the time. Measured on the moto g stylus 5G
+    /// with `scripts/frame-probe.sh`, two runs each: 84.8-85.7fps on the GPU
+    /// path against 70.6-70.9fps on the software one, and the frames that miss
+    /// take two refreshes rather than three (p95 16.69ms against 25.18ms).
+    ///
+    /// Four cards paid for this default — K35 removed the readback that made
+    /// K27 measure the GPU path *slower*, K42 found the present block was the
+    /// GPU not fitting rather than a swapchain setting, K43 cut a third of the
+    /// rasterisation, and K36 fixed the silent clipping difference that made
+    /// shipping the faster path a bad trade whatever its speed. It is worth a
+    /// line of test to keep it.
+    #[test]
+    fn the_phone_gets_the_gpu_painter_by_default() {
+        let script = strip_shell_comments(include_str!("../build-apk.sh"));
+        // The *first* `FEATURES=` is the default; the ones after it are the
+        // flags that override it, and `--software` legitimately assigns an
+        // empty string. Reading only the first assignment is what makes this
+        // assertion about the default rather than about the flags.
+        let default = script
+            .lines()
+            .map(str::trim)
+            .find(|line| line.starts_with("FEATURES="))
+            .expect("build-apk.sh sets FEATURES");
+        assert_eq!(
+            default, r#"FEATURES="rinch/android-gpu""#,
+            "build-apk.sh no longer defaults to rinch's android-gpu shell; the app is \
+             slower on the phone and nothing else says so (card K41)"
+        );
+        assert!(
+            script.contains("--software)"),
+            "build-apk.sh no longer offers --software; the GPU path is proven on exactly \
+             one driver and the painter with years behind it should stay one flag away \
+             (card K41)"
+        );
+    }
+
     /// Link-time optimisation is asked for by `build-apk.sh`, not by
     /// `Cargo.toml`, and that is deliberate enough to be worth holding still.
     ///

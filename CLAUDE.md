@@ -66,6 +66,17 @@ like the ones around it. `scripts/screenshot.sh` and the `note` fields in
 ## Android
 
 A device is usually attached: `~/Android/Sdk/platform-tools/adb` (not on PATH),
-serial `ZY22FD66GZ`, a moto g stylus 5G. `./build-apk.sh` builds the APK.
+serial `ZY22FD66GZ`, a moto g stylus 5G. `./build-apk.sh` builds the APK — with
+rinch's GPU shell, since card K41; `--software` builds the tiny-skia one.
 Anything found on hardware is worth turning into a `cargo test` that fails on a
 laptop — see cards K15 and K20 for that pattern.
+
+**Never measure frame rate from inside the app.** Card K39 timed frames
+in-process, reported 8.33ms p50 on a screen the owner could see was not smooth,
+and three cards were written on top of that number before K40 caught it. An
+in-process timer measures how long the app took to hand a frame over; it says
+nothing about whether the compositor ever showed it. Use
+`scripts/frame-probe.sh`, which reads `dumpsys SurfaceFlinger --latency` and
+insists on a stock-app control (`--control`) on the same panel in the same
+minute. Report p50, p95, p99 and missed refreshes — never a median alone, which
+was identical for the two painters that differ by 15fps.

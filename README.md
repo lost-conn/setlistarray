@@ -446,7 +446,32 @@ reasoning, and the two options not taken, are in
   left is honest rasterisation — CPU tiny-skia at a full 1080×2460, where one
   opaque full-screen fill is 13ms — so roughly four frames per transition:
   animated, not yet smooth. The structural answer is the GPU path, which is
-  card K27, not this one.
+  card K27, not this one — and which is now what `./build-apk.sh` builds; see
+  the next entry.
+- **The phone gets the GPU painter now, and the number that mattered was not
+  the median.** Cards K39 through K43 and K41. The owner said for three cards
+  that the app felt like 30fps while an in-process probe reported 8.33ms p50,
+  and the owner was right: a timer inside the process measures how long the app
+  took to hand a frame over, not whether the compositor ever put it on the
+  glass. `dumpsys SurfaceFlinger --latency` measures the second thing, and
+  `scripts/frame-probe.sh` is now the house way to ask it — with a stock-app
+  control on the same panel in the same minute, because a throttled handset
+  makes any app look bad. It has two traps written into it that cost real time
+  to find: SurfaceFlinger answers out of a **128-entry ring buffer**, so a long
+  run silently reports only its last second (which is the cheap coasting tail,
+  and flattered the app by 40fps), and `input swipe` against a list already at
+  its end measures a screen that never moved. Measured with both fixed, two
+  runs each, against stock Settings at 8.33ms p50 / 120.0fps / 0.0% missed:
+  the GPU path is **8.37ms p50, 16.69ms p95, 84.8–85.7fps, 38.7–39.9% missed**
+  and the software path **8.35ms p50, 25.18ms p95, 70.6–70.9fps, 43.9–45.6%**.
+  The medians are identical and tell you nothing; the difference is that a
+  missed frame costs two refreshes on the GPU path and three on the software
+  one. K41 recorded the software path at 20.8fps and the GPU at 58fps a day
+  earlier — both moved because K43's clip cuts live in `paint/mod.rs`, which
+  feeds both painters, and every clip layer costs tiny-skia a full-surface
+  pixmap. What allowed the flip was not speed but K36: until it landed, the
+  faster path could silently throw away a shadow. `--software` is one flag
+  away, because the GPU path is proven on exactly one driver.
 - **INTERNET really is invisible.** `dumpsys package` lists it under *install
   permissions*, `granted=true`, with no runtime permissions at all — which is
   why there is nothing for the app's permission screen to show. The claim under
