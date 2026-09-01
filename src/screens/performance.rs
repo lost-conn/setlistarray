@@ -7,21 +7,28 @@
 //! saying what is up next with a keep-awake toggle and a way into the running
 //! order; and a progress strip along the very bottom.
 //!
-//! ## The keep-awake toggle is a control with nothing behind it yet (F4)
+//! ## The keep-awake toggle now keeps the screen awake (F3, then F4)
 //!
 //! It reads and flips [`PlaybackStore::keep_awake`](crate::store::PlaybackStore)
-//! and that is the whole of what it does. **The screen does not stay on.** The
-//! call that would keep it on is card F4 and it is waiting on an API Rinch does
-//! not expose (K5, upstream) — there is no way from this crate to hold a wake
-//! lock or set `FLAG_KEEP_SCREEN_ON`.
+//! and that is still the whole of what *this file* does with it. What changed is
+//! at the other end: card F4 landed the thing that reads that signal, so the
+//! screen does stay on.
 //!
-//! Shipping the control ahead of the effect is deliberate and it is the smaller
-//! of two wrongs, but it is a wrong: a toggle that says the screen will stay on
-//! and does not is a promise broken in the middle of a gig, which is the worst
-//! moment this app has. It ships anyway because the alternative — no toggle
-//! until K5 lands — leaves the bar's middle cell empty and gives F4 a screen to
-//! redesign rather than a signal to read. The day K5 lands, F4 is an `Effect`
-//! over this signal and nothing here changes.
+//! F3 shipped this control with nothing behind it and this header said so in as
+//! many words — a toggle that promises the screen will stay on and does not is a
+//! promise broken in the middle of a gig, which is the worst moment this app
+//! has. It shipped anyway because the alternative left the bar's middle cell
+//! empty and gave F4 a screen to redesign rather than a signal to read. That bet
+//! came off exactly as written: F4 is an `Effect` in [`crate::app`] and not one
+//! line here moved.
+//!
+//! **The effect is up there and not in this file, on purpose.** See
+//! [`crate::keep_awake`] for the whole argument; the short version is that this
+//! screen has four ways out of it and the release must not be on any of them.
+//! The rule is `wanted(route, toggle)` — performance mode *and* the toggle — so
+//! leaving by any means at all is a recomputation that comes out `false`, and
+//! there is no path to forget because there is no path. A phone still holding
+//! its display on an hour after the set is the same bug in the other direction.
 //!
 //! ## The running order is a bottom sheet, and the wireframe does not draw it
 //!

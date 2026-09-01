@@ -144,6 +144,22 @@ rinch = { path = "../rinch-fixes/crates/rinch", default-features = false, featur
     "file-dialogs",
 ] }
 
+# Keeping the desktop's screensaver out of the way while a set is being played
+# (`src/keep_awake.rs`, card F4). One `org.freedesktop.ScreenSaver.Inhibit` call
+# over the session bus, and it is the cheapest line in this file: **zbus is
+# already compiled into every desktop build of this app** — `rinch`'s
+# `file-dialogs` feature brings `rfd`, whose Linux backend is `xdg-portal`,
+# which is `ashpd`, which is `zbus` 5.19. Naming it here turns on zbus's own
+# `blocking-api` feature and adds no crate at all: `cargo tree --edges normal`
+# lists 457 packages with this line and the same 457 without it.
+#
+# It is under the desktop table rather than in `[dependencies]`, so the number
+# this project actually guards — what the APK weighs — does not move by a byte.
+# That is the whole reason the desktop half of F4 was worth building: on a phone
+# this would have been a real dependency to argue about, and on the desktop it
+# is a crate already in the tree being used for a second thing.
+zbus = "5"
+
 [target.'cfg(target_os = "android")'.dependencies]
 rinch = { path = "../rinch-fixes/crates/rinch", default-features = false, features = [
     "android",

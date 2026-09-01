@@ -5,10 +5,18 @@
 //! One crate, two entry points. The desktop binary (`src/main.rs`) calls
 //! [`run_desktop`]; on Android the crate is built as a `cdylib` and the
 //! platform calls `android_main` (`src/android.rs`). Everything between those
-//! two doors is shared — the screens contain no `#[cfg]` at all. The two
-//! places the platforms genuinely differ have their own seams:
-//! [`platform::safe_area`] for the status bar and gesture bar, and
-//! [`db::DataDir`] for where the library is written.
+//! two doors is shared — the screens contain no `#[cfg]` at all. Where the
+//! platforms genuinely differ, each difference has its own seam rather than a
+//! `#[cfg]` in a screen:
+//!
+//! * [`platform::safe_area`] — the status bar and gesture bar.
+//! * [`db::DataDir`] — where the library is written.
+//! * [`picker::FilePicker`] — a dialog on the desktop, an activity on Android.
+//! * [`keep_awake::ScreenLock`] — a window flag on Android, a D-Bus inhibit on
+//!   the desktop, and nothing at all anywhere else.
+//!
+//! This list said "the two places" for a long time after it had become four,
+//! which is the usual fate of a counted list in a comment. It is a list now.
 
 // The rsx! macro re-emits `let` bindings from control-flow bodies inside the
 // closures it generates, but rustc lints the original spans — so bindings that
@@ -25,6 +33,7 @@ pub mod db;
 mod derive;
 #[cfg(test)]
 mod gesture_reachability;
+pub mod keep_awake;
 mod menu;
 mod model;
 pub mod pdf;
@@ -150,7 +159,7 @@ pub fn app() -> NodeHandle {
     create_store(SongsStore::restored(storage, attachments, loaded.songs));
     create_store(SetlistsStore::restored(storage, loaded.setlists));
     create_store(LibraryViewStore::restored(storage));
-    create_store(PlaybackStore::new());
+    let playback = create_store(PlaybackStore::new());
     let nav = create_store(NavStore::new());
 
     // The status bar and the gesture bar are the OS's to draw, but what they
@@ -175,6 +184,30 @@ pub fn app() -> NodeHandle {
     Effect::new(move || {
         let light = !settings.dark_mode.get() && !nav.route.get().dark_chrome();
         platform::set_light_system_bars(light);
+    });
+
+    // The screen must not go off in the middle of a song (F4). The toggle in
+    // performance mode's bottom bar flips `PlaybackStore::keep_awake`, and this
+    // is the thing that reads it — until now nothing did, which
+    // `screens::performance`'s header said out loud for as long as it was true.
+    //
+    // **Here, and not inside the screen**, which is the obvious place and is
+    // wrong. Performance mode has four ways out — the ✕, the running-order
+    // sheet's own dismissal into a different route, a set deleted underneath it,
+    // and the two entry points navigating somewhere else entirely — and a
+    // release written into the screen has to be on every one of them. Up here
+    // the question is asked of the *route*, so leaving performance mode by any
+    // means at all is a recomputation that comes out `false`; there is no path
+    // to forget because there is no path. `keep_awake::wanted` is that rule and
+    // it is unit-tested against every route the app has.
+    //
+    // The same shape as the bars above it, deliberately: two signals read in one
+    // effect, an answer written to a `platform`-style seam that is a real call
+    // on one platform and nothing on the other. Nothing here is
+    // platform-specific — `keep_awake` is where Android's window flag and the
+    // desktop's D-Bus inhibit part company.
+    Effect::new(move || {
+        keep_awake::set(keep_awake::wanted(nav.route.get(), playback.keep_awake.get()));
     });
 
     rsx! {
