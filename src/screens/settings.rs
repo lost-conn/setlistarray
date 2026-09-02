@@ -41,11 +41,13 @@
 //!
 //! * **Import from file** — card I2, which has a real decision in front of it
 //!   (replace or merge) that a row here cannot make on its behalf.
-//! * **Last export** — card I3's own row. I1 writes the timestamp it will
-//!   read (`Preferences::last_export_at`, set the moment a save lands — see
-//!   [`export_row`]) because a field on that struct costs nothing to add
-//!   now, but the *row* that reads it back as a date is I3's UI to build, not
-//!   this card's.
+//! * ~~**Last export**~~ — built by card I3, and it turned out not to want a
+//!   row of its own at all. `Preferences::last_export_at` reads back on the
+//!   right of the Export row itself, as the note that sits there whenever the
+//!   last tap has nothing left to report. A separate row would have been a
+//!   second line in the section saying something about the same action the
+//!   line above it names, which is the beginning of a nag; I3's instruction
+//!   was the opposite. See [`crate::derive::last_export_note`].
 //! * The **`›` chevrons** on the two storage rows. `1q` draws both as gateways
 //!   to a breakdown screen; no such screen exists and no card describes one, so
 //!   the two rows are read-only here. The number is the whole of what they can
@@ -194,7 +196,7 @@ use rinch::prelude::*;
 use rinch_tabler_icons::TablerIcon;
 
 use crate::derive::{
-    accent_note, attachments_note, density_label, library_sort_note, on_off,
+    accent_note, attachments_note, density_label, last_export_note, library_sort_note, on_off,
     performance_theme_label, saved_pages_note,
 };
 use super::import_flow::{self, ImportStatus};
@@ -372,9 +374,27 @@ fn export_row(scope: &mut RenderScope, storage: Storage, status: Signal<Option<E
             onclick: move || start_export(storage, status),
             style: {ROW},
             span { style: {format!("{T_BODY} flex: 1;")}, "Export library (.zip)" }
+            // One span, two jobs, and the order matters (card I3). While the
+            // last tap of this row still has something to report, it reports
+            // that. With nothing to report — a fresh launch, or a screen
+            // reopened later — it falls back to when the library was last
+            // exported. The date is the resting state and the status is the
+            // interruption, which is the right way round: the status is about
+            // the tap you just made and stops being interesting, whereas the
+            // date is what somebody opening Settings cold came to find out.
+            //
+            // `storage.preferences()` is a `Signal` read, so the fallback
+            // updates itself the moment `start_export` stamps
+            // `last_export_at` — there is no second signal to keep in step.
             span {
                 style: {move || format!("{T_META_SMALL} color: {};", export_status_color(status.get()))},
-                {move || export_status_note(status.get())}
+                {move || match status.get() {
+                    Some(s) => export_status_note(Some(s)),
+                    None => last_export_note(
+                        storage.preferences().last_export_at,
+                        crate::model::Day::today(),
+                    ),
+                }}
             }
         }
     }

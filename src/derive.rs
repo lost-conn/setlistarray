@@ -1501,6 +1501,35 @@ pub fn performance_theme_label(theme: PerformanceTheme) -> &'static str {
     }
 }
 
+/// What the Backup section says about the last export, when nothing more
+/// recent has happened to say instead (card I3).
+///
+/// The card's whole instruction is **"nag never, mention once"**, and that is
+/// a rule about what this function may return rather than about where it is
+/// drawn. So: one muted line, no exclamation, no count of days since, and
+/// nothing that escalates the longer it has been. A library that has never
+/// been exported says so once and then says the same thing forever; a
+/// library exported this morning says today. There is deliberately no
+/// threshold at which the wording changes, because a threshold is how a
+/// mention becomes a nag.
+///
+/// `now` is handed in rather than read from the clock so the wording is
+/// testable without waiting for tomorrow.
+pub fn last_export_note(last_export_at: Option<i64>, now: Day) -> String {
+    let Some(ms) = last_export_at else {
+        return "Not backed up yet".to_string();
+    };
+    // Milliseconds since the epoch, floored to the calendar day the same way
+    // `Day::today` does it — the day is all this line ever says, so the wall
+    // clock inside it is not worth carrying.
+    let day = Day::from_days_since_epoch(ms.div_euclid(86_400_000));
+    if day == now {
+        "Exported today".to_string()
+    } else {
+        format!("Exported {}", day.short())
+    }
+}
+
 /// The name of the accent the app is *painted in*, which is not always the name
 /// of the accent that was *chosen*.
 ///
@@ -3258,6 +3287,43 @@ mod tests {
             assert!(!density_label(density).is_empty());
             assert!(!density.name().is_empty());
         }
+    }
+
+    // ── I3: what the Backup section says about the last export ──────────
+
+    /// A library nobody has exported says so, and goes on saying exactly that
+    /// — this is the assertion that keeps "mention once, nag never" true,
+    /// because the way that rule gets broken is by someone later making the
+    /// wording depend on how long it has been.
+    #[test]
+    fn a_library_that_has_never_been_exported_says_so_plainly() {
+        assert_eq!(last_export_note(None, Day::new(2026, 9, 2)), "Not backed up yet");
+    }
+
+    #[test]
+    fn an_export_earlier_the_same_day_reads_as_today() {
+        let today = Day::new(2026, 9, 2);
+        let ms = today.days_since_epoch() * 86_400_000 + 13 * 3_600_000;
+        assert_eq!(last_export_note(Some(ms), today), "Exported today");
+    }
+
+    #[test]
+    fn an_older_export_is_named_by_its_day_and_not_by_its_age() {
+        let day = Day::new(2026, 6, 2);
+        let ms = day.days_since_epoch() * 86_400_000;
+        assert_eq!(last_export_note(Some(ms), Day::new(2026, 9, 2)), "Exported Jun 2");
+    }
+
+    /// Whatever the gap, the sentence keeps its shape: no "3 months ago", no
+    /// warning, nothing that grows more insistent. A year later it still just
+    /// names the day.
+    #[test]
+    fn a_very_old_export_says_the_same_kind_of_thing_as_a_recent_one() {
+        let old = Day::new(2024, 1, 9);
+        let ms = old.days_since_epoch() * 86_400_000;
+        let note = last_export_note(Some(ms), Day::new(2026, 9, 2));
+        assert_eq!(note, "Exported Jan 9");
+        assert!(!note.contains("ago"), "{note}");
     }
 
     #[test]
