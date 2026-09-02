@@ -178,6 +178,28 @@ pub fn Setlists() -> NodeHandle {
                         }
                     }
                 }
+
+                // Card J4's audit: the Songs tab has `1r` for an empty book
+                // and this tab had nothing of its own — a fresh library with
+                // songs already typed in but no set built yet drew a blank
+                // column here with no more to say about it than the filtered-
+                // library case `library.rs` already answers. No accent action
+                // is repeated here: the FAB in the corner is already the one
+                // control this state wants, and a second "New setlist" link
+                // beside this text would be the same tap offered twice on one
+                // screen, the thing `song_detail`'s header calls out as worse
+                // than the gap it would fill.
+                if setlists.setlists.get().is_empty() {
+                    div { style: "padding: 60px 8px; text-align: center;",
+                        div { style: "color: var(--sla-muted); display: flex; justify-content: center;",
+                            {icon(__scope, TablerIcon::List, 26)}
+                        }
+                        div { style: {format!("{T_ROW_TITLE} margin-top: 14px;")}, "No sets yet" }
+                        div { style: {format!("{T_META} margin-top: 6px;")},
+                            "Group songs from your book into a set you can play front to back."
+                        }
+                    }
+                }
             }
 
             // FAB — creates a setlist. `z-index` is load-bearing here for the

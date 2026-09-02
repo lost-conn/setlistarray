@@ -64,7 +64,7 @@ use store::{
     AttachmentsStore, LibraryViewStore, NavStore, PlaybackStore, Route, SettingsStore,
     SetlistsStore, SongsStore, Storage, Tab,
 };
-use theme::{DARK_NEUTRALS, T_NAV_LABEL, tokens};
+use theme::{DARK_NEUTRALS, T_META, T_NAV_LABEL, tokens};
 use ui::icon;
 
 /// A phone in the hand: 393×852 is the Pixel-class viewport the designs assume.
@@ -317,6 +317,30 @@ pub fn app() -> NodeHandle {
                         "background: var(--sla-paper);".to_string()
                     },
                 )}
+            }
+
+            // Card J4: the library either opened or it did not, and a user
+            // whose library is running in memory only has to be told — see
+            // `derive::library_unavailable_note`'s own header for why this
+            // has no button on it. It sits above every route rather than
+            // inside one screen, because the fact it states is true of the
+            // whole session and not of whichever tab happens to be open when
+            // it becomes true; a banner that lived inside `Library` would say
+            // nothing on the very first frame of a fresh install that landed
+            // in `FirstRun` instead, which is exactly the launch this state
+            // is most likely to occur on.
+            for sentence in derive::library_unavailable_note(storage.is_persistent()) {
+                div {
+                    style: "padding: 10px 22px; display: flex; align-items: center; \
+                            gap: 8px; flex-shrink: 0; background: var(--sla-fill); \
+                            border-bottom: 1px solid var(--sla-hairline);",
+                    span { style: "color: var(--sla-danger); display: flex; flex-shrink: 0;",
+                        {icon(__scope, TablerIcon::AlertCircle, 15)}
+                    }
+                    span { style: {format!("{T_META} color: var(--sla-danger); font-weight: 600;")},
+                        {sentence}
+                    }
+                }
             }
 
             match nav.route.get() {

@@ -241,7 +241,19 @@ pub fn total_runtime(songs: &[Song]) -> u32 {
 /// The "Before you start" panel: which tunings the set needs, how many songs
 /// want a capo, and whether everything is available offline. Derived, not
 /// authored.
+///
+/// An empty set gets an empty string, not "Every chart is on this phone and
+/// works with no signal." — which is what the `missing == 0` branch below
+/// would otherwise say about a set with no charts because it has no songs.
+/// That sentence is true of nothing and reads as though it were true of
+/// something, and card J4's audit is what caught it: `setlist_detail`'s own
+/// empty-setlist state hides this whole panel on the same check, so the
+/// wrong sentence should never have reached a screen, but the function itself
+/// should not be able to produce it either.
 pub fn prep_facts(songs: &[Song]) -> String {
+    if songs.is_empty() {
+        return String::new();
+    }
     let mut tunings: Vec<String> = Vec::new();
     for song in songs {
         if let Some(t) = &song.tuning
@@ -1637,6 +1649,44 @@ pub fn first_run_active(song_count: usize) -> bool {
     song_count == 0
 }
 
+/// The sentence for a library that never opened, shown for as long as
+/// [`crate::store::Storage`] is running in its memory-only fallback — card
+/// J4's audit found that this state had an engine (`Storage::open`'s own doc
+/// comment says "the app runs on memory alone, the fault is recorded") and no
+/// screen. Everything that could go wrong up to this point already has a
+/// place to be seen — a failed write says so on the row it touched, a failed
+/// export says so on the export row — but a library that failed to *open at
+/// all* had nowhere to be seen except `Storage::fault`, a signal nothing ever
+/// read, and stderr, which nobody but a developer at a terminal ever sees.
+/// That left the worst state on this card's own list silent: a user typing
+/// songs into an app that will forget every one of them the moment it closes,
+/// with nothing on screen to say so.
+///
+/// **No action, on purpose.** Card J4's own instruction is that a state with
+/// nothing the reader can do must say what happened and stop, rather than
+/// invent a button that cannot help. There is no "Retry" that means anything
+/// here — the directory that failed to open is still whatever it was, on the
+/// same process, and the actual fixes (freeing disk space, restoring
+/// permissions, whatever else was holding the directory's lock letting go of
+/// it) all happen outside this app, most of them requiring a fresh launch to
+/// even attempt. A button that reran `Storage::open` against an unchanged
+/// directory would fail the same way and teach the user that trying again is
+/// the answer, when closing the app and fixing the machine is.
+///
+/// A nought-or-one shape — `Option<&'static str>` rather than a bare `bool` —
+/// because that is what `crate::app`'s render tree wants: a `for` over this,
+/// the same pattern `captured_page::Shown::note` and `performance::empty_note`
+/// already use for "one sentence, or nothing at all".
+pub fn library_unavailable_note(is_persistent: bool) -> Option<&'static str> {
+    (!is_persistent).then_some(LIBRARY_UNAVAILABLE)
+}
+
+/// The sentence itself. A `const` rather than a literal inside the function
+/// above so a test can hold it to the two things it has to promise: that the
+/// library did not open, and that nothing typed from here on is being kept.
+pub const LIBRARY_UNAVAILABLE: &str =
+    "This library could not be opened. Nothing you do here will be saved.";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2433,6 +2483,13 @@ mod tests {
         assert!(!facts.contains("tuning"), "{facts}");
         assert!(!facts.contains("capo"), "{facts}");
         assert_eq!(facts, "Every chart is on this phone and works with no signal.");
+    }
+
+    /// J4's catch: an empty set is not a set with full chart coverage, and the
+    /// function must not say so.
+    #[test]
+    fn prep_facts_of_an_empty_set_says_nothing_at_all() {
+        assert_eq!(prep_facts(&[]), "");
     }
 
     // ── add to setlist sheet ────────────────────────────────────────────
@@ -3453,6 +3510,23 @@ mod tests {
     fn a_book_with_even_one_song_does_not_show_first_run() {
         assert!(!first_run_active(1));
         assert!(!first_run_active(300));
+    }
+
+    // ── J4: a library that never opened says so ─────────────────────────
+
+    #[test]
+    fn a_persistent_library_shows_no_banner_at_all() {
+        assert_eq!(library_unavailable_note(true), None);
+    }
+
+    #[test]
+    fn a_library_that_never_opened_says_so_and_says_nothing_will_be_kept() {
+        let sentence = library_unavailable_note(false).expect("a sentence, not nothing");
+        assert_eq!(sentence, LIBRARY_UNAVAILABLE);
+        assert!(sentence.contains("could not be opened"));
+        assert!(sentence.contains("will be saved"));
+        // House style: plain sentences, no exclamation marks.
+        assert!(!sentence.contains('!'));
     }
 
     // ── helpers ─────────────────────────────────────────────────────────

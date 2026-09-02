@@ -217,6 +217,25 @@ pub fn SetlistDetail(id: Option<SetlistId>) -> NodeHandle {
                             }
                         }
                     }
+
+                    // Card J4: a set holding no songs used to draw nothing
+                    // here at all — the column between the header and
+                    // "+ Add songs" simply had no rows in it, which reads as
+                    // a screen that has not finished loading rather than as
+                    // a set nobody has filled in yet. Reachable two ways: a
+                    // freshly created set (the FAB on the Setlists tab makes
+                    // one with nothing in it), and J5's own promise that
+                    // deleting every song a set held leaves the set itself
+                    // behind, empty rather than gone. `+ Add songs` sits one
+                    // line below this and already is the way out, so this
+                    // says the fact and stops rather than repeating that
+                    // control a second time.
+                    if ordered(setlists, songs, id).is_empty() {
+                        div {
+                            style: {format!("{T_META_SMALL} text-align: center; padding: 30px 0;")},
+                            "Nothing in this set yet."
+                        }
+                    }
                 }
 
                 // Editing happens here rather than on a screen of its own: the
@@ -256,13 +275,19 @@ pub fn SetlistDetail(id: Option<SetlistId>) -> NodeHandle {
                     }
                 }
 
-                // Derived, not authored.
-                div {
-                    style: "background: var(--sla-fill); border-radius: 12px; padding: 13px 15px; margin-bottom: 20px;",
-                    div { style: {format!("{T_SECTION_CAPS} color: var(--sla-muted);")}, "Before you start" }
+                // Derived, not authored. Hidden for an empty set: `prep_facts`
+                // returns an empty string for one rather than the misleading
+                // "every chart is on this phone" that an empty tunings/capo/
+                // missing-chart count used to add up to — see that function's
+                // own header, which card J4 rewrote for exactly this case.
+                if !prep_facts(&ordered(setlists, songs, id)).is_empty() {
                     div {
-                        style: "font-size: 13.5px; line-height: 1.5; color: var(--sla-ink-2); margin-top: 7px;",
-                        {move || prep_facts(&ordered(setlists, songs, id))}
+                        style: "background: var(--sla-fill); border-radius: 12px; padding: 13px 15px; margin-bottom: 20px;",
+                        div { style: {format!("{T_SECTION_CAPS} color: var(--sla-muted);")}, "Before you start" }
+                        div {
+                            style: "font-size: 13.5px; line-height: 1.5; color: var(--sla-ink-2); margin-top: 7px;",
+                            {move || prep_facts(&ordered(setlists, songs, id))}
+                        }
                     }
                 }
             }
