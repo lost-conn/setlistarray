@@ -870,6 +870,33 @@ The `../rinch-fixes` integration branch carries the still-open fixes above
 the long press works in an APK built here and would not in one built against
 `main`. Move the pin once they land — card A1.
 
+**Fixed here, not yet filed.** Two commits sit on `local/both-fixes` ahead of
+every PR above, both found on 2026-09-02 and neither yet offered upstream:
+
+- `write_content_uri`, the other half of the pair `read_content_uri` had been
+  half of since Android bring-up. `save_file` fires `ACTION_CREATE_DOCUMENT`
+  and hands back the `content://` URI of a document it just created, and
+  nothing in `rinch-android` could put bytes into one — the only
+  `openOutputStream` in `RinchActivity.java` was buried inside `shareImage`,
+  hard-coded to a MediaStore JPEG. Card K4, so that card I1's backup could
+  reach a file at all. Driven through the real SAF dialog on the moto g before
+  it was believed.
+- Removing a `display: contents` node freed its own Taffy slot, which it never
+  had, instead of its children's, which it did. `sync_display_contents`
+  polyfills the property by hiding the wrapper's Taffy node and splicing its
+  *children's* ids into the grandparent's Taffy child list; `remove_node` then
+  asked Taffy to remove the wrapper's own id, which was a silent no-op, and the
+  child that actually occupied the slot was never asked to leave. It stayed a
+  permanent invisible `flex: 1` sibling of the app root.
+  `Route::Library`'s arm is the only one the RSX macro wraps that way — it is
+  the only one whose body is a reactive `if` rather than one element — so the
+  ghost appeared the first time anybody navigated away from the library and
+  then halved the height of every screen reached afterwards, for the rest of
+  the process. Settings drew four of its eleven rows and the accent picker card
+  H2 had just shipped could not be reached on a phone at all. Card K48; a
+  host-side regression test in `crates/rinch-dom/tests/layout_tests.rs` fails
+  before and passes after, so the next one of these is caught on a laptop.
+
 #292 was found here and filed late. Rinch derives paint order and
 hit-test order twice, by different rules, and implements no CSS painting step 8
 — so a `position: absolute; z-index: auto` element over an `overflow: auto`
