@@ -25,16 +25,37 @@
 //! route at all. The signal that opens it therefore has to be somewhere both
 //! ends can see, which is `NavStore::running_order_for` — see its note.
 //!
-//! ## What it does not do yet
+//! ## Scrolling to the song on the stand
 //!
-//! It opens at the top of the set rather than scrolled to the song on the
-//! stand. On a three-song set that is the same thing; on the twenty-two-song
-//! one this was driven against, song 8 is on screen but song 18 is a swipe
-//! away. Fixing it needs a way to scroll a box to a child, which is a DOM call
-//! Rinch does not expose, and the workaround — mounting the list already
-//! offset — would fight the sheet's own slide. It is worth a card rather than
-//! a hack: the list is short enough to swipe and the mark is unmistakable when
-//! you reach it.
+//! It used to open at the top of the set regardless of how far in the gig
+//! had gotten — on a three-song set that is the same thing as opening on the
+//! mark; on the twenty-two-song one this was driven against, song 8 was on
+//! screen and song 18 was a swipe away. Card K46 fixed it, and it turned out
+//! to need less than the card that named it expected.
+//!
+//! `NodeHandle::scroll_into_view` is real (`rinch-core/src/dom/mod.rs:526`)
+//! and wired end to end by the framework's own keyboard focus navigation;
+//! what stood in the way was narrower — a `#[component]` invoked as
+//! `Name { props }` is spliced into its parent inside the rsx! macro's own
+//! codegen and never hands the caller a `NodeHandle` back. Card H4 hit the
+//! identical wall building the library's alphabet rail and got past it by
+//! turning `GroupHeader` into [`crate::ui::group_header`] — a plain function
+//! taking `scope: &mut RenderScope`, called as an ordinary Rust expression,
+//! which returns a real handle the way any other function return does.
+//! [`row_view`] below is that same move: the row that draws the song on the
+//! stand calls `scroll_into_view()` on its own handle in the same breath
+//! that draws it.
+//!
+//! Unlike H4's rail, nothing here keeps a map of handles between renders, and
+//! nothing needs to: this sheet's own row list is empty while the sheet is
+//! closed (`rows` resolves a closed sheet's `set_id` of `0` to an empty
+//! `Vec` — see [`set_id`]), so every open rebuilds the whole list from
+//! nothing rather than patching an existing one. Rinch's keyed reconciler
+//! leaves an *unchanged* row's render body alone across a reconcile pass, but
+//! there is no unchanged row here — the row marked `now` did not exist a
+//! moment before the sheet opened, empty list to full one, so its render
+//! body runs fresh on every open and the scroll call inside it fires fresh
+//! every time: song 3 the first open, song 18 the next.
 //!
 //! ## What it lists
 //!
@@ -111,97 +132,26 @@ pub fn RunningOrderSheet() -> NodeHandle {
                         // The `for` body re-runs as its own closure, so every
                         // value it draws is computed and owned up front.
                         let index = row.index;
-                        let now = row.now;
-                        // The song on the stand is marked the way the sort
-                        // sheet marks its active row — a tint, not a weight —
-                        // so the eye finds it without the list turning into two
-                        // typefaces.
-                        let band = if now {
-                            "background: var(--sla-accent-tint); color: var(--sla-accent-on-tint); \
-                             border-radius: 10px; border-bottom-color: transparent;"
-                        } else {
-                            ""
-                        };
-                        let number_color = if now {
-                            "var(--sla-accent-on-tint)"
-                        } else {
-                            "var(--sla-muted)"
-                        };
-                        let meta_color = if now {
-                            "var(--sla-accent-on-tint)"
-                        } else {
-                            "var(--sla-muted)"
+                        // Jump, then close. In that order, and with the
+                        // page drawn in between: `realise_chart` is the
+                        // self-healing pass a PDF chart needs before the
+                        // frame that shows it, and this is a tap handler,
+                        // which is the only place it is allowed to run
+                        // from. See its note in `performance.rs`.
+                        let onclick = move || {
+                            playback.index.set(index);
+                            realise_chart(setlists, songs, attachments, playback, set_id(nav));
+                            nav.running_order_for.set(None);
                         };
 
                         div {
                             key: {row.id},
-                            // Jump, then close. In that order, and with the
-                            // page drawn in between: `realise_chart` is the
-                            // self-healing pass a PDF chart needs before the
-                            // frame that shows it, and this is a tap handler,
-                            // which is the only place it is allowed to run
-                            // from. See its note in `performance.rs`.
-                            onclick: move || {
-                                playback.index.set(index);
-                                realise_chart(setlists, songs, attachments, playback, set_id(nav));
-                                nav.running_order_for.set(None);
-                            },
-                            // Centred and not baseline-aligned, which is the
-                            // one place this row departs from the setlist
-                            // screen's. A row here can be two lines tall (title
-                            // and the key/capo/tempo line) or one, and with the
-                            // number baseline-aligned against a two-line column
-                            // it came out level with the *second* line — a `3`
-                            // sitting beside "capo 2" rather than beside the
-                            // song it numbers. Centring is right for both
-                            // heights and does not depend on which line an
-                            // engine calls the item's baseline.
-                            style: {format!(
-                                "{band} display: flex; align-items: center; gap: 11px; \
-                                 margin: 0 -10px; padding: 11px 10px; \
-                                 border-bottom: 1px solid var(--sla-hairline-soft);"
-                            )},
-                            span {
-                                style: {format!(
-                                    "width: 18px; flex-shrink: 0; font-weight: 600; \
-                                     font-size: 13px; color: {number_color};"
-                                )},
-                                {row.position.clone()}
-                            }
-                            div { style: "flex: 1; min-width: 0;",
-                                div {
-                                    style: {format!(
-                                        "{T_ROW_TITLE} overflow: hidden; text-overflow: ellipsis; \
-                                         white-space: nowrap;"
-                                    )},
-                                    {row.title.clone()}
-                                }
-                                // Nought-or-one: a song with no key, no capo
-                                // and no tempo gets no second line, exactly as
-                                // it gets none under the title on the screen
-                                // behind this sheet.
-                                for meta in row.meta.clone() {
-                                    div {
-                                        key: {meta.clone()},
-                                        style: {format!(
-                                            "{T_META_SMALL} margin-top: 2px; color: {meta_color};"
-                                        )},
-                                        {meta.clone()}
-                                    }
-                                }
-                            }
-                            // The mark, and it is a glyph rather than the word
-                            // "now": this list is read at a glance, mid-song,
-                            // and the play triangle is what the setlist cards
-                            // and the Play set button already mean by "this one
-                            // is the one being played".
-                            if now {
-                                span {
-                                    style: "display: flex; align-items: center; \
-                                            color: var(--sla-accent-on-tint); flex-shrink: 0;",
-                                    {icon(__scope, TablerIcon::PlayerPlay, 15)}
-                                }
-                            }
+                            // The wrapper the for loop's own key reconciler
+                            // reads; `row_view` draws the row itself and, if
+                            // it is the one marked `now`, scrolls to it. See
+                            // the module header for why this is where that
+                            // call lives rather than in an effect above.
+                            {row_view(__scope, row.clone(), onclick)}
                         }
                     }
 
@@ -228,6 +178,115 @@ pub fn RunningOrderSheet() -> NodeHandle {
             }
         }
     }
+}
+
+/// Draws one row and, if it is the row marked `now`, asks the framework to
+/// scroll it into view — card K46.
+///
+/// A plain function taking `scope: &mut RenderScope`, not a `#[component]`,
+/// for the reason the module header gives: this needed a real `NodeHandle`
+/// back, and `#[component]`'s `Name { props }` call syntax hands the caller
+/// nothing. The shape is `settings.rs`'s `link_row`/`reading_row` and
+/// `ui::group_header`'s, not a new one invented for this card.
+///
+/// The `if row.now { handle.scroll_into_view() }` below has to live inside a
+/// plain function rather than as a bare `if` among this file's rsx! children,
+/// the same reason `library.rs`'s `insert_group_header` gives for its own
+/// side-effecting `if`: a bare `if` in that position is parsed by the rsx!
+/// macro as *reactive conditional content*, not as an ordinary Rust
+/// statement, and `scroll_into_view()`'s `()` return is not content. Inside a
+/// plain Rust function body, after the `rsx!` call has already produced a
+/// handle, it is just an `if`.
+fn row_view(scope: &mut RenderScope, row: Row, onclick: impl Fn() + 'static) -> NodeHandle {
+    let __scope = scope;
+    let now = row.now;
+    // The song on the stand is marked the way the sort sheet marks its
+    // active row — a tint, not a weight — so the eye finds it without the
+    // list turning into two typefaces.
+    let band = if now {
+        "background: var(--sla-accent-tint); color: var(--sla-accent-on-tint); \
+         border-radius: 10px; border-bottom-color: transparent;"
+    } else {
+        ""
+    };
+    let number_color = if now {
+        "var(--sla-accent-on-tint)"
+    } else {
+        "var(--sla-muted)"
+    };
+    let meta_color = if now {
+        "var(--sla-accent-on-tint)"
+    } else {
+        "var(--sla-muted)"
+    };
+
+    let handle = rsx! {
+        div {
+            onclick: move || onclick(),
+            // Centred and not baseline-aligned, which is the one place this
+            // row departs from the setlist screen's. A row here can be two
+            // lines tall (title and the key/capo/tempo line) or one, and
+            // with the number baseline-aligned against a two-line column it
+            // came out level with the *second* line — a `3` sitting beside
+            // "capo 2" rather than beside the song it numbers. Centring is
+            // right for both heights and does not depend on which line an
+            // engine calls the item's baseline.
+            style: {format!(
+                "{band} display: flex; align-items: center; gap: 11px; \
+                 margin: 0 -10px; padding: 11px 10px; \
+                 border-bottom: 1px solid var(--sla-hairline-soft);"
+            )},
+            span {
+                style: {format!(
+                    "width: 18px; flex-shrink: 0; font-weight: 600; \
+                     font-size: 13px; color: {number_color};"
+                )},
+                {row.position.clone()}
+            }
+            div { style: "flex: 1; min-width: 0;",
+                div {
+                    style: {format!(
+                        "{T_ROW_TITLE} overflow: hidden; text-overflow: ellipsis; \
+                         white-space: nowrap;"
+                    )},
+                    {row.title.clone()}
+                }
+                // Nought-or-one: a song with no key, no capo and no tempo
+                // gets no second line, exactly as it gets none under the
+                // title on the screen behind this sheet.
+                for meta in row.meta.clone() {
+                    div {
+                        key: {meta.clone()},
+                        style: {format!(
+                            "{T_META_SMALL} margin-top: 2px; color: {meta_color};"
+                        )},
+                        {meta.clone()}
+                    }
+                }
+            }
+            // The mark, and it is a glyph rather than the word "now": this
+            // list is read at a glance, mid-song, and the play triangle is
+            // what the setlist cards and the Play set button already mean by
+            // "this one is the one being played".
+            if now {
+                span {
+                    style: "display: flex; align-items: center; \
+                            color: var(--sla-accent-on-tint); flex-shrink: 0;",
+                    {icon(__scope, TablerIcon::PlayerPlay, 15)}
+                }
+            }
+        }
+    };
+
+    // The one line this card exists for. `scroll_into_view` only queues the
+    // request — it is applied after the next layout pass, which runs before
+    // this frame is painted, so there is nothing to race against the sheet's
+    // own 220ms slide: the content is already scrolled by the time the panel
+    // is visible at all, and the slide is the only motion anyone sees.
+    if now {
+        handle.scroll_into_view();
+    }
+    handle
 }
 
 /// One drawn row.
@@ -310,5 +369,85 @@ fn empty_note(setlists: SetlistsStore, songs: SongsStore, nav: NavStore) -> Vec<
         vec![EMPTY_SET]
     } else {
         Vec::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::Song;
+
+    /// Card K46 is about scrolling to whichever row `rows()` marks `now` — the
+    /// half of the fix `row_view`'s `handle.scroll_into_view()` cannot be
+    /// exercised for without a window (see this module's own doc comment for
+    /// why no handle survives to be inspected). What can be pinned without one
+    /// is that `now` lands on the right row in the first place, on a set long
+    /// enough that "the top" and "the mark" are visibly different rows — the
+    /// twenty-two-song set the card itself was driven against.
+    fn a_long_set() -> (SetlistsStore, SongsStore, PlaybackStore, NavStore, SetlistId) {
+        let songs = SongsStore::new(
+            (1..=22)
+                .map(|i| Song::new(i, format!("Song {i}"), "Nobody"))
+                .collect(),
+        );
+        let setlists = SetlistsStore::new(Vec::new());
+        let id = setlists.add("Long set");
+        for i in 1..=22 {
+            setlists.add_song(id, i);
+        }
+        let playback = PlaybackStore::new();
+        let nav = NavStore::new();
+        (setlists, songs, playback, nav, id)
+    }
+
+    #[test]
+    fn the_sheet_closed_draws_no_rows_whatever_the_playback_index_is() {
+        let (setlists, songs, playback, nav, _id) = a_long_set();
+        playback.index.set(17);
+        // `nav.running_order_for` is left `None` — the sheet is closed.
+        assert!(rows(setlists, songs, playback, nav).is_empty());
+    }
+
+    #[test]
+    fn opening_early_in_a_long_set_marks_the_early_song_now() {
+        let (setlists, songs, playback, nav, id) = a_long_set();
+        playback.index.set(2); // song 3, one-based
+        nav.running_order_for.set(Some(id));
+
+        let rows = rows(setlists, songs, playback, nav);
+        assert_eq!(rows.len(), 22);
+        let now: Vec<&str> = rows.iter().filter(|r| r.now).map(|r| r.title.as_str()).collect();
+        assert_eq!(now, ["Song 3"]);
+    }
+
+    #[test]
+    fn opening_late_in_the_same_long_set_marks_the_late_song_instead() {
+        // The exact scenario the card names: open at song 3, close, advance to
+        // song 18, open again — the mark has to move, not stick to wherever it
+        // was drawn the first time.
+        let (setlists, songs, playback, nav, id) = a_long_set();
+        playback.index.set(17); // song 18, one-based
+        nav.running_order_for.set(Some(id));
+
+        let rows = rows(setlists, songs, playback, nav);
+        let now: Vec<&str> = rows.iter().filter(|r| r.now).map(|r| r.title.as_str()).collect();
+        assert_eq!(now, ["Song 18"]);
+    }
+
+    #[test]
+    fn an_empty_set_marks_nothing_and_draws_no_rows() {
+        // `playing_at` returns `None` only when the set is empty, which is
+        // exactly the case `rows()` also draws zero rows for — there is no
+        // reachable state where a row exists but none is marked `now`. An
+        // empty sheet opening at the top, with no row to scroll to, is
+        // correct rather than a case to special-case.
+        let songs = SongsStore::new(Vec::new());
+        let setlists = SetlistsStore::new(Vec::new());
+        let id = setlists.add("Empty set");
+        let playback = PlaybackStore::new();
+        let nav = NavStore::new();
+        nav.running_order_for.set(Some(id));
+
+        assert!(rows(setlists, songs, playback, nav).is_empty());
     }
 }
