@@ -299,13 +299,14 @@ fn Row(row: SearchRow) -> NodeHandle {
 
 /// A group heading: label, count, then a hairline filling the rest of the row.
 ///
-/// A hand-rolled twin of [`crate::ui::GroupHeader`], which is the shape it
-/// copies down to the padding. The library's version takes an `Option<usize>`
-/// it unwraps once and an `onclick` that collapses the group; neither fits
-/// here — a search group has nothing to collapse, and the count arrives as part
-/// of a row rather than as a prop to be re-read — so this screen keeps its own
-/// twelve lines rather than growing a second shape into a component two other
-/// screens depend on.
+/// A hand-rolled twin of [`crate::ui::group_header`], which is the shape it
+/// copies down to the padding. The library's version takes a `collapsed` flag
+/// and an `onclick` that collapses the group, and — since card H4 — an
+/// `impl Fn()` `onclick` closure only that function's own `for` loop knows how
+/// to build, keyed to whichever letter's header it is. Neither fits here — a
+/// search group has nothing to collapse, and no per-row identity for a
+/// scrubber to jump to — so this screen keeps its own twelve lines rather than
+/// growing a second shape into a component two other screens depend on.
 #[component]
 fn Heading(label: String, count: usize, first: bool) -> NodeHandle {
     let colour = if first {

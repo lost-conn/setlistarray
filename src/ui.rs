@@ -141,29 +141,74 @@ pub fn AttachmentThumb(kind: Option<AttachmentKind>) -> NodeHandle {
     }
 }
 
+/// The group header label's font-size for a density.
+///
+/// The handoff commits to a literal number for the compact case — "group
+/// headers shrink to 14px" (`design_handoff_setlistarray/README.md:154`) — and
+/// that number is lifted straight from wireframe `2b`, which draws a 16px
+/// comfortable header shrinking to 14 in Patrick Hand. This app's actual hi-fi
+/// header was never 16px, though: it is [`T_LABEL_CAPS`], a small-caps,
+/// letter-spaced label already sitting at 12px, because label-caps is a
+/// different typographic move than a plain 16px word and the hi-fi pass chose
+/// it over the wireframe's literal size the same way it chose real tokens over
+/// every other raw pixel value the wireframe drew. Applying the handoff's 14
+/// here verbatim would make the compact header *larger* than the comfortable
+/// one — the opposite of "shrink," and a header that visibly grows when you
+/// turn compact rows on is a worse bug than a card that quotes a number this
+/// function does not use. So this keeps the wireframe's *direction* — compact
+/// strictly smaller than comfortable — over its digit: comfortable stays at
+/// `T_LABEL_CAPS`'s own 12, and compact drops one step to 11, still legible at
+/// this weight and tracking.
+pub fn group_header_font_size(compact: bool) -> u32 {
+    if compact { 11 } else { 12 }
+}
+
 /// A group header: label, count, then a hairline filling the rest of the row.
-/// The first group is accent-coloured; later ones are muted.
-#[component]
-pub fn GroupHeader(
+/// The first group is accent-coloured; later ones are muted. `compact` shrinks
+/// the label — see [`group_header_font_size`] for why it lands on 11px rather
+/// than the handoff's literal 14.
+///
+/// A plain function taking `scope: &mut RenderScope` rather than a PascalCase
+/// `#[component]`, and that is a deliberate downgrade made for card H4's
+/// alphabet scrubber, not a style preference. `#[component]` turns a
+/// PascalCase function into a struct + `Component::render` pair invoked only
+/// through `Name { props }` DSL syntax, and every call written that way —
+/// reactive props especially — is spliced straight into its parent by the
+/// macro's own codegen (`rinch-macros/src/dom_codegen/component_codegen.rs`,
+/// `generate_reactive_component_stmt`) with no `NodeHandle` ever handed back
+/// to the code that wrote it. That was fine while nothing needed to remember
+/// which header belonged to which letter; it stopped being fine the moment
+/// the scrubber needed exactly that. A plain function called as an ordinary
+/// Rust expression — the same shape `settings.rs`'s `section`, `reading_row`
+/// and `link_row` already use — returns its `NodeHandle` like any other
+/// function return value, so `library.rs` can keep a clone of it in the map
+/// the rail's taps read. `GroupHeader` had exactly one call site, so
+/// converting it in place cost nothing; a component with call sites that
+/// still needed the DSL form would keep both, the way `MetaChip` and this one
+/// used to coexist.
+pub fn group_header(
+    scope: &mut RenderScope,
     label: String,
-    count: Option<usize>,
+    count: usize,
     is_first: bool,
     collapsed: bool,
-    onclick: Option<Callback>,
+    compact: bool,
+    onclick: impl Fn() + 'static,
 ) -> NodeHandle {
-    let count = count.unwrap_or(0);
     let label_color = if is_first {
         "var(--sla-accent)"
     } else {
         "var(--sla-muted)"
     };
+    let label_size = group_header_font_size(compact);
+    let __scope = scope;
 
     rsx! {
         div {
-            onclick: move || { if let Some(cb) = &onclick { cb.invoke() } },
+            onclick: move || onclick(),
             style: "display: flex; align-items: center; gap: 8px; padding: 16px 0 8px;",
             span {
-                style: {format!("{T_LABEL_CAPS} color: {label_color};")},
+                style: {format!("{T_LABEL_CAPS} color: {label_color}; font-size: {label_size}px;")},
                 {label.clone()}
             }
             span {
@@ -331,5 +376,29 @@ pub fn SheetFooter(note: String, action: String, enabled: bool, onclick: Option<
                 {action.clone()}
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Card H4: the handoff's own words say group headers "shrink" in compact
+    /// density, and this is the one number that check has to hold — not the
+    /// handoff's literal 14, which [`group_header_font_size`]'s doc comment
+    /// explains is a wireframe pixel value measured against a comfortable
+    /// header this app never built. What must stay true regardless of which
+    /// digit either side ends up on is the direction: compact is smaller than
+    /// comfortable, full stop.
+    #[test]
+    fn group_header_font_size_is_smaller_in_compact_than_comfortable() {
+        let comfortable = group_header_font_size(false);
+        let compact = group_header_font_size(true);
+        assert!(
+            compact < comfortable,
+            "compact header ({compact}px) must be smaller than comfortable ({comfortable}px)"
+        );
+        assert_eq!(comfortable, 12, "comfortable header stays at T_LABEL_CAPS's own size");
+        assert_eq!(compact, 11);
     }
 }

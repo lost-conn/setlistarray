@@ -223,6 +223,16 @@ impl Density {
             _ => None,
         }
     }
+
+    /// Whether this density draws the compact treatment — the one boolean
+    /// `SongRow`'s `compact` prop and `GroupHeader`'s `compact` prop both
+    /// reduce to, in `library.rs`, so a third call site cannot spell the
+    /// comparison a different way (`Compact == density` reads the same but a
+    /// stray `!=` or a forgotten `Density::` qualifier would not, and neither
+    /// would be caught by anything short of running the app).
+    pub fn is_compact(self) -> bool {
+        self == Density::Compact
+    }
 }
 
 /// The library's filters — card G3, and no wireframe drew this: the handoff's
@@ -555,6 +565,17 @@ mod tests {
 
     fn song(id: u32) -> Song {
         Song::new(id, "Title", "Artist")
+    }
+
+    /// Card H4: `is_compact` is the one predicate `library.rs` reduces
+    /// `Density` to for both `SongRow`'s `compact` prop and `GroupHeader`'s —
+    /// pin what it answers for each variant so a future third variant (a
+    /// "cozy" in between, say) has to make a decision here rather than falling
+    /// through to whatever `PartialEq` happens to do.
+    #[test]
+    fn only_compact_density_is_compact() {
+        assert!(!Density::Comfortable.is_compact());
+        assert!(Density::Compact.is_compact());
     }
 
     #[test]

@@ -7,6 +7,8 @@
 
 use rinch_tabler_icons::TablerIcon;
 
+use std::collections::BTreeSet;
+
 use crate::model::{Confidence, Day, Setlist, SetlistId, Song, SongId, fmt_bytes, fmt_duration};
 use crate::store::{
     AccentChoice, Density, Filters, Group, GroupBy, PerformanceTheme, Route, SortDir, SortField,
@@ -152,6 +154,22 @@ fn bucket_by(songs: Vec<Song>, key: impl Fn(&Song) -> String) -> Vec<Group> {
     }
     groups.sort_by(|a, b| a.label.cmp(&b.label));
     groups
+}
+
+/// Which of A–Z have at least one group in `groups` — card H4's alphabet
+/// scrubber reads this to decide which letters are live and which are drawn
+/// dim.
+///
+/// Takes the already filtered-and-grouped list rather than the raw library,
+/// so a filter that narrows the book down to no "Q" songs dims the same "Q"
+/// the group list itself dropped — the scrubber and the list it sits beside
+/// can never disagree about what is actually on screen. It is not scoped to
+/// [`GroupBy::FirstLetter`] internally; the caller only calls this while that
+/// grouping is active (the scrubber does not exist otherwise), so this stays
+/// a plain reduction over whatever groups it is handed rather than a second
+/// place that re-decides which grouping mode it is willing to answer for.
+pub fn present_letters(groups: &[Group]) -> BTreeSet<String> {
+    groups.iter().map(|g| g.label.clone()).collect()
 }
 
 /// Sort within a group. Songs missing the active field sort to the bottom
@@ -1653,6 +1671,48 @@ mod tests {
     #[test]
     fn grouping_by_none_of_an_empty_library_yields_no_groups() {
         assert!(group_songs(Vec::new(), GroupBy::None).is_empty());
+    }
+
+    // ── the alphabet scrubber's presence set (card H4) ───────────────────
+
+    #[test]
+    fn present_letters_is_exactly_the_first_letters_a_library_has_songs_under() {
+        let songs = vec![
+            song(1, "Angel From Montgomery", "Prine"),
+            song(2, "Avocado", "Nobody"),
+            song(3, "Blackbird", "Beatles"),
+        ];
+        let groups = group_songs(songs, GroupBy::FirstLetter);
+        let present = present_letters(&groups);
+        assert_eq!(
+            present,
+            BTreeSet::from(["A".to_string(), "B".to_string()]),
+            "two songs share A, so it appears once, and C never appears at all"
+        );
+    }
+
+    #[test]
+    fn a_title_starting_with_a_digit_buckets_under_that_digit_not_a_letter() {
+        // `group_songs`'s own `FirstLetter` closure only falls back to "#"
+        // when a title has *no* first character at all; a digit is a
+        // character like any other and uppercases to itself. So "500 Miles"
+        // lands in a "5" bucket, not a fictional catch-all one.
+        let groups = group_songs(vec![song(1, "500 Miles", "Trad.")], GroupBy::FirstLetter);
+        let present = present_letters(&groups);
+        // The rail only draws A–Z (card H4's spec), so a "5" landing in this
+        // set is harmless — nothing in the rail ever looks it up — but it
+        // must still be the true answer to "what groups exist", which is what
+        // this function is for. A caller drawing a rail is the one that gets
+        // to decide non-letter buckets are out of scope, not this function
+        // pretending they aren't there.
+        assert_eq!(present, BTreeSet::from(["5".to_string()]));
+    }
+
+    #[test]
+    fn a_song_with_no_title_at_all_falls_back_to_the_hash_bucket() {
+        let groups = group_songs(vec![song(1, "", "Trad.")], GroupBy::FirstLetter);
+        let present = present_letters(&groups);
+        assert_eq!(present, BTreeSet::from(["#".to_string()]));
     }
 
     // ── filtering (card G3) ─────────────────────────────────────────────
