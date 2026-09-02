@@ -1,4 +1,6 @@
-//! Choosing a file the app does not own — card K4's seam, built by D3.
+//! Choosing a file the app does not own, and handing one back — card K4's
+//! seam. D3 built the pick half; this file's other half, `save`, is K4's own
+//! work and is documented in full further down, under "The save half".
 //!
 //! Two platforms, two entirely different mechanisms. On the desktop `rfd`
 //! (through `rinch::dialogs`, behind rinch's `file-dialogs` feature) puts up a
@@ -82,20 +84,73 @@
 //! a private Xvfb and cannot move that. `PICK_OVERRIDE` is what closes the
 //! gap, and its comment is where the argument is.
 //!
-//! ## The save half of K4 is not here, and this is why
+//! ## The save half
 //!
-//! K4 pairs picking with saving — the backup export in Phase I. The desktop
-//! half falls straight out (`rinch::dialogs::save_file`, then write the path).
-//! The Android half **does not exist to be wrapped**:
+//! K4 pairs picking with saving — the backup export in Phase I (I1, I2) is the
+//! first caller, and does not exist yet; this seam is built ahead of it. The
+//! desktop half falls straight out: `rinch::dialogs::save_file`, then write
+//! the bytes to the path it returns.
+//!
+//! The Android half needed a capability `rinch-android` did not have.
 //! `rinch_android::file_picker::save_file` fires `ACTION_CREATE_DOCUMENT` and
-//! hands back the `content://` URI of a file it created, and there is no
-//! `write_content_uri` beside `read_content_uri` to put bytes into it. The only
-//! `openOutputStream` in `RinchActivity.java` is buried inside `shareImage`,
-//! hard-coded to a MediaStore JPEG. So saving on Android needs a new Java
-//! method and a new JNI binding in the framework before this trait could
-//! honestly grow a `save`, and a trait method that worked on one platform and
-//! returned an error on the other would be a worse lie than the gap. That work
-//! is K4's; the seam is here and shaped to take it.
+//! hands back the `content://` URI of a document it created *empty* — there
+//! was no `write_content_uri` beside `read_content_uri` to put bytes into it.
+//! The only `openOutputStream` call in `RinchActivity.java` was buried inside
+//! `shareImage`, hard-coded to a MediaStore JPEG it had just inserted itself.
+//! `write_content_uri` closes that gap in `rinch-fixes`: the same
+//! `openOutputStream` idiom, generalized to any URI a document provider hands
+//! back rather than one this app made, and — unlike `shareImage`, which has
+//! nothing downstream waiting on a share's outcome — it reports success back
+//! rather than swallowing the exception, because a failed save is a failure
+//! [`Saved::Failed`] has to be able to show.
+//!
+//! The shape mirrors the pick half exactly, for the same reasons: a
+//! [`SaveRequest`] in, a callback out, because Android cannot answer a save
+//! any more synchronously than it can answer a pick — `ACTION_CREATE_DOCUMENT`
+//! backgrounds this process and returns through `onActivityResult` just like
+//! `ACTION_OPEN_DOCUMENT` does. And the currency is bytes plus a name again,
+//! for the same reason: a `content://` URI has no path behind it to write
+//! through directly, on either side of the trip.
+//!
+//! ### What the Android save path still cannot do
+//!
+//! **It cannot filter or fix the type either.** `RinchActivity.saveFilePicker`
+//! hard-codes `setType("*/*")`, exactly as `openFilePicker` does, so
+//! [`SaveRequest::extensions`] is decoration on the desktop dialog and inert
+//! on the phone. The consequence cuts the other way from the pick side,
+//! though: on pick, an ignored filter means the app must validate bytes it is
+//! handed; on save, `*/*` means no document provider will append an extension
+//! to the suggested name on the app's behalf, so [`SaveRequest::file_name`]
+//! has to already carry whatever extension the caller wants — there is no
+//! second chance to add one.
+//!
+//! **It cannot say what the file actually got named.** SAF documents are free
+//! to not honour `EXTRA_TITLE` verbatim — a provider can and does append `(1)`
+//! to avoid clobbering an existing document — and there is no query back to
+//! learn the name that won, only the same opaque `content://` URI the pick
+//! side gets. [`name_from_content_uri`] could be pointed at it, but a save
+//! confirmation that read "saved as `1000000451`" would be worse than one that
+//! just names the file the caller *asked* to save it as, so [`save`] does not
+//! try. A caller wanting to tell the user what happened has to use the name it
+//! sent, not one read back.
+//!
+//! **It gives no distinct signal for "you just overwrote something."**
+//! `ACTION_CREATE_DOCUMENT` is a create, and if the user steers it onto an
+//! existing document, the provider overwrites it as part of granting the
+//! write — with whatever confirmation UI *that provider* chooses to show, or
+//! none. `write_content_uri` cannot tell a fresh file from a clobbered one and
+//! does not pretend to; [`Saved::Done`] means bytes reached the URI, nothing
+//! more.
+//!
+//! One thing it does *not* inherit from the pick side: the size problem.
+//! Reading held the file three times over — a Java `byte[]`, a `Vec<i8>`, the
+//! `Vec<u8>` it mapped into. Writing is cheaper, because the direction avoids
+//! the `i8`/`u8` reinterpretation entirely: `byte_array_from_slice` copies the
+//! caller's `&[u8]` straight into a JNI `byte[]`, and `openOutputStream` writes
+//! that same array. Peak cost is the original `Vec<u8>` plus one JNI copy of
+//! it, not three — still worth keeping in mind for a backup zip that could run
+//! into the megabytes, but a real improvement over the read side rather than
+//! the same tax paid twice.
 
 /// What the picker is being asked for. `Copy`, so it can cross into the
 /// `'static` callback the Android picker holds.
@@ -136,12 +191,52 @@ pub enum Picked {
     Failed(String),
 }
 
+/// What the save picker is being asked for. Not `Copy` like [`PickRequest`] —
+/// `file_name` is a suggestion built from the thing being saved (a set's
+/// title, a backup's timestamp) and cannot live in a `&'static str` — but it
+/// still has to cross into the `'static` callback the Android picker holds,
+/// so it is `Clone` and the platforms clone what they need before the dialog
+/// or the intent goes up.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SaveRequest {
+    /// The dialog's title, on the platform that has a dialog.
+    pub title: &'static str,
+    /// What to call the file type in the desktop dialog's filter row.
+    pub kind: &'static str,
+    /// Extensions the desktop dialog filters to, **and the extension this
+    /// name had better already carry**, because Android will not add one —
+    /// see the module header's "What the Android save path still cannot do".
+    pub extensions: &'static [&'static str],
+    /// The name to suggest. What the file is actually saved as can differ —
+    /// see the module header — so a caller must not treat this as a promise.
+    pub file_name: String,
+}
+
+/// What came back from a save. There is no payload on success: the bytes
+/// were the caller's to begin with, so all a save can tell them is whether
+/// they landed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Saved {
+    Done,
+    /// Same rule as [`Picked::Cancelled`]: the user closing a dialog is not a
+    /// failure and gets no message.
+    Cancelled,
+    /// Something went wrong, in words that can be shown. See the module
+    /// header for what a phone can and cannot report about why.
+    Failed(String),
+}
+
 /// The seam. See the module header for why it is a trait and why the answer
 /// arrives through a callback rather than a return value.
 pub trait FilePicker {
     /// Ask for a file. `done` runs exactly once — before this returns on the
     /// desktop, some frames later on Android.
     fn pick(&self, request: PickRequest, done: Box<dyn FnOnce(Picked)>);
+
+    /// Ask to save `bytes` somewhere. Same timing rule as `pick`: `done` runs
+    /// exactly once, synchronously on the desktop and frames later on
+    /// Android.
+    fn save(&self, request: SaveRequest, bytes: Vec<u8>, done: Box<dyn FnOnce(Saved)>);
 }
 
 /// Ask the platform's picker for a file.
@@ -150,6 +245,15 @@ pub trait FilePicker {
 /// screen contains a `#[cfg]`.
 pub fn pick(request: PickRequest, done: impl FnOnce(Picked) + 'static) {
     platform_picker().pick(request, Box::new(done));
+}
+
+/// Ask the platform's picker to save `bytes` somewhere.
+///
+/// The save-half counterpart to [`pick`], and for the same reason the only
+/// function outside this module that should ever call `save` on a
+/// `FilePicker`.
+pub fn save(request: SaveRequest, bytes: Vec<u8>, done: impl FnOnce(Saved) + 'static) {
+    platform_picker().save(request, bytes, Box::new(done));
 }
 
 #[cfg(target_os = "android")]
@@ -205,6 +309,25 @@ impl FilePicker for DesktopPicker {
             return;
         };
         done(read_from_disk(&path, request.max_bytes));
+    }
+
+    fn save(&self, request: SaveRequest, bytes: Vec<u8>, done: Box<dyn FnOnce(Saved)>) {
+        // Same reason as `pick`: this machine cannot put the real dialog
+        // anywhere safe. See `SAVE_OVERRIDE`.
+        if let Some(answer) = overridden_save(std::env::var_os(SAVE_OVERRIDE), &bytes) {
+            done(answer);
+            return;
+        }
+        let chosen = rinch::dialogs::save_file()
+            .set_title(request.title)
+            .set_file_name(&request.file_name)
+            .add_filter(request.kind, request.extensions)
+            .save();
+        let Some(path) = chosen else {
+            done(Saved::Cancelled);
+            return;
+        };
+        done(write_to_disk(&path, &bytes));
     }
 }
 
@@ -280,6 +403,43 @@ fn read_from_disk(path: &std::path::Path, max_bytes: u64) -> Picked {
     }
 }
 
+/// The path the save dialog would have returned, for the same reason
+/// `PICK_OVERRIDE` exists: `rinch::dialogs::save_file()` is `rfd`'s
+/// `xdg-portal` backend exactly as `open_file()` is, so it draws nothing
+/// itself and asks `xdg-desktop-portal-gtk` to put a chooser on `DISPLAY=:0`
+/// — the developer's screen, not this process's. See `PICK_OVERRIDE`'s
+/// comment; every word of it applies here with "save" in place of "open."
+///
+/// Set `SLA_SAVE_FILE` to a path and the desktop saver writes there, having
+/// opened nothing. Set and empty means the user cancelled the dialog before
+/// choosing anywhere.
+#[cfg(not(target_os = "android"))]
+const SAVE_OVERRIDE: &str = "SLA_SAVE_FILE";
+
+/// What the save override asks for, or `None` when there is no override and
+/// the dialog should go up. Split out from the environment read for the same
+/// determinism reason as [`overridden`].
+#[cfg(not(target_os = "android"))]
+fn overridden_save(value: Option<std::ffi::OsString>, bytes: &[u8]) -> Option<Saved> {
+    let value = value?;
+    if value.is_empty() {
+        return Some(Saved::Cancelled);
+    }
+    Some(write_to_disk(std::path::Path::new(&value), bytes))
+}
+
+/// Write to the path the dialog named. There is nothing here to refuse in
+/// advance the way `read_from_disk` refuses an oversized file — the bytes
+/// already exist in memory by the time a save is asked for, so the only
+/// question left is whether the write itself succeeds.
+#[cfg(not(target_os = "android"))]
+fn write_to_disk(path: &std::path::Path, bytes: &[u8]) -> Saved {
+    match std::fs::write(path, bytes) {
+        Ok(()) => Saved::Done,
+        Err(e) => Saved::Failed(format!("{e}")),
+    }
+}
+
 // ── Android: another app, and a URI to read afterwards ──────────────────────
 
 /// `ACTION_OPEN_DOCUMENT` through `rinch-android`, then `ContentResolver`.
@@ -311,6 +471,22 @@ impl FilePicker for AndroidPicker {
                     name: name_from_content_uri(&uri),
                     bytes,
                 })),
+            }
+        });
+    }
+
+    fn save(&self, request: SaveRequest, bytes: Vec<u8>, done: Box<dyn FnOnce(Saved)>) {
+        rinch_android::file_picker::save_file(&request.file_name, move |uri| {
+            // Same reasoning as the pick side: a cancelled picker and a
+            // picker that died both come back as `None`, and a save has
+            // nothing more useful to tell them apart with either.
+            let Some(uri) = uri else {
+                done(Saved::Cancelled);
+                return;
+            };
+            match rinch_android::file_picker::write_content_uri(&uri, &bytes) {
+                Ok(()) => done(Saved::Done),
+                Err(e) => done(Saved::Failed(e)),
             }
         });
     }
@@ -420,17 +596,40 @@ pub mod test_support {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    /// Hands back a fixed answer, and remembers it was asked.
+    /// Hands back a fixed answer, and remembers what it was asked. Holds one
+    /// slot for each half of [`FilePicker`] rather than one shared slot,
+    /// because a test exercising `pick` has no `Saved` to give and a test
+    /// exercising `save` has no `Picked` to give, and a single `Option`
+    /// shared between two unrelated answer types would need an enum wrapper
+    /// that existed for no reason but this struct.
     pub struct Canned {
-        answer: RefCell<Option<Picked>>,
+        pick_answer: RefCell<Option<Picked>>,
+        save_answer: RefCell<Option<Saved>>,
         pub asked: Rc<RefCell<Vec<PickRequest>>>,
+        pub saved: Rc<RefCell<Vec<(SaveRequest, Vec<u8>)>>>,
     }
 
     impl Canned {
+        /// A picker whose next `pick` answers with `answer`. Calling `save`
+        /// on one built this way panics — build with [`Canned::new_save`]
+        /// for a test that needs the other half.
         pub fn new(answer: Picked) -> Self {
             Self {
-                answer: RefCell::new(Some(answer)),
+                pick_answer: RefCell::new(Some(answer)),
+                save_answer: RefCell::new(None),
                 asked: Rc::new(RefCell::new(Vec::new())),
+                saved: Rc::new(RefCell::new(Vec::new())),
+            }
+        }
+
+        /// A picker whose next `save` answers with `answer`. `pick`'s
+        /// counterpart to `new`.
+        pub fn new_save(answer: Saved) -> Self {
+            Self {
+                pick_answer: RefCell::new(None),
+                save_answer: RefCell::new(Some(answer)),
+                asked: Rc::new(RefCell::new(Vec::new())),
+                saved: Rc::new(RefCell::new(Vec::new())),
             }
         }
     }
@@ -439,10 +638,20 @@ pub mod test_support {
         fn pick(&self, request: PickRequest, done: Box<dyn FnOnce(Picked)>) {
             self.asked.borrow_mut().push(request);
             let answer = self
-                .answer
+                .pick_answer
                 .borrow_mut()
                 .take()
-                .expect("a Canned picker answers once");
+                .expect("a Canned picker answers a pick once, and only when built to");
+            done(answer);
+        }
+
+        fn save(&self, request: SaveRequest, bytes: Vec<u8>, done: Box<dyn FnOnce(Saved)>) {
+            let answer = self
+                .save_answer
+                .borrow_mut()
+                .take()
+                .expect("a Canned picker answers a save once, and only when built to");
+            self.saved.borrow_mut().push((request, bytes));
             done(answer);
         }
     }
@@ -479,6 +688,32 @@ mod tests {
         assert_eq!(*seen.borrow(), vec![Picked::Cancelled]);
         assert_eq!(picker.asked.borrow().len(), 1, "and the picker was asked once");
         assert_eq!(picker.asked.borrow()[0], REQUEST, "with what it was given");
+    }
+
+    #[test]
+    fn the_save_callback_runs_once_and_carries_the_answer_and_the_bytes_travel_with_it() {
+        let picker = Canned::new_save(Saved::Done);
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let recorder = std::rc::Rc::clone(&seen);
+        let request = SaveRequest {
+            title: "Save a backup",
+            kind: "Zip",
+            extensions: &["zip"],
+            file_name: "setlistarray-backup.zip".to_string(),
+        };
+        picker.save(
+            request.clone(),
+            b"a backup's bytes".to_vec(),
+            Box::new(move |answer| recorder.borrow_mut().push(answer)),
+        );
+
+        assert_eq!(*seen.borrow(), vec![Saved::Done]);
+        assert_eq!(picker.saved.borrow().len(), 1, "and the picker was asked once");
+        assert_eq!(
+            picker.saved.borrow()[0],
+            (request, b"a backup's bytes".to_vec()),
+            "with the request and the bytes it was given"
+        );
     }
 
     // ── scavenging a name off a content URI ─────────────────────────────────
@@ -628,6 +863,62 @@ mod tests {
         );
         assert_eq!(
             overridden(None, REQUEST.max_bytes),
+            None,
+            "and unset means the dialog goes up, which is the shipped behaviour"
+        );
+    }
+
+    // ── the desktop save half, without a dialog ─────────────────────────────
+
+    /// A path in the scratch directory that nothing has written to yet — the
+    /// save side's counterpart to `scratch_file`, which needs the bytes ahead
+    /// of time because reading is the thing under test there. Here, writing
+    /// is the thing under test, so the file must not exist beforehand or a
+    /// successful write would prove nothing that an already-correct file
+    /// didn't already show.
+    #[cfg(not(target_os = "android"))]
+    fn scratch_path(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("sla-save-{}-{name}", std::process::id()))
+    }
+
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn a_save_writes_the_bytes_to_the_path_the_dialog_named() {
+        let path = scratch_path("backup.zip");
+        let answer = overridden_save(Some(path.clone().into_os_string()), b"a zip's bytes");
+        assert_eq!(answer, Some(Saved::Done));
+        assert_eq!(
+            std::fs::read(&path).expect("the write happened"),
+            b"a zip's bytes"
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// The one failure a save can hit that a pick cannot: there is nothing to
+    /// refuse in advance, so the only way to see `Saved::Failed` here is to
+    /// point the write at somewhere that cannot exist — a path through a
+    /// directory this test never created.
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn a_write_to_a_directory_that_does_not_exist_is_a_failure_not_a_panic() {
+        let path = scratch_path("nowhere").join("backup.zip");
+        let answer = overridden_save(Some(path.into_os_string()), b"bytes");
+        let Some(Saved::Failed(why)) = answer else {
+            panic!("{answer:?}");
+        };
+        assert!(!why.is_empty(), "{why}");
+    }
+
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn an_empty_save_override_is_a_cancel_and_no_override_is_a_dialog() {
+        assert_eq!(
+            overridden_save(Some(std::ffi::OsString::new()), b"bytes"),
+            Some(Saved::Cancelled),
+            "set and empty is the only way to spell a cancel in a path"
+        );
+        assert_eq!(
+            overridden_save(None, b"bytes"),
             None,
             "and unset means the dialog goes up, which is the shipped behaviour"
         );
