@@ -89,6 +89,24 @@ impl SongsStore {
         self.attachments
     }
 
+    /// Replace every song in memory, after `crate::store::reload_all` has
+    /// pointed [`Storage`] at a library that is not the one these signals
+    /// were filled from — card I2's import.
+    ///
+    /// `next_id` is re-derived exactly the way [`restored`](Self::restored)
+    /// derives it at startup, and for the same reason: this *is* a second
+    /// first load, of a library with its own highest id, and a counter left
+    /// over from the one being replaced could hand out an id the import just
+    /// brought in. `attachments` and `setlists` are untouched here — they are
+    /// reloaded independently by the same caller, and reaching into them from
+    /// here would be the one-way dependency this store already avoids reaching
+    /// the other way (see the field doc comments above).
+    pub fn reload(self, songs: Vec<Song>) {
+        let next = songs.iter().map(|s| s.id).max().unwrap_or(0) + 1;
+        self.songs.set(songs);
+        self.next_id.set(next);
+    }
+
     pub fn get(self, id: SongId) -> Option<Song> {
         self.songs.get().into_iter().find(|s| s.id == id)
     }

@@ -174,8 +174,18 @@ fn options() -> OpenOptions {
 /// ours. So a restart *within one process* races, where a genuine second
 /// process gets a clean refusal.
 ///
-/// Only tests restart in-process; the app opens the library once and holds it.
-/// Worth reporting upstream all the same.
+/// Only tests restarted in-process for a long time; the app opened the
+/// library once and held it. That stopped being true the moment
+/// `crate::store::Storage::reload` existed (card I2): import is production
+/// code that closes this app's own database and reopens the very same
+/// directory a few lines later, on the one thread this app has for it — the
+/// exact race this function was written to paper over, now reachable without
+/// a test harness at all. `reopen_after_close`, just below, is what
+/// `Storage::reload` calls instead of this one, for the reason its own doc
+/// comment gives: this function's answer to "the race never cleared" is a
+/// panic, which is the right thing for a test fixture and the wrong thing for
+/// an app that has just finished writing somebody's imported library safely
+/// to disk.
 #[cfg(test)]
 pub fn restart<T>(mut open: impl FnMut() -> Option<T>) -> T {
     for _ in 0..300 {
@@ -185,6 +195,33 @@ pub fn restart<T>(mut open: impl FnMut() -> Option<T>) -> T {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     panic!("the library never came back after three seconds");
+}
+
+/// `restart`'s production sibling: the same wait for the same rhypedb race
+/// (see `restart`'s doc comment immediately above), reported as an ordinary
+/// [`DbResult`] on the rare chance it never clears, rather than a panic.
+///
+/// `Storage::reload` is the one caller, and the reason the two functions
+/// cannot share a body even though the loop is identical: a panic here would
+/// crash the app in the specific window right after an import has finished
+/// writing the new library to disk and right before anything on screen can
+/// say so — turning a transient lock race that has nothing to do with the
+/// import into data loss from the user's chair, since a crashed process never
+/// gets to show that the swap already succeeded. Losing the retry to a
+/// timeout is still worth surfacing — it means the compaction worker's
+/// upgrade window somehow ran past three seconds, which is itself worth
+/// knowing about — so the last error `Repo::open` gave is what comes back,
+/// exactly as if the very first attempt had been the only one.
+pub(crate) fn reopen_after_close(dir: &DataDir) -> DbResult<repo::Repo> {
+    let mut last = None;
+    for _ in 0..300 {
+        match repo::Repo::open(dir) {
+            Ok(opened) => return Ok(opened),
+            Err(e) => last = Some(e),
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    Err(last.expect("the loop above runs at least once"))
 }
 
 /// A throwaway library directory, wiped first so a test starts from nothing.

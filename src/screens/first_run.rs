@@ -45,12 +45,28 @@
 //!   reserves the same square of space and puts nothing in it. That is a
 //!   decision, not a gap: the layout is right with the box empty, and
 //!   whoever adds the art later only has to fill it in, not build the slot.
-//! * **"or import a backup file".** There is nothing behind it: import does
-//!   not exist yet. A control that does nothing is the one thing this
-//!   codebase keeps refusing to ship (`screens::settings`'s header, on
-//!   `AccentChoice::FromSystem`, is the canonical statement of it). Card I2
-//!   owns import and has been updated to add this line back the moment
-//!   there is somewhere for it to go.
+//!
+//! ## "or import a backup file" — card I2's line
+//!
+//! `1r` draws this as a secondary line under Add song, and until card I2
+//! existed there was nothing behind it — a control that does nothing is the
+//! one thing this codebase keeps refusing to ship (`screens::settings`'s
+//! header, on `AccentChoice::FromSystem`, is the canonical statement of it).
+//! It now opens the same flow the Settings → Backup row does —
+//! `crate::screens::import_flow`, shared rather than reimplemented, down to
+//! the same "say replace, before it happens" confirmation strip that module's
+//! own header argues for. There is nothing about being on an empty library
+//! that makes that confirmation less necessary: somebody who has already
+//! typed in a couple of songs before deciding to import instead is exactly
+//! who "this replaces everything on this device" is for, and special-casing
+//! "the book was empty when I opened this screen" would be a second, narrower
+//! rule sitting next to the one the flow already enforces everywhere else.
+//!
+//! Once an import lands, this screen does not have to notice on its own: the
+//! same reactive count that swaps `FirstRun` back out for `Library` the
+//! instant `songs.songs` gains its first row (see the module header below)
+//! fires just as well for a book an import filled as for one a person typed
+//! into, because both are the same signal changing the same way.
 //!
 //! ## Add song writes one field
 //!
@@ -81,8 +97,9 @@
 
 use rinch::prelude::*;
 
+use super::import_flow::{self, ImportStatus};
 use crate::model::Song;
-use crate::store::SongsStore;
+use crate::store::{AttachmentsStore, LibraryViewStore, SettingsStore, SetlistsStore, SongsStore, Storage};
 use crate::theme::{SCREEN_PAD, T_META};
 
 /// Verbatim from the handoff (`design_handoff_setlistarray/README.md`, §13,
@@ -97,10 +114,21 @@ const FOOTER: &str = "Everything stays on this phone. No account, no signal need
 #[component]
 pub fn FirstRun() -> NodeHandle {
     let songs = use_store::<SongsStore>();
+    let setlists = use_store::<SetlistsStore>();
+    let attachments = use_store::<AttachmentsStore>();
+    let view = use_store::<LibraryViewStore>();
+    let settings = use_store::<SettingsStore>();
+    let storage = use_store::<Storage>();
     let title = Signal::new(String::new());
     // Set by an Add song tap that had nothing to add; cleared the moment a
     // title appears, the same lifetime `song_form.rs`'s `missing_title` has.
     let refused = Signal::new(false);
+
+    // Card I2's half of this screen — see the module header. Component-local
+    // for the same reason `crate::screens::settings` keeps its own copies of
+    // these: neither outlives the screen that is open when either changes.
+    let confirming_import = Signal::new(false);
+    let import_status = Signal::new(Option::<ImportStatus>::None);
 
     let add = move || {
         let trimmed = title.get().trim().to_string();
@@ -196,9 +224,29 @@ pub fn FirstRun() -> NodeHandle {
                     "Add song"
                 }
 
-                // `1r`'s secondary "or import a backup file" is left out —
-                // card I2 owns adding it back once there is an import path
-                // for it to open. See the module header.
+                // `1r`'s secondary line — card I2's import, shared with
+                // Settings' Backup row through `crate::screens::import_flow`.
+                // See the module header for why the same replace-warning
+                // strip applies here even though the book is, by definition,
+                // empty on this screen.
+                div {
+                    onclick: move || confirming_import.set(true),
+                    style: "font-weight: 600; font-size: 14px; color: var(--sla-muted); \
+                            padding: 6px 10px;",
+                    "or import a backup file"
+                }
+                {import_flow::confirm_strip(__scope, confirming_import, move || {
+                    import_flow::start(
+                        storage, songs, setlists, attachments, view, settings, import_status,
+                    );
+                })}
+                div {
+                    style: {move || format!(
+                        "{T_META} color: {};",
+                        import_flow::status_color(import_status.get()),
+                    )},
+                    {move || import_flow::status_note(import_status.get())}
+                }
 
                 div {
                     style: {format!("{T_META} margin-top: auto; padding-top: 20px;")},

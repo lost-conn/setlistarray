@@ -20,6 +20,11 @@ mod filter_sheet;
 // `Library` while the book is empty. See its own header for the whole
 // argument, and `crate::derive::first_run_active` for the decision itself.
 mod first_run;
+// Not a screen and has no route: the pick-validate-replace-reload pipeline
+// card I2's two doors — Settings' Backup row and first run's secondary line —
+// both drive. See its own header for why the confirmation it draws runs
+// before the file picker rather than after.
+mod import_flow;
 mod library;
 mod performance;
 // The running order (F3): the sheet behind performance mode's `≡ set` chip.

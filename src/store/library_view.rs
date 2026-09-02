@@ -428,6 +428,26 @@ impl LibraryViewStore {
         }
     }
 
+    /// Re-derive every signal here from the Preferences row — card I2's
+    /// import, through `crate::store::reload_all`. Takes no argument, unlike
+    /// the library stores' own `reload`: this state was never handed in from
+    /// a `Loaded` in the first place (`restored` above reads it from
+    /// `storage.preferences()`, not from a caller), and by the time this runs
+    /// `Storage::reload` has already refreshed that signal from the newly
+    /// opened database, so reading it again here is exactly what `restored`
+    /// itself does, a second time.
+    pub fn reload(self) {
+        let preferences = self.storage.preferences();
+        self.query.set(preferences.query);
+        self.group_by.set(preferences.group_by);
+        self.sort_field.set(preferences.sort_field);
+        self.sort_dir.set(preferences.sort_dir);
+        self.density.set(preferences.density);
+        self.collapsed.set(preferences.collapsed);
+        self.expanded.set(preferences.expanded);
+        self.filters.set(preferences.filters);
+    }
+
     /// The query is remembered like everything else, but it changes on every
     /// keystroke — so it is set through here rather than written to directly.
     pub fn set_query(self, query: impl Into<String>) {

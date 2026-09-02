@@ -54,6 +54,22 @@ impl SetlistsStore {
         self.setlists.get().into_iter().find(|s| s.id == id)
     }
 
+    /// Replace every setlist in memory — card I2's import, through
+    /// `crate::store::reload_all`. `next_id` is re-derived the way
+    /// [`restored`](Self::restored) derives it at startup, for the same
+    /// reason [`SongsStore::reload`](crate::store::SongsStore::reload) gives.
+    ///
+    /// `last_removal` is cleared rather than carried over: it names a song and
+    /// an index into a running order that both belonged to the library this
+    /// is replacing, and offering it back after an import would be offering
+    /// to resurrect an id that may now name something else, or nothing.
+    pub fn reload(self, setlists: Vec<Setlist>) {
+        let next = setlists.iter().map(|s| s.id).max().unwrap_or(0) + 1;
+        self.setlists.set(setlists);
+        self.next_id.set(next);
+        self.last_removal.set(None);
+    }
+
     pub fn add(self, name: impl Into<String>) -> SetlistId {
         let mut setlist = Setlist {
             id: 0,

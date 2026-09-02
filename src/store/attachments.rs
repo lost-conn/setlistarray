@@ -51,6 +51,19 @@ impl AttachmentsStore {
         self.items.get().into_iter().find(|a| a.id == id)
     }
 
+    /// Replace every attachment's metadata in memory — card I2's import,
+    /// through `crate::store::reload_all`. `next_id` is re-derived the way
+    /// [`restored`](Self::restored) derives it at startup, for the same
+    /// reason [`SongsStore::reload`](crate::store::SongsStore::reload) gives.
+    /// The bytes on disk this list points at have already moved by the time
+    /// this runs — the swap that replaced `<data>/attachments/` wholesale is
+    /// `crate::import::Staged::install`'s job, not this one's.
+    pub fn reload(self, items: Vec<Attachment>) {
+        let next = items.iter().map(|a| a.id).max().unwrap_or(0) + 1;
+        self.items.set(items);
+        self.next_id.set(next);
+    }
+
     pub fn many(self, ids: &[AttachmentId]) -> Vec<Attachment> {
         let all = self.items.get();
         ids.iter()

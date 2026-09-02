@@ -96,6 +96,39 @@ impl Storage {
         self.fault.set(None);
     }
 
+    /// Re-open the library from files that changed underneath this handle —
+    /// card I2's import, once `crate::import::Staged::install` has already
+    /// swapped the imported data onto `dir` on disk. Nothing before this line
+    /// may still hold the old `Arc<Repo>`, because opening a second one over
+    /// the same directory lock is exactly the refusal a genuine second writer
+    /// gets (see `crate::db::open`'s own module header) — which is why the
+    /// caller closes this `Storage` (see [`close`](Self::close)) before it
+    /// ever touches a file, and why the two calls in `crate::screens::
+    /// import_flow::start` are in that order and not the other one.
+    ///
+    /// This runs the identical two steps [`open`](Self::open) runs at a fresh
+    /// launch — open, then [`load`](Self::load) to refresh `preferences` —
+    /// deliberately: the whole premise of import is that opening a library
+    /// cannot depend on it being the *same* library as before, and a reload
+    /// that took a shortcut here would be untested the moment it disagreed
+    /// with startup about what "open" means. The one difference from `open`
+    /// is `crate::db::reopen_after_close` in place of a bare `Repo::open` —
+    /// see that function's doc comment for the in-process race this app has
+    /// never had a reason to hit until this method existed.
+    ///
+    /// What this does **not** do is put a single song, setlist or attachment
+    /// into any store built on top of this handle: those are refilled from
+    /// the [`Loaded`] this returns by `crate::store::reload_all`, the same
+    /// way `app()` fills them from `open`'s own `Loaded` at startup.
+    pub fn reload(self, dir: &DataDir) -> Loaded {
+        self.repo.set(None);
+        match crate::db::reopen_after_close(dir) {
+            Ok(repo) => self.repo.set(Some(Arc::new(repo))),
+            Err(e) => self.record("opening the imported library", e.to_string()),
+        }
+        self.load()
+    }
+
     /// Let go of the library, releasing the single-writer lock on its
     /// directory.
     ///
@@ -265,6 +298,25 @@ mod tests {
                 view: LibraryViewStore::restored(storage),
                 settings: SettingsStore::restored(storage),
             }
+        }
+
+        /// Card I2's import, run against this same live session rather than a
+        /// fresh one — `crate::store::reload_all` is what an import actually
+        /// calls, and every field on `Session` already holds the right
+        /// handles for it: nothing here is reconstructed, because nothing
+        /// about *which* `AttachmentsStore` or `SetlistsStore` `songs` points
+        /// at is allowed to change mid-session, only what each one's own
+        /// signals hold.
+        fn reload(&self, dir: &DataDir) {
+            crate::store::reload_all(
+                self.storage,
+                self.songs,
+                self.setlists,
+                self.attachments,
+                self.view,
+                self.settings,
+                dir,
+            );
         }
     }
 
@@ -753,6 +805,89 @@ mod tests {
         let s = Session::open(&dir);
         assert!(s.attachments.items.get().is_empty());
         assert!(!path.exists());
+    }
+
+    // ── card I2: import ──────────────────────────────────────────────────────
+
+    /// The test the card calls out as the one that matters most, run at the
+    /// level the app actually runs it at rather than at the file level
+    /// `crate::import`'s own tests check: build a library, export it, change
+    /// the *live* session so it visibly disagrees with the backup just
+    /// taken, import that backup back over it, and check every store — not
+    /// only the database underneath them — against what was exported rather
+    /// than what was still on screen a moment before.
+    #[test]
+    fn importing_a_backup_replaces_every_store_with_what_was_exported() {
+        let dir = scratch("import-live-roundtrip");
+        let s = Session::open(&dir);
+
+        let kept_song = s.songs.add("Carolina", "M. Ward");
+        let setlist = s.setlists.add("Porch, Saturday");
+        s.setlists.add_song(setlist, kept_song);
+        let chart_id = s.songs.attach(kept_song, chart("carolina-chords.pdf")).unwrap();
+        std::fs::write(
+            s.attachments.directory(chart_id).unwrap().join("carolina-chords.pdf"),
+            b"chords",
+        )
+        .unwrap();
+        s.view.toggle_density(); // Comfortable -> Compact, as of the export below.
+        s.settings.set_keep_awake(false);
+
+        let bytes = crate::export::build_zip(&s.storage.repo().unwrap()).expect("the zip builds");
+
+        // Change the live library so it visibly disagrees with the backup
+        // just taken. Proving "replace" rather than "merge" needs something
+        // for the import to actually remove.
+        s.songs.add("Should not survive the import", "Nobody");
+        s.view.toggle_density(); // back to Comfortable, live only — not exported.
+        s.settings.set_keep_awake(true);
+        assert_eq!(s.songs.count(), 2, "the mutation landed before the import runs");
+
+        let staged = crate::import::stage(&bytes, &dir).expect("a real backup stages cleanly");
+        // The same order `crate::screens::import_flow::start` uses: close
+        // before the swap, reload after, whichever way it goes.
+        s.storage.close();
+        staged.install(&dir).expect("installing a validated backup succeeds");
+        s.reload(&dir);
+
+        let songs = s.songs.songs.get();
+        assert_eq!(songs.len(), 1, "replaced, not merged — the extra song is gone");
+        assert_eq!(songs[0].id, kept_song);
+        assert_eq!(songs[0].title, "Carolina");
+
+        let setlists = s.setlists.setlists.get();
+        assert_eq!(setlists.len(), 1);
+        assert_eq!(setlists[0].id, setlist);
+        assert_eq!(setlists[0].song_ids, vec![kept_song], "membership came back too");
+
+        let attachments = s.attachments.items.get();
+        assert_eq!(attachments.len(), 1);
+        assert_eq!(attachments[0].id, chart_id);
+        let restored_file = dir.attachment(chart_id as u64).join("carolina-chords.pdf");
+        assert_eq!(
+            std::fs::read(&restored_file).unwrap(),
+            b"chords",
+            "the bytes beside the database came back, not only the row naming them"
+        );
+
+        assert_eq!(
+            s.view.density.get(),
+            Density::Compact,
+            "the preference the backup was taken with, not the one set after it"
+        );
+        assert!(
+            !s.settings.keep_awake.get(),
+            "a setting reloads from the backup's Preferences row the same way"
+        );
+
+        // The id counters picked up after the *imported* library's own ids,
+        // not after the mutation the import erased — `SongsStore::reload`
+        // re-derives `next_id` the same way a fresh restart would.
+        let new_song = s.songs.add("New after import", "Someone");
+        assert!(
+            new_song > kept_song,
+            "a song added after import must not collide with the restored library's own ids"
+        );
     }
 
     // ── failed writes ───────────────────────────────────────────────────────

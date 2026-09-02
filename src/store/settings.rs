@@ -248,6 +248,22 @@ impl SettingsStore {
         }
     }
 
+    /// Re-derive every signal here from the Preferences row — card I2's
+    /// import, through `crate::store::reload_all`. See
+    /// [`LibraryViewStore::reload`](crate::store::LibraryViewStore::reload)
+    /// for why this takes no argument and reads `storage.preferences()`
+    /// again rather than being handed something.
+    pub fn reload(self) {
+        let preferences = self.storage.preferences();
+        self.dark_mode.set(preferences.dark_mode);
+        self.accent.set(preferences.accent);
+        self.performance_theme.set(preferences.performance_theme);
+        self.keep_awake.set(preferences.keep_awake);
+        self.recheck_saved_pages.set(preferences.recheck_saved_pages);
+        self.default_tuning.set(preferences.default_tuning);
+        self.capture_mode.set(preferences.capture_mode);
+    }
+
     pub fn accent_resolved(self) -> Accent {
         self.accent.get().resolve()
     }

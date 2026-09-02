@@ -197,11 +197,12 @@ use crate::derive::{
     accent_note, attachments_note, density_label, library_sort_note, on_off,
     performance_theme_label, saved_pages_note,
 };
+use super::import_flow::{self, ImportStatus};
 use crate::model::AttachmentKind;
 use crate::picker::{SaveRequest, Saved};
 use crate::store::{
     AccentChoice, AttachmentsStore, Density, LibraryViewStore, NavStore, PerformanceTheme,
-    SettingsStore, Storage,
+    SettingsStore, SetlistsStore, SongsStore, Storage,
 };
 use crate::theme::{
     ACCENTS, SCREEN_PAD, T_BODY, T_CHIP, T_META, T_META_SMALL, T_SCREEN_TITLE, T_SECTION_CAPS,
@@ -228,11 +229,20 @@ pub fn Settings() -> NodeHandle {
     let view = use_store::<LibraryViewStore>();
     let attachments = use_store::<AttachmentsStore>();
     let storage = use_store::<Storage>();
+    let songs = use_store::<SongsStore>();
+    let setlists = use_store::<SetlistsStore>();
 
     // What the last tap of "Export library" did, and nothing more durable
     // than that — see the module header's "Export, and its three failure
     // states" for why this is a plain local signal rather than a store field.
     let export_status = Signal::new(Option::<ExportStatus>::None);
+
+    // Card I2's half of the Backup section: whether the replace-warning strip
+    // is open, and what the last import attempt came back with. Both are
+    // component-local for the same reason `export_status` is — see
+    // `crate::screens::import_flow`'s own header for the flow these drive.
+    let confirming_import = Signal::new(false);
+    let import_status = Signal::new(Option::<ImportStatus>::None);
 
     rsx! {
         div { style: "flex: 1; display: flex; flex-direction: column; min-height: 0;",
@@ -269,6 +279,10 @@ pub fn Settings() -> NodeHandle {
                 {section(__scope, "Backup")}
 
                 {export_row(__scope, storage, export_status)}
+                {import_row(
+                    __scope, storage, songs, setlists, attachments, view, settings,
+                    confirming_import, import_status,
+                )}
 
                 {section(__scope, "Defaults")}
 
@@ -439,6 +453,48 @@ fn start_export(storage: Storage, status: Signal<Option<ExportStatus>>) {
             }
         },
     );
+}
+
+/// Import's half of card I2's Backup section, beside Export. Shaped like
+/// [`export_row`] — label left, status note right, no chevron since a tap
+/// does not navigate — with one difference: a tap here does not go straight
+/// to the file picker. It raises `confirming`, and
+/// [`import_flow::confirm_strip`], drawn directly beneath, is what actually
+/// opens the picker once someone has said "replace" rather than merely
+/// tapped the row. See that module's own header for why the confirmation has
+/// to come before the file is even chosen.
+#[allow(clippy::too_many_arguments)]
+fn import_row(
+    scope: &mut RenderScope,
+    storage: Storage,
+    songs: SongsStore,
+    setlists: SetlistsStore,
+    attachments: AttachmentsStore,
+    view: LibraryViewStore,
+    settings: SettingsStore,
+    confirming: Signal<bool>,
+    status: Signal<Option<ImportStatus>>,
+) -> NodeHandle {
+    let __scope = scope;
+    rsx! {
+        div { style: "display: flex; flex-direction: column;",
+            div {
+                onclick: move || confirming.set(true),
+                style: {ROW},
+                span { style: {format!("{T_BODY} flex: 1;")}, "Import from backup" }
+                span {
+                    style: {move || format!(
+                        "{T_META_SMALL} color: {};",
+                        import_flow::status_color(status.get()),
+                    )},
+                    {move || import_flow::status_note(status.get())}
+                }
+            }
+            {import_flow::confirm_strip(__scope, confirming, move || {
+                import_flow::start(storage, songs, setlists, attachments, view, settings, status);
+            })}
+        }
+    }
 }
 
 /// How many attachments are saved webpages.
