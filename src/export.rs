@@ -221,7 +221,26 @@ impl From<std::io::Error> for ExportError {
 /// function never touches a save dialog and cannot: see `crate::screens::settings`
 /// for where the two meet.
 pub fn build_zip(repo: &Repo) -> Result<Vec<u8>, ExportError> {
-    let scratch = scratch_snapshot_dir();
+    build_zip_in(&std::env::temp_dir(), repo)
+}
+
+/// [`build_zip`], with the directory the scratch snapshot is made *under*
+/// handed in rather than assumed to be the system temp directory.
+///
+/// It exists for one reason, and the reason is a test that was wrong rather
+/// than a feature anybody asked for. The litter test below used to snapshot
+/// the whole system temp directory before and after a build and fail on any
+/// new `sla-export-` entry. Tests run in parallel and share a pid, so any
+/// other test building a zip in the same window left an entry this one
+/// blamed on itself: it passed alone, passed when I1 shipped it, and failed
+/// at random afterwards. A suite that reddens at random is a suite whose
+/// green means nothing, and every card here is verified by running it.
+///
+/// So the test now gets a root nothing else can write to and asserts *that*
+/// is empty. Same claim — the scratch is cleaned up — without asking a
+/// shared directory to hold still.
+pub(crate) fn build_zip_in(root: &Path, repo: &Repo) -> Result<Vec<u8>, ExportError> {
+    let scratch = scratch_snapshot_dir(root);
     let _cleanup = RemoveOnDrop(&scratch);
 
     // The consistent copy — see the module header for what `backup_to`
@@ -283,13 +302,13 @@ pub fn suggested_file_name() -> String {
 /// A directory nothing else in this process knows about, for `backup_to`'s
 /// destination. Named like [`crate::db::scratch`] — pid plus a counter, so
 /// two exports racing in the same process (a test running more than one) can
-/// never collide — but under the system temp directory rather than beside
-/// the real library, because this one is deleted the moment the zip is
-/// built rather than kept for the next launch.
-fn scratch_snapshot_dir() -> PathBuf {
+/// never collide — under `root`, which for every real caller is the system
+/// temp directory rather than beside the real library, because this one is
+/// deleted the moment the zip is built rather than kept for the next launch.
+fn scratch_snapshot_dir(root: &Path) -> PathBuf {
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    std::env::temp_dir().join(format!("sla-export-{}-{n}", std::process::id()))
+    root.join(format!("sla-export-{}-{n}", std::process::id()))
 }
 
 /// Deletes the path it holds when it goes out of scope, success or failure
@@ -486,21 +505,25 @@ mod tests {
     fn an_export_leaves_no_scratch_directory_behind() {
         let source_dir = scratch("export-no-litter");
         let repo = Repo::open(&source_dir).expect("library opens");
-        let before: std::collections::HashSet<_> = std::fs::read_dir(std::env::temp_dir())
-            .unwrap()
+
+        // A root of this test's own, not the shared system temp directory —
+        // see `build_zip_in` for the flake that bought this seam. Nothing
+        // else writes here, so "empty afterwards" is a claim about this
+        // export and cannot be made false by a test running beside it.
+        let root = std::env::temp_dir().join(format!(
+            "sla-export-litter-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&root).expect("the private root is made");
+
+        build_zip_in(&root, &repo).expect("the zip builds");
+
+        let leftover: Vec<_> = std::fs::read_dir(&root)
+            .expect("the private root still exists")
             .filter_map(|e| e.ok().map(|e| e.file_name()))
             .collect();
-
-        build_zip(&repo).expect("the zip builds");
-
-        let after: std::collections::HashSet<_> = std::fs::read_dir(std::env::temp_dir())
-            .unwrap()
-            .filter_map(|e| e.ok().map(|e| e.file_name()))
-            .collect();
-        let leftover: Vec<_> = after
-            .difference(&before)
-            .filter(|name| name.to_string_lossy().starts_with("sla-export-"))
-            .collect();
+        let _ = std::fs::remove_dir_all(&root);
         assert!(leftover.is_empty(), "{leftover:?}");
     }
 }
