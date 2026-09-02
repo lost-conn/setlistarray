@@ -35,17 +35,17 @@
 //! | Accent | `SettingsStore::accent` |
 //! | Performance mode theme | `SettingsStore::performance_theme` |
 //! | Dark mode | `SettingsStore::dark_mode` |
+//! | Export library (.zip) | `crate::export::build_zip`, card I1 |
 //!
 //! **Left to the card that owns it:**
 //!
-//! * **Export library (.zip)** — card I1. There is nothing to export *to* yet.
 //! * **Import from file** — card I2, which has a real decision in front of it
 //!   (replace or merge) that a row here cannot make on its behalf.
-//! * **Last export** — card I3. It is a date produced by I1; until I1 exists
-//!   the row can only ever read "never", which is not a fact about the user's
-//!   library but a fact about this app's progress.
-//! * With all three gone the **Backup** heading has nothing under it, so the
-//!   heading is gone too. An empty section is a promise of its own.
+//! * **Last export** — card I3's own row. I1 writes the timestamp it will
+//!   read (`Preferences::last_export_at`, set the moment a save lands — see
+//!   [`export_row`]) because a field on that struct costs nothing to add
+//!   now, but the *row* that reads it back as a date is I3's UI to build, not
+//!   this card's.
 //! * The **`›` chevrons** on the two storage rows. `1q` draws both as gateways
 //!   to a breakdown screen; no such screen exists and no card describes one, so
 //!   the two rows are read-only here. The number is the whole of what they can
@@ -129,6 +129,52 @@
 //! (`derive::accent_note`) still names the colour actually on screen, so a
 //! fresh install reads "Rust" and is telling the truth about the pixels.
 //!
+//! ## Export, and its three failure states
+//!
+//! Card I1. The handoff's Backup section names three rows — Export, Import,
+//! Last export — and this is the first of the three to have an engine behind
+//! it, which is why the section heading returns here rather than staying
+//! gone the way H1 left it. `crate::export`'s own header is where the
+//! database-consistency argument lives; what belongs here is what a person
+//! sees when they tap the row, because the card asks for three distinct
+//! outcomes and a row that only ever said "Export" either worked or did not
+//! would be reporting one bit where the card wants three.
+//!
+//! * **Cancelled** — the user closed the save dialog. Not an error, the same
+//!   rule [`Picked::Cancelled`](crate::picker::Picked::Cancelled) and
+//!   [`Saved::Cancelled`] already keep everywhere else in this app: the note
+//!   reads "Cancelled" in the muted ink a fact gets, not the accent a
+//!   success gets or the danger red a failure gets.
+//! * **Failed** — the zip could not be built ([`crate::export::ExportError`],
+//!   which already carries words a person can be shown) or the platform's
+//!   save itself refused ([`Saved::Failed`]). Either lands in the same danger-
+//!   coloured note `trouble` uses on the song detail screen, because both are
+//!   the same fact from the user's chair: the backup they asked for did not
+//!   happen.
+//! * **Done** — the size the card asks for, read straight off the `Vec<u8>`
+//!   [`crate::export::build_zip`] returns rather than a stat call on
+//!   whatever the platform actually named the file: the desktop's dialog can
+//!   return a path this app could `fs::metadata` afterwards, but Android's
+//!   save (`crate::picker`'s own header, "It cannot say what the file
+//!   actually got named") hands back nothing to stat at all. The byte count
+//!   is the one number both platforms can report honestly, and it is the
+//!   same number that landed on disk either way — nothing between the zip
+//!   finishing and the picker's `Saved::Done` changes its length.
+//!
+//! `export_status` is a plain component-local `Signal`, not a store field:
+//! nothing else on this screen or any other needs to know whether the last
+//! export attempt was cancelled, and a signal that outlived this component
+//! would be a fact about a screen that is no longer open. It is reset to
+//! `None` at the start of every tap, so a second attempt does not leave a
+//! stale success sitting beside a fresh failure.
+//!
+//! `Preferences::last_export_at` is written the moment [`Saved::Done`]
+//! arrives — before the note is set, so a crash between the two would rather
+//! lose the on-screen confirmation than lose the record I3 will read — and
+//! nowhere else. A cancelled or failed attempt never touches it, which is
+//! the whole point of the field: it means "an export completed," not "an
+//! export was attempted."
+//!
 //! ## Every reactive control carries its own colour
 //!
 //! Card F3 found this on the phone on 2026-09-01: a toggle whose background and
@@ -152,9 +198,10 @@ use crate::derive::{
     performance_theme_label, saved_pages_note,
 };
 use crate::model::AttachmentKind;
+use crate::picker::{SaveRequest, Saved};
 use crate::store::{
     AccentChoice, AttachmentsStore, Density, LibraryViewStore, NavStore, PerformanceTheme,
-    SettingsStore,
+    SettingsStore, Storage,
 };
 use crate::theme::{
     ACCENTS, SCREEN_PAD, T_BODY, T_CHIP, T_META, T_META_SMALL, T_SCREEN_TITLE, T_SECTION_CAPS,
@@ -180,6 +227,12 @@ pub fn Settings() -> NodeHandle {
     let settings = use_store::<SettingsStore>();
     let view = use_store::<LibraryViewStore>();
     let attachments = use_store::<AttachmentsStore>();
+    let storage = use_store::<Storage>();
+
+    // What the last tap of "Export library" did, and nothing more durable
+    // than that — see the module header's "Export, and its three failure
+    // states" for why this is a plain local signal rather than a store field.
+    let export_status = Signal::new(Option::<ExportStatus>::None);
 
     rsx! {
         div { style: "flex: 1; display: flex; flex-direction: column; min-height: 0;",
@@ -212,6 +265,10 @@ pub fn Settings() -> NodeHandle {
                 {switch_row(__scope, "Re-check saved pages",
                     move || settings.recheck_saved_pages.get(),
                     move || settings.set_recheck_saved_pages(!settings.recheck_saved_pages.get()))}
+
+                {section(__scope, "Backup")}
+
+                {export_row(__scope, storage, export_status)}
 
                 {section(__scope, "Defaults")}
 
@@ -277,6 +334,111 @@ pub fn Settings() -> NodeHandle {
             }
         }
     }
+}
+
+/// What the last tap of the export row produced. See the module header's
+/// "Export, and its three failure states" for why these three and not a
+/// bare success/failure bit.
+#[derive(Clone, Debug, PartialEq)]
+enum ExportStatus {
+    Done(u64),
+    Cancelled,
+    Failed(String),
+}
+
+/// The row itself: a tap builds the zip and hands it to
+/// [`crate::picker::save`], and the note on the right shows whatever the
+/// last attempt came back with. Shaped like [`link_row`] — label left, note
+/// right — but with no chevron, because tapping this row does not navigate
+/// anywhere; it starts and finishes an action in place.
+fn export_row(scope: &mut RenderScope, storage: Storage, status: Signal<Option<ExportStatus>>) -> NodeHandle {
+    let __scope = scope;
+    rsx! {
+        div {
+            onclick: move || start_export(storage, status),
+            style: {ROW},
+            span { style: {format!("{T_BODY} flex: 1;")}, "Export library (.zip)" }
+            span {
+                style: {move || format!("{T_META_SMALL} color: {};", export_status_color(status.get()))},
+                {move || export_status_note(status.get())}
+            }
+        }
+    }
+}
+
+/// The colour a status reads in: muted for "nothing has happened yet" and
+/// for a cancel (the same rule `crate::picker`'s own `Cancelled` follows —
+/// closing a dialog is not a failure), danger red for a failure, accent for
+/// a success — the one time this row's note is good news rather than a
+/// plain fact.
+fn export_status_color(status: Option<ExportStatus>) -> &'static str {
+    match status {
+        None | Some(ExportStatus::Cancelled) => "var(--sla-muted)",
+        Some(ExportStatus::Failed(_)) => "var(--sla-danger)",
+        Some(ExportStatus::Done(_)) => "var(--sla-accent)",
+    }
+}
+
+/// The words beside the row. Empty before the first tap — this is an action
+/// row, not a setting with a resting value, so there is nothing honest to
+/// say about it before it has been used once this session.
+fn export_status_note(status: Option<ExportStatus>) -> String {
+    match status {
+        None => String::new(),
+        Some(ExportStatus::Cancelled) => "Cancelled".to_string(),
+        Some(ExportStatus::Failed(why)) => why,
+        Some(ExportStatus::Done(bytes)) => crate::model::fmt_bytes(bytes),
+    }
+}
+
+/// Build the zip and hand it to the save dialog. Split out of `export_row`'s
+/// `onclick` because the body has three exits — no library, a build failure,
+/// a save outcome — and a closure that long is harder to read inline than
+/// named.
+fn start_export(storage: Storage, status: Signal<Option<ExportStatus>>) {
+    status.set(None);
+
+    // No database at all — the in-memory fallback `Storage::open` degrades
+    // to when the library will not open (its own doc comment), or the shape
+    // tests and `--seed` screenshots use on purpose. Either way there is
+    // nothing on disk to zip, and the save dialog would be asking for bytes
+    // this app cannot produce.
+    let Some(repo) = storage.repo() else {
+        status.set(Some(ExportStatus::Failed(
+            "There is no library on this device to export.".to_string(),
+        )));
+        return;
+    };
+
+    let bytes = match crate::export::build_zip(&repo) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            status.set(Some(ExportStatus::Failed(e.message())));
+            return;
+        }
+    };
+    let size = bytes.len() as u64;
+
+    crate::picker::save(
+        SaveRequest {
+            title: "Export library",
+            kind: "Zip",
+            extensions: &["zip"],
+            file_name: crate::export::suggested_file_name(),
+        },
+        bytes,
+        move |saved| match saved {
+            Saved::Cancelled => status.set(Some(ExportStatus::Cancelled)),
+            Saved::Failed(why) => status.set(Some(ExportStatus::Failed(why))),
+            Saved::Done => {
+                // Before the note, not after: a crash between the two should
+                // lose the on-screen confirmation before it loses the record
+                // card I3 will read — see the module header.
+                storage.remember(|p| p.last_export_at = Some(crate::export::now_ms() as i64));
+                status.set(Some(ExportStatus::Done(size)));
+            }
+        },
+    );
 }
 
 /// How many attachments are saved webpages.

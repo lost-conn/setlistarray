@@ -53,6 +53,12 @@ pub struct Preferences {
     /// for why the value is one of a fixed seven rather than free text.
     pub default_tuning: DefaultTuning,
     pub capture_mode: CaptureMode,
+    /// When the last export finished, milliseconds since the epoch — card
+    /// I1's export writes this the moment its zip is safely handed off, and
+    /// card I3 is the screen that will read it. Built now because a row on
+    /// this struct costs nothing today and would otherwise be I3's own
+    /// migration to add later; the row I3 draws for it is not.
+    pub last_export_at: Option<i64>,
 }
 
 impl Default for Preferences {
@@ -78,6 +84,7 @@ impl Default for Preferences {
             // that says so. `CaptureMode::default()` rather than the variant
             // spelled out, so the app's default and the engine's cannot drift.
             capture_mode: CaptureMode::default(),
+            last_export_at: None,
         }
     }
 }
@@ -106,6 +113,16 @@ fn boolean(fields: &FieldMap, name: &str, fallback: bool) -> bool {
     match fields.get(name) {
         Some(Value::Bool(b)) => *b,
         _ => fallback,
+    }
+}
+
+/// `None` covers both "never exported" and "the row is corrupt" the same way
+/// every other optional field on this struct does — there is nothing a wrong
+/// type here could mean other than absent.
+fn datetime(fields: &FieldMap, name: &str) -> Option<i64> {
+    match fields.get(name) {
+        Some(Value::DateTime(ms)) => Some(*ms),
+        _ => None,
     }
 }
 
@@ -200,7 +217,22 @@ pub fn to_fields(preferences: &Preferences) -> FieldMap {
         "capture_mode",
         Value::String(preferences.capture_mode.name().into()),
     );
+    put_some(
+        &mut fields,
+        "last_export_at",
+        preferences.last_export_at.map(Value::DateTime),
+    );
     fields
+}
+
+/// The `Some`-or-absent counterpart to `put` — `to_fields` never writes a
+/// `Null` for `last_export_at` on a library that has never exported, the
+/// same way `song_fields` leaves an unset optional out entirely rather than
+/// writing a placeholder.
+fn put_some(fields: &mut FieldMap, name: &str, value: Option<Value>) {
+    if let Some(value) = value {
+        fields.insert(name.to_string(), value);
+    }
 }
 
 /// Anything unreadable falls back to its default rather than failing the read:
@@ -265,6 +297,7 @@ pub fn from_fields(fields: &FieldMap) -> Preferences {
         capture_mode: string(fields, "capture_mode")
             .and_then(|n| CaptureMode::from_name(&n))
             .unwrap_or(fallback.capture_mode),
+        last_export_at: datetime(fields, "last_export_at"),
     }
 }
 
@@ -298,6 +331,9 @@ mod tests {
             // The non-default one, so the round trip proves it is written and
             // read rather than falling back to the same answer twice.
             capture_mode: CaptureMode::FullPage,
+            // The non-default one too — `Some`, not the `None` a library
+            // that has never exported reads back as.
+            last_export_at: Some(1_756_770_000_000),
         }
     }
 
@@ -341,6 +377,25 @@ mod tests {
     fn a_row_from_before_default_tuning_existed_opens_and_reads_standard() {
         let fields = FieldMap::new();
         assert_eq!(from_fields(&fields).default_tuning, DefaultTuning::Standard);
+    }
+
+    /// The same property, for card I1's field: a library nobody has ever
+    /// exported from — including every library written before this card —
+    /// has no `last_export_at` key at all, and reads back `None` rather than
+    /// `Some(0)` or a parse error.
+    #[test]
+    fn a_library_that_has_never_exported_reads_last_export_at_as_none() {
+        assert_eq!(from_fields(&FieldMap::new()).last_export_at, None);
+    }
+
+    #[test]
+    fn a_recorded_export_time_survives_the_round_trip() {
+        let mut preferences = Preferences::default();
+        preferences.last_export_at = Some(1_756_770_000_000);
+        assert_eq!(
+            from_fields(&to_fields(&preferences)).last_export_at,
+            Some(1_756_770_000_000)
+        );
     }
 
     #[test]

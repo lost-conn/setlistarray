@@ -117,6 +117,37 @@ png = "0.18"
 rhypedb-engine = { path = "../rhypedb-main/crates/rhypedb-engine", default-features = false }
 rhypedb-schema = { path = "../rhypedb-main/crates/rhypedb-schema" }
 
+# Zipping the library for export (I1) — and, when I2 lands, reading one back
+# for import. `default-features = false` turns off every optional backend
+# `zip` carries except one: `bzip2`, `lzma`, `ppmd`, `aes-crypto`, `zstd` and
+# `xz` are for encrypted archives and codecs a backup of a chord book has no
+# use for, and each drags in its own crate this app would otherwise never
+# build. `deflate` is the one kept on, and — in the html5ever/hayro-syntax
+# register this file already keeps for a dependency's actual shape rather
+# than its name — checked rather than assumed: `cargo tree -e features -p
+# zip` against this Cargo.lock shows `deflate` pulling `deflate-flate2-zlib-rs`,
+# which builds `flate2` over `zlib-rs` 0.6.7, not the C zlib its name
+# suggests. `zlib-rs`'s own `Cargo.toml` has `build = false` — no build.rs,
+# nothing for a C toolchain to compile — and the allocator feature `flate2`
+# asks it for is `rust-allocator`, not the `c-allocator` default, so nothing
+# in this chain links libc's malloc either. `./build-apk.sh --build-only` is
+# I1's proof that the chain actually cross-compiles to aarch64-linux-android
+# rather than merely looking pure on paper.
+zip = { version = "8", default-features = false, features = ["deflate"] }
+
+# The export manifest at the zip's root (`src/export.rs`) — four integers, a
+# version, a timestamp and a string, not the library itself, which is why
+# this is worth naming rather than hand-rolling a parser. Not a new
+# dependency in any real sense: `serde` and `serde_json` are already compiled
+# into every build of this app, transitively, through `rinch-dom` (which
+# `rinch` always pulls in, on both platforms this app ships to) with the
+# `derive` feature already on — `cargo tree -i serde_json` shows it arriving
+# from there regardless of this line. Naming them here just gives this crate
+# direct access to a crate a fresh build already produces, the same reasoning
+# `png`'s entry above uses for `image`'s own PNG encoder.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
 # TEMPORARY, and the one place this project depends on a working tree.
 #
 # `local/both-fixes` in that checkout is main plus the two branches under review

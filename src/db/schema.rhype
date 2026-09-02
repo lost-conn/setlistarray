@@ -109,4 +109,8 @@ type Preferences {
     // "Reader" | "FullPage" — card E3's `Save as:`, remembered because a
     // player's chord site is the same chord site every time.
     capture_mode: String
+    // Card I1's export writes this the moment its zip is handed off; absent
+    // until the first export ever completes. Card I3 is the Settings row
+    // that will read it — see `Preferences::last_export_at`'s own comment.
+    last_export_at: DateTime
 }

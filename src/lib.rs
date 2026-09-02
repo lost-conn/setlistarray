@@ -31,6 +31,7 @@ mod android;
 pub mod capture;
 pub mod db;
 mod derive;
+pub mod export;
 #[cfg(test)]
 mod gesture_reachability;
 pub mod keep_awake;

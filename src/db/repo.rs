@@ -83,6 +83,22 @@ impl Repo {
         &self.db
     }
 
+    /// Counts for the export manifest (card I1) — exactly the numbers a
+    /// person restoring a zip later can check `setlistarray.json` against
+    /// without opening `db/` at all. See `crate::export`'s module header for
+    /// why the manifest exists and what it promises.
+    ///
+    /// `count_type` rather than `.len()` on `self.songs()`/etc.: those load
+    /// every field of every row to build the app's own structs, and a count
+    /// the export takes on its way out has no use for any of that.
+    pub fn export_counts(&self) -> DbResult<(u64, u64, u64)> {
+        Ok((
+            self.db.count_type(SONG).map_err(engine)?,
+            self.db.count_type(SETLIST).map_err(engine)?,
+            self.db.count_type(ATTACHMENT).map_err(engine)?,
+        ))
+    }
+
     // ── loading ─────────────────────────────────────────────────────────────
 
     /// One pass over the library at startup. Everything the screens read lives
