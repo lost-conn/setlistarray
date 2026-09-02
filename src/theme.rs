@@ -156,13 +156,32 @@ pub const LIGHT_NEUTRALS: &str = "--sla-paper: #FBF7F0;\
      --sla-card-shadow: 0 2px 10px -4px rgba(28,25,23,.14), 0 0 0 1px rgba(28,25,23,.06);\
      --sla-danger: #BA1B1B;";
 
-/// `--sla-paper`, on its own. The two neutrals blocks above are one CSS-ready
-/// string each, so pulling the same hex out of them at runtime is a parse for
-/// no reason — these exist so `contrast_ratio`'s tests (and J3, which widens
-/// them) have something to check `accent`-as-text against directly, at the
-/// cost of the hex appearing twice in the file. Change one, change both.
+/// The neutrals, pulled out of [`LIGHT_NEUTRALS`]/[`DARK_NEUTRALS`] one value
+/// at a time. Those two blocks are one CSS-ready string each, so pulling the
+/// same hex out of them at runtime is a parse for no reason — these exist so
+/// `contrast_ratio`'s tests have something to check text-on-background
+/// against directly, at the cost of every hex appearing twice in the file.
+/// Change one, change both — a mismatch here would make the audit below lie
+/// about a token it never actually re-read.
+///
+/// H2 only needed `paper`, to check the four accent bases as text against it.
+/// Card J3 widens the audit to the neutral pairs the screens actually draw —
+/// `ink`/`ink-2`/`muted`/`danger` as text on `paper`/`card`/`fill` — so it
+/// needed the rest of the row spelled out here too.
 const LIGHT_PAPER: &str = "#FBF7F0";
 const DARK_PAPER: &str = "#181512";
+const LIGHT_CARD: &str = "#FFFFFF";
+const DARK_CARD: &str = "#211C18";
+const LIGHT_FILL: &str = "#F1E9DC";
+const DARK_FILL: &str = "#241F1A";
+const LIGHT_MUTED: &str = "#6E645A";
+const DARK_MUTED: &str = "#9B9188";
+const LIGHT_INK_2: &str = "#4A423B";
+const DARK_INK_2: &str = "#D6CCC1";
+const LIGHT_INK: &str = "#1C1917";
+const DARK_INK: &str = "#F5EFE6";
+const LIGHT_DANGER: &str = "#BA1B1B";
+const DARK_DANGER: &str = "#FFB4AB";
 
 /// The full token block, as an inline `style` value for the app root.
 ///
@@ -248,6 +267,10 @@ pub const T_NAV_LABEL: &str = "font-size: 11px; letter-spacing: 0.04em;";
 // accent family only — the pairs `theme::Accent` actually defines as text on
 // a background — and leave the neutrals (muted, ink, ink-2 on paper/card) for
 // J3 to widen this into.
+//
+// J3 is that widening. Its tests sit at the bottom of the `tests` module
+// below, after H2's, and its own comment there says where every pair in its
+// table was found.
 
 /// Parses a `#RRGGBB` string into its three channels. Every hex in this file
 /// is authored in that exact shape, so a value that is not is a typo in the
@@ -372,6 +395,275 @@ mod tests {
                 dark >= 4.5,
                 "{}: base_dark vs dark paper is only {dark:.2}:1",
                 accent.name
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // J3 — widening the audit from the accent family to the whole token table.
+    // -----------------------------------------------------------------------
+    //
+    // H2 asserted the three pairs `Accent` itself defines. Everything below is
+    // the rest of the table: the neutral text tokens (`ink`, `ink-2`, `muted`,
+    // `danger`) against the neutral backgrounds they are actually drawn on
+    // (`paper`, `card`, `fill`), plus one accent pairing that is real but is
+    // *not* one of `Accent`'s three — found the same way, and it does not
+    // clear the bar.
+    //
+    // Method: every `color: var(--sla-...)` in every file under `src/screens`,
+    // `src/ui.rs` and `src/menu.rs` (`grep -rn "color: var(--sla-" src/`), read
+    // one at a time to find the `background` the enclosing row, card, chip or
+    // sheet actually paints — the app has no CSS cascade of its own worth
+    // trusting for this, so "what sits behind it" means walking up the `div`s
+    // in the source, not assuming a token pairs with the one background it
+    // sounds like it should. Twelve neutral pairings came out of that walk,
+    // cited below one at a time. Two categories of hit were *not* turned into
+    // an assertion, and are named rather than just missing:
+    //
+    // - **Non-text.** `--sla-hairline` colours `ConfidenceDots`' empty dots
+    //   and `SheetHandle`'s grab bar (both plain fills, no glyph), and it
+    //   colours the glyph in `setlist_detail`'s `MOVE_DEAD` — the disabled
+    //   Move-up/-down chevron at either end of a set, deliberately drawn
+    //   "visibly unavailable" rather than hidden (see that file's own
+    //   comment). `--sla-accent-dim` only ever fills the same dots. None of
+    //   these draw a word or a number; WCAG's 4.5:1 is a *text* rule and does
+    //   not apply to a decorative dot or a bar, so there is nothing to assert.
+    // - **Large text.** Checked for and not found. `T_SCREEN_TITLE` (34px),
+    //   `T_DETAIL_TITLE` (32px) and `T_SETLIST_TITLE` (30px) would clear
+    //   WCAG's large-text carve-out (18pt/24px regular) if any of them were
+    //   ever coloured something other than the inherited `ink` — grepping
+    //   every call site of all three (`grep -rn "T_SCREEN_TITLE\|
+    //   T_DETAIL_TITLE\|T_SETLIST_TITLE" src/screens`) shows none is. Same
+    //   check for `T_ROW_TITLE` (18px, weight 500): 18px clears the carve-out
+    //   only at 24px regular or roughly 18.66px at genuine `bold` (700+), and
+    //   500 is not that, so it stays held to the full 4.5:1 below regardless —
+    //   moot in practice, since every place it is coloured at all uses `ink`
+    //   or `muted`, both of which clear 4.5:1 by a wide margin against every
+    //   background they are asked to sit on. If a future screen ever *does*
+    //   colour a 24px+ (or true-bold 18.66px+) run with `muted`, `danger` or a
+    //   bare accent, that pairing earns 3:1 here, not 4.5:1 — and should say
+    //   so in a comment next to the assertion the way this one does, not by
+    //   silently lowering the threshold for everything else.
+    //
+    // `paper`-on-`ink` is drawn too — `ui::Chip`'s `active` state and the
+    // "Add to setlist" / record-style buttons in `song_detail.rs` and
+    // `ui::SheetFooter`'s sibling pattern all paint `background: ink; color:
+    // paper` — but `contrast_ratio` does not care which argument is lighter
+    // (see its own doc comment and the test above that pins exactly that), so
+    // it is the identical number `ink`-on-`paper` already asserts below. Cited
+    // here rather than given its own assertion, so nobody reading this table
+    // wonders where the fourth Chip state went.
+    struct NeutralPair {
+        text: &'static str,
+        text_light: &'static str,
+        text_dark: &'static str,
+        background: &'static str,
+        background_light: &'static str,
+        background_dark: &'static str,
+        /// Where this pairing was found — one real call site, not every one.
+        drawn: &'static str,
+    }
+
+    const NEUTRAL_TEXT_PAIRS: &[NeutralPair] = &[
+        NeutralPair {
+            text: "ink",
+            text_light: LIGHT_INK,
+            text_dark: DARK_INK,
+            background: "paper",
+            background_light: LIGHT_PAPER,
+            background_dark: DARK_PAPER,
+            drawn: "the default body colour set on the app root (crate::theme::tokens); \
+                    every screen title and every unstyled line of text",
+        },
+        NeutralPair {
+            text: "ink",
+            text_light: LIGHT_INK,
+            text_dark: DARK_INK,
+            background: "card",
+            background_light: LIGHT_CARD,
+            background_dark: DARK_CARD,
+            drawn: "chart_editor.rs's FIELD — the chart text area itself, typed onto \
+                    `background: var(--sla-card)`",
+        },
+        NeutralPair {
+            text: "ink",
+            text_light: LIGHT_INK,
+            text_dark: DARK_INK,
+            background: "fill",
+            background_light: LIGHT_FILL,
+            background_dark: DARK_FILL,
+            drawn: "search.rs's search field input, typed onto the `var(--sla-fill)` \
+                    pill behind it (library.rs's search door and capture.rs's URL_FIELD \
+                    inside PANEL are the same pairing)",
+        },
+        NeutralPair {
+            text: "ink-2",
+            text_light: LIGHT_INK_2,
+            text_dark: DARK_INK_2,
+            background: "paper",
+            background_light: LIGHT_PAPER,
+            background_dark: DARK_PAPER,
+            drawn: "song_detail.rs's confidence label (\"Solid\"/\"Rusty\"/…) sitting \
+                    directly on the screen, no card or fill under it",
+        },
+        NeutralPair {
+            text: "ink-2",
+            text_light: LIGHT_INK_2,
+            text_dark: DARK_INK_2,
+            background: "card",
+            background_light: LIGHT_CARD,
+            background_dark: DARK_CARD,
+            drawn: "menu.rs's ITEM/SUBITEM — every ordinary row of every dropdown, \
+                    which is drawn on MENU_SURFACE's `var(--sla-card)`",
+        },
+        NeutralPair {
+            text: "ink-2",
+            text_light: LIGHT_INK_2,
+            text_dark: DARK_INK_2,
+            background: "fill",
+            background_light: LIGHT_FILL,
+            background_dark: DARK_FILL,
+            drawn: "ui::IconButton's glyph on its own `var(--sla-fill)` disc — the back \
+                    chevron and gear appear on nearly every screen",
+        },
+        NeutralPair {
+            text: "muted",
+            text_light: LIGHT_MUTED,
+            text_dark: DARK_MUTED,
+            background: "paper",
+            background_light: LIGHT_PAPER,
+            background_dark: DARK_PAPER,
+            drawn: "T_META/T_META_SMALL's own default — every meta line and caption \
+                    that is not sitting on a card or a fill",
+        },
+        NeutralPair {
+            text: "muted",
+            text_light: LIGHT_MUTED,
+            text_dark: DARK_MUTED,
+            background: "card",
+            background_light: LIGHT_CARD,
+            background_dark: DARK_CARD,
+            drawn: "menu.rs's LABEL — a dropdown's small-caps section heading, on \
+                    MENU_SURFACE's `var(--sla-card)`",
+        },
+        NeutralPair {
+            text: "muted",
+            text_light: LIGHT_MUTED,
+            text_dark: DARK_MUTED,
+            background: "fill",
+            background_light: LIGHT_FILL,
+            background_dark: DARK_FILL,
+            drawn: "library.rs's and search.rs's search-door placeholder text, typed \
+                    onto the `var(--sla-fill)` pill (ui::Chip's default state is the \
+                    same pairing)",
+        },
+        NeutralPair {
+            text: "danger",
+            text_light: LIGHT_DANGER,
+            text_dark: DARK_DANGER,
+            background: "paper",
+            background_light: LIGHT_PAPER,
+            background_dark: DARK_PAPER,
+            drawn: "song_form.rs's \"A song needs a title\" line, and the matching \
+                    inline errors in song_detail.rs, chart_editor.rs and capture.rs",
+        },
+        NeutralPair {
+            text: "danger",
+            text_light: LIGHT_DANGER,
+            text_dark: DARK_DANGER,
+            background: "card",
+            background_light: LIGHT_CARD,
+            background_dark: DARK_CARD,
+            drawn: "menu.rs's ITEM_DANGER — every menu's \"Delete\"/\"Remove\" row, on \
+                    MENU_SURFACE's `var(--sla-card)`",
+        },
+        NeutralPair {
+            text: "danger",
+            text_light: LIGHT_DANGER,
+            text_dark: DARK_DANGER,
+            background: "fill",
+            background_light: LIGHT_FILL,
+            background_dark: DARK_FILL,
+            drawn: "chart_editor.rs's and import_flow.rs's \"Discard\"/\"Choose backup \
+                    file…\" confirm strips, and lib.rs's library-unavailable banner, all \
+                    on `var(--sla-fill)`",
+        },
+    ];
+
+    /// The twelve pairs above, in both modes — 24 checks over real screen
+    /// pairings rather than the token table's shape in the abstract. The
+    /// message on failure names the pair, the mode and exactly how far short
+    /// it fell, because "assertion failed" would send the next person back to
+    /// this whole table to find out which of the twelve broke.
+    #[test]
+    fn every_neutral_text_token_clears_4_5_to_1_on_every_background_it_is_actually_drawn_on() {
+        for pair in NEUTRAL_TEXT_PAIRS {
+            let light = contrast_ratio(pair.text_light, pair.background_light);
+            assert!(
+                light >= 4.5,
+                "{} on {} (light) is {light:.2}:1, short of 4.5:1 by {:.2} — drawn at {}",
+                pair.text,
+                pair.background,
+                4.5 - light,
+                pair.drawn
+            );
+
+            let dark = contrast_ratio(pair.text_dark, pair.background_dark);
+            assert!(
+                dark >= 4.5,
+                "{} on {} (dark) is {dark:.2}:1, short of 4.5:1 by {:.2} — drawn at {}",
+                pair.text,
+                pair.background,
+                4.5 - dark,
+                pair.drawn
+            );
+        }
+    }
+
+    /// A thirteenth pairing that is real but is not one of `Accent`'s three:
+    /// accent-family text on a neutral `fill`, which is what
+    /// `setlist_detail.rs`'s pending-undo strip draws its "Undo" link as.
+    ///
+    /// **This is the pair that made the audit worth writing.** The strip used
+    /// to colour that link with the bare accent (`color: var(--sla-accent)`),
+    /// and Rust's authored base (`#B54724`) on the authored `fill`
+    /// (`#F1E9DC`) is **4.48:1** — short of the 4.5:1 the handoff commits to
+    /// in writing, by two hundredths. Nobody was ever going to catch that by
+    /// eye, and every other accent cleared it (Pine 4.97, Indigo 5.52, Plum
+    /// 5.44 in light; all four above 6:1 in dark), so it was invisible in
+    /// three quarters of the app's own configurations too.
+    ///
+    /// Neither hex was the thing to change. `base` is the accent's own
+    /// published value — the handoff's "proof the base holds" — and `fill` is
+    /// an authored neutral, so neither is one of the derived per-accent
+    /// values H2 left open for adjustment. What was wrong was the *token the
+    /// screen reached for*: `accent-on-tint` is defined by the handoff as
+    /// "readable accent-family text on the tint", which is precisely this
+    /// situation, and the screen was using the base because it was the
+    /// nearest thing to hand. So the fix is in `setlist_detail.rs` and this
+    /// assertion now holds the token actually drawn there.
+    ///
+    /// It is asserted for all four accents rather than just the one that
+    /// failed, because the point is that the four are the same control.
+    #[test]
+    fn accent_text_on_a_neutral_fill_clears_4_5_to_1_in_both_modes() {
+        for accent in ACCENTS {
+            let light = contrast_ratio(accent.on_tint, LIGHT_FILL);
+            assert!(
+                light >= 4.5,
+                "{}: on_tint vs light fill is only {light:.2}:1 (short by {:.2}) — drawn by \
+                 setlist_detail.rs's \"Undo\" link on its pending-undo strip",
+                accent.name,
+                4.5 - light
+            );
+
+            let dark = contrast_ratio(accent.on_tint_dark, DARK_FILL);
+            assert!(
+                dark >= 4.5,
+                "{}: on_tint_dark vs dark fill is only {dark:.2}:1 (short by {:.2}) — drawn by \
+                 setlist_detail.rs's \"Undo\" link on its pending-undo strip",
+                accent.name,
+                4.5 - dark
             );
         }
     }

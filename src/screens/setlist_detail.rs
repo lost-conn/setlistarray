@@ -309,9 +309,26 @@ pub fn SetlistDetail(id: Option<SetlistId>) -> NodeHandle {
                                 overflow: hidden;",
                         {move || undo_label(setlists, songs, id)}
                     }
+                    // `accent-on-tint`, not `accent` — card J3 found this one
+                    // by widening the contrast audit to the whole token
+                    // table. Rust's base on `fill` is 4.48:1, which misses
+                    // the 4.5:1 the handoff commits to by two hundredths:
+                    // invisible in a mockup, and still the one pairing in the
+                    // app that broke a promise the design makes in writing.
+                    //
+                    // Neither hex was the thing to change. `#B54724` is the
+                    // published accent and `fill` is an authored neutral, and
+                    // the token set already has a colour for exactly this
+                    // situation — `accent-on-tint` is defined as "readable
+                    // accent-family text on the tint", which is what accent
+                    // text on any tinted ground wants. It clears comfortably
+                    // in both modes for all four accents. The other three
+                    // accents passed on `accent` alone; using the right token
+                    // rather than fixing only Rust keeps the four of them the
+                    // same control.
                     span {
                         onclick: move || { setlists.undo_removal(); },
-                        style: "color: var(--sla-accent); font-weight: 600; font-size: 14px; \
+                        style: "color: var(--sla-accent-on-tint); font-weight: 600; font-size: 14px; \
                                 padding: 6px 4px;",
                         "Undo"
                     }
