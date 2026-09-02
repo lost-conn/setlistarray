@@ -16,6 +16,10 @@ mod chart_surface;
 // The filters sheet (card G3): the sheet behind the library's `Filter` chip.
 // No wireframe drew it — see its own header.
 mod filter_sheet;
+// First run (`1r`, card H3): what `Route::Library` renders instead of
+// `Library` while the book is empty. See its own header for the whole
+// argument, and `crate::derive::first_run_active` for the decision itself.
+mod first_run;
 mod library;
 mod performance;
 // The running order (F3): the sheet behind performance mode's `≡ set` chip.
@@ -39,6 +43,7 @@ pub use attachment_viewer::AttachmentViewer;
 pub use capture::CaptureScreen;
 pub use chart_editor::ChartEditor;
 pub use filter_sheet::FilterSheet;
+pub use first_run::FirstRun;
 pub use library::Library;
 pub use performance::Performance;
 pub use running_order::RunningOrderSheet;

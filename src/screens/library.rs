@@ -170,18 +170,19 @@ pub fn Library() -> NodeHandle {
                     }
                 }
 
-                // One `if`/`else if` chain rather than two independent `if`s
-                // beside it — `crate::derive`'s `SearchRow` header (`1p`, card
-                // G1) is the reason: several sibling conditionals toggling in
-                // the same scrolling parent is the shape that dropped a whole
-                // panel on the phone once already, and a chain is the one
-                // control-flow node the fix there settled on treating this
-                // kind of "which empty state, if any" question as.
-                if songs.songs.get().is_empty() {
-                    div { style: {format!("{T_META_SMALL} text-align: center; padding: 48px 0;")},
-                        "Nothing here yet. Add the first song you know how to play."
-                    }
-                } else if view.filters.get().is_active() && view.grouped(songs.songs.get()).is_empty() {
+                // This screen used to answer "the book is empty" here too —
+                // "Nothing here yet. Add the first song you know how to
+                // play." — and that branch is gone (card H3). Two screens
+                // answering one question was one too many, and the better
+                // answer does not belong inside a scrolling list of zero
+                // rows: `crate::app`'s `Route::Library` arm now renders
+                // `screens::FirstRun` in place of this whole screen while
+                // `derive::first_run_active` says the book is empty, so this
+                // component is never even mounted for that case. What is
+                // left below is a genuinely different question — the book
+                // has songs, a filter has narrowed the view to none of them
+                // (card G3) — and it keeps its own answer.
+                if view.filters.get().is_active() && view.grouped(songs.songs.get()).is_empty() {
                     div { style: {format!("{T_META_SMALL} text-align: center; padding: 48px 0;")},
                         div { "Nothing in your book matches these filters." }
                         div {

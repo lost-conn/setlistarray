@@ -54,9 +54,9 @@ use rinch_tabler_icons::TablerIcon;
 use db::DataDir;
 use platform::SafeArea;
 use screens::{
-    AddToSetlistSheet, AttachmentViewer, CaptureScreen, ChartEditor, FilterSheet, Library,
-    Performance, RunningOrderSheet, Search, SetlistDetail, SetlistPicker, Settings, Setlists,
-    SongDetail, SongForm, SortGroupSheet,
+    AddToSetlistSheet, AttachmentViewer, CaptureScreen, ChartEditor, FilterSheet, FirstRun,
+    Library, Performance, RunningOrderSheet, Search, SetlistDetail, SetlistPicker, Settings,
+    Setlists, SongDetail, SongForm, SortGroupSheet,
 };
 use store::{
     AttachmentsStore, LibraryViewStore, NavStore, PlaybackStore, Route, SettingsStore,
@@ -318,7 +318,20 @@ pub fn app() -> NodeHandle {
             }
 
             match nav.route.get() {
-                Route::Library => Library {},
+                // An empty book has one job, and it is not this screen's
+                // (card H3). `derive::first_run_active` is the pure half of
+                // that decision — a testable `usize -> bool`, in the same
+                // spirit as `derive::route_orphaned` just below it in that
+                // file — and this `if`, not a signal anywhere, is the whole
+                // of the wiring: it re-reads `SongsStore::songs` like any
+                // other reactive condition, so the very tap that creates the
+                // first song swaps `FirstRun` back out for `Library` with
+                // nothing here having to ask it to.
+                Route::Library => if derive::first_run_active(songs.songs.get().len()) {
+                    FirstRun {}
+                } else {
+                    Library {}
+                },
                 Route::Setlists => Setlists {},
                 Route::SongDetail(song_id) => SongDetail { id: {song_id} },
                 Route::SetlistDetail(setlist_id) => SetlistDetail { id: {setlist_id} },
@@ -388,17 +401,33 @@ pub fn app() -> NodeHandle {
 /// worth tearing down, unmounting and remounting it on every trip into a chart
 /// would rebuild both tab items for nothing, and a style closure is the one
 /// mechanism in this file that is already known to work on both platforms.
+///
+/// It dims for the same reason it does not hide, on the other route that
+/// changes its look (card H3): `1r` draws the nav at `opacity: .4` while the
+/// book is empty, and the wireframe's own words are "visible but dimmed" —
+/// emphasis, not availability. `onclick` is untouched below; a dimmed-and-dead
+/// nav would strand someone on an empty Songs tab with no way to reach
+/// Settings at all, since the gear lives only in the Library and Setlists tab
+/// headers and `1r` draws neither. Tapping `Setlists` from here still opens
+/// on a screen with its own gear, dimmed nav and all.
 #[component]
 fn bottom_nav(gap: f32) -> NodeHandle {
     let nav = use_store::<NavStore>();
+    let songs = use_store::<SongsStore>();
 
     rsx! {
         div {
-            style: {move || format!(
-                "display: {}; border-top: 1px solid var(--sla-hairline); \
-                 padding: 10px 0 {gap}px; flex-shrink: 0;",
-                if nav.route.get().full_screen() { "none" } else { "flex" },
-            )},
+            style: {move || {
+                let route = nav.route.get();
+                let dimmed = matches!(route, Route::Library)
+                    && derive::first_run_active(songs.songs.get().len());
+                format!(
+                    "display: {}; opacity: {}; border-top: 1px solid var(--sla-hairline); \
+                     padding: 10px 0 {gap}px; flex-shrink: 0;",
+                    if route.full_screen() { "none" } else { "flex" },
+                    if dimmed { "0.4" } else { "1" },
+                )
+            }},
             {nav_item(__scope, Tab::Songs, "Songs", TablerIcon::Music)}
             {nav_item(__scope, Tab::Setlists, "Setlists", TablerIcon::List)}
         }

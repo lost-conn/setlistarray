@@ -1564,6 +1564,32 @@ pub fn route_orphaned(
     }
 }
 
+/// Whether `Route::Library` should render the first-run screen (`1r`, card
+/// H3) instead of the library it normally shows.
+///
+/// **There is no persisted "has run" flag, and this is why.** An empty book
+/// has exactly one job regardless of how it got that way — a fresh install
+/// that has never held a song, or a library somebody just emptied by
+/// deleting the last one — and `1r`'s single question is the right answer to
+/// both. A flag would only ever answer the first: it would have to be set
+/// once and never again, which means the second case (an empty book that
+/// *has* run before) reads the flag, finds it already tripped, and shows the
+/// library's old "nothing here" text anyway — the exact two-answers-to-one-
+/// question problem this card was written to remove. Recomputing the
+/// question from the one fact that actually decides it — is the book empty
+/// right now — makes both cases the same case, and makes the screen
+/// reachable again by nothing more than deleting every song, with nothing to
+/// reset.
+///
+/// A free function taking the count rather than a method on `SongsStore`, in
+/// the same spirit as [`route_orphaned`] just above it: the decision belongs
+/// where the route decisions live — `crate::app`'s `Route::Library` arm — and
+/// a pure `usize -> bool` is what a render closure and a unit test can both
+/// call without either one standing up a store.
+pub fn first_run_active(song_count: usize) -> bool {
+    song_count == 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3286,6 +3312,21 @@ mod tests {
         ] {
             assert!(!route_orphaned(route, always_gone_song, always_gone_setlist));
         }
+    }
+
+    // ── H3: the empty book shows one screen, not a flag ────────────────
+
+    #[test]
+    fn an_empty_book_shows_first_run_whether_fresh_or_freshly_emptied() {
+        // Zero is zero, whatever emptied it — a fresh install and a library
+        // that just lost its last song ask the same question.
+        assert!(first_run_active(0));
+    }
+
+    #[test]
+    fn a_book_with_even_one_song_does_not_show_first_run() {
+        assert!(!first_run_active(1));
+        assert!(!first_run_active(300));
     }
 
     // ── helpers ─────────────────────────────────────────────────────────
