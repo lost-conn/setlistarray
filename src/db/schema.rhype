@@ -98,6 +98,14 @@ type Preferences {
     performance_theme: String
     keep_awake: Bool
     recheck_saved_pages: Bool
+    // Card H5's `Default tuning` — the tuning a new song's Tuning field is
+    // prefilled with, read once at creation and never applied to a song that
+    // already exists. One of "Standard" | "DropD" | "HalfStepDown" |
+    // "DropCSharp" | "Dadgad" | "OpenG" | "OpenD" — `DefaultTuning::name()`'s
+    // own vocabulary, not the label shown on screen (see that type for why
+    // the two are kept separate even though today they agree everywhere but
+    // punctuation).
+    default_tuning: String
     // "Reader" | "FullPage" — card E3's `Save as:`, remembered because a
     // player's chord site is the same chord site every time.
     capture_mode: String

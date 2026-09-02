@@ -37,6 +37,10 @@ mod song_detail;
 mod song_form;
 mod sort_sheet;
 mod stub;
+// The default-tuning sheet (card H5): the sheet behind Settings' `Default
+// tuning` row. No wireframe drew it — see its own header for why a sheet and
+// not a cycling `choice_row`.
+mod tuning_sheet;
 
 pub use add_to_setlist::AddToSetlistSheet;
 pub use attachment_viewer::AttachmentViewer;
@@ -59,3 +63,4 @@ pub use sort_sheet::SortGroupSheet;
 // header says why it is still here and when to delete it.
 #[allow(unused_imports)]
 pub use stub::Stub;
+pub use tuning_sheet::TuningSheet;

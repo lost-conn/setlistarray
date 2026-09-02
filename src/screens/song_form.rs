@@ -29,7 +29,7 @@ use crate::derive::{
     ArtistSuggestion,
 };
 use crate::model::{Confidence, Song, SongId, fmt_duration};
-use crate::store::{NavStore, Route, SongsStore};
+use crate::store::{DefaultTuning, NavStore, Route, SettingsStore, SongsStore};
 use crate::theme::{SCREEN_PAD, T_META, T_META_SMALL, T_ROW_TITLE};
 use crate::ui::{Chip, IconButton, icon};
 
@@ -149,6 +149,27 @@ impl Draft {
     }
 }
 
+/// The draft a **brand-new** song starts from: blank, except the Tuning field,
+/// which arrives carrying today's default (card H5) — visible the moment
+/// "More details" is opened, and editable there like any other field before
+/// Save ever runs.
+///
+/// This is a free function taking the preference as a plain value, rather
+/// than a second constructor on `Draft` that reaches into a store itself, for
+/// one reason worth being explicit about: it is the *only* thing in this file
+/// that reads `SettingsStore::default_tuning`, and keeping the read at the
+/// call site (below, in the `None` arm and nowhere else) is what makes it
+/// structurally impossible for the edit path to pick it up by accident. There
+/// is no `Draft::of` that could grow this call later without someone
+/// deliberately adding it there — see the module header's "Nothing here
+/// writes except Save" for why that kind of impossibility, rather than a
+/// runtime check, is how this screen keeps its promises.
+fn blank_draft(default_tuning: DefaultTuning) -> Draft {
+    let draft = Draft::blank();
+    draft.tuning.set(default_tuning.label().to_string());
+    draft
+}
+
 /// A number back into the text the field edits, or nothing at all. An unset
 /// field is empty, never `0` — the handoff's rule that an unfilled field is
 /// simply absent holds inside the form as well as outside it.
@@ -177,6 +198,7 @@ fn confidence_choices() -> [(&'static str, Option<Confidence>); 4] {
 pub fn SongForm(editing: Option<SongId>) -> NodeHandle {
     let nav = use_store::<NavStore>();
     let songs = use_store::<SongsStore>();
+    let settings = use_store::<SettingsStore>();
 
     // Components run once, so this reads the song being edited exactly once —
     // at mount. From here on the signals are the truth on screen and the store
@@ -189,9 +211,14 @@ pub fn SongForm(editing: Option<SongId>) -> NodeHandle {
     }
 
     let editing_id = existing.as_ref().map(|s| s.id);
+    // `Route::EditSong` always takes the `Some` arm here, which reads the
+    // song's own stored tuning (or leaves it blank, if that is what the song
+    // has) and never `blank_draft` — so the default-tuning preference has no
+    // path into an edit, deliberately, not by the two happening to agree
+    // today. See `blank_draft`'s own doc comment.
     let draft = match &existing {
         Some(song) => Draft::of(song),
-        None => Draft::blank(),
+        None => blank_draft(settings.default_tuning.get()),
     };
 
     let more = Signal::new(false);
@@ -492,4 +519,76 @@ fn suggestions(
         return Vec::new();
     }
     artist_suggestions(&songs.songs.get(), &draft.artist.get())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::SongsStore;
+
+    /// Card H5's prefill, at the one function that performs it. Everything
+    /// else on a brand-new draft stays exactly as blank as `Draft::blank`
+    /// leaves it — the prefill touches Tuning and nothing beside it.
+    #[test]
+    fn a_new_songs_draft_is_prefilled_with_the_default_tuning() {
+        let draft = blank_draft(DefaultTuning::HalfStepDown);
+        assert_eq!(draft.tuning.get(), "Half-step down");
+        assert!(draft.title.get().is_empty());
+        assert!(draft.artist.get().is_empty());
+    }
+
+    /// The edit path (`Draft::of`) never calls `blank_draft`, so a song saved
+    /// with no tuning of its own opens for editing with Tuning still blank —
+    /// whatever `SettingsStore::default_tuning` happens to be set to. This is
+    /// the "prefill, not implied meaning" half of the card: a preference is
+    /// free to change what the *next* song starts on without being allowed an
+    /// opinion about a song that already chose to leave the field empty.
+    #[test]
+    fn editing_a_song_with_no_tuning_of_its_own_never_gets_the_default_prefill() {
+        let song = Song::new(1, "Reuben's Train", "Trad.");
+        assert_eq!(song.tuning, None);
+        let draft = Draft::of(&song);
+        assert_eq!(draft.tuning.get(), "");
+    }
+
+    /// The other half of "test both paths": a song that *does* have a tuning
+    /// keeps it on edit, untouched by whatever the default is today.
+    #[test]
+    fn editing_a_song_with_its_own_tuning_keeps_it_regardless_of_the_default() {
+        let mut song = Song::new(1, "Copperhead Road", "Steve Earle");
+        song.tuning = Some("Drop D".to_string());
+        let draft = Draft::of(&song);
+        assert_eq!(draft.tuning.get(), "Drop D");
+    }
+
+    /// The property the card's own reasoning demands: changing the preference
+    /// after a song exists must not rewrite what that song means. This walks
+    /// the real path — `blank_draft`, `Draft::apply`, `SongsStore::create` —
+    /// the same three calls `save`'s `None` arm makes, for two songs created
+    /// on either side of a preference change, and reads both back from the
+    /// store afterwards.
+    #[test]
+    fn a_song_created_before_the_default_tuning_changed_still_reads_back_with_the_tuning_it_was_created_with() {
+        let songs = SongsStore::new(Vec::new());
+
+        let first_draft = blank_draft(DefaultTuning::Standard);
+        first_draft.title.set("Wagon Wheel".to_string());
+        let mut first_song = Song::default();
+        first_draft.apply(&mut first_song);
+        let first_id = songs.create(first_song).expect("first song is created");
+
+        // The preference changes after the first song already exists.
+        let second_draft = blank_draft(DefaultTuning::DropD);
+        second_draft.title.set("Angel from Montgomery".to_string());
+        let mut second_song = Song::default();
+        second_draft.apply(&mut second_song);
+        let second_id = songs.create(second_song).expect("second song is created");
+
+        assert_eq!(
+            songs.get(first_id).unwrap().tuning.as_deref(),
+            Some("Standard"),
+            "changing the preference must not rewrite a song created under the old one"
+        );
+        assert_eq!(songs.get(second_id).unwrap().tuning.as_deref(), Some("Drop D"));
+    }
 }

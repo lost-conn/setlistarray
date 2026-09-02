@@ -26,7 +26,9 @@ use rhypedb_engine::object::{FieldMap, Value};
 
 use crate::capture::CaptureMode;
 use crate::model::Confidence;
-use crate::store::{AccentChoice, Density, Filters, GroupBy, PerformanceTheme, SortDir, SortField};
+use crate::store::{
+    AccentChoice, Density, DefaultTuning, Filters, GroupBy, PerformanceTheme, SortDir, SortField,
+};
 
 /// Everything `LibraryViewStore` and `SettingsStore` remember between launches.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -45,6 +47,11 @@ pub struct Preferences {
     pub performance_theme: PerformanceTheme,
     pub keep_awake: bool,
     pub recheck_saved_pages: bool,
+    /// Card H5 — the tuning `song_form` prefills a **new** song with. It is
+    /// read exactly once, at the moment a song is created; changing it never
+    /// touches a song that already exists. See [`crate::store::DefaultTuning`]
+    /// for why the value is one of a fixed seven rather than free text.
+    pub default_tuning: DefaultTuning,
     pub capture_mode: CaptureMode,
 }
 
@@ -66,6 +73,7 @@ impl Default for Preferences {
             performance_theme: PerformanceTheme::FollowApp,
             keep_awake: true,
             recheck_saved_pages: false,
+            default_tuning: DefaultTuning::default(),
             // Reader text, and `CaptureMode`'s own docs carry the measurement
             // that says so. `CaptureMode::default()` rather than the variant
             // spelled out, so the app's default and the engine's cannot drift.
@@ -185,6 +193,10 @@ pub fn to_fields(preferences: &Preferences) -> FieldMap {
         Value::Bool(preferences.recheck_saved_pages),
     );
     put(
+        "default_tuning",
+        Value::String(preferences.default_tuning.name().into()),
+    );
+    put(
         "capture_mode",
         Value::String(preferences.capture_mode.name().into()),
     );
@@ -240,6 +252,16 @@ pub fn from_fields(fields: &FieldMap) -> Preferences {
             "recheck_saved_pages",
             fallback.recheck_saved_pages,
         ),
+        // Absent — the field a database written before card H5 does not
+        // have — falls back to `DefaultTuning::default()` the same way every
+        // other field on this row does for a pre-existing library. That
+        // fallback is what `an_empty_row_reads_back_as_the_defaults` below
+        // pins down for the whole struct, this field included; G3's own
+        // commit relied on the identical property when `filter_*` was added
+        // to this row, and it still holds.
+        default_tuning: string(fields, "default_tuning")
+            .and_then(|n| DefaultTuning::from_name(&n))
+            .unwrap_or(fallback.default_tuning),
         capture_mode: string(fields, "capture_mode")
             .and_then(|n| CaptureMode::from_name(&n))
             .unwrap_or(fallback.capture_mode),
@@ -270,6 +292,9 @@ mod tests {
             performance_theme: PerformanceTheme::AlwaysDark,
             keep_awake: false,
             recheck_saved_pages: true,
+            // The non-default one, for the same reason `capture_mode` below
+            // picks its non-default value.
+            default_tuning: DefaultTuning::Dadgad,
             // The non-default one, so the round trip proves it is written and
             // read rather than falling back to the same answer twice.
             capture_mode: CaptureMode::FullPage,
@@ -297,11 +322,25 @@ mod tests {
         let mut fields = to_fields(&filled());
         fields.insert("group_by".into(), Value::String("Kazoo".into()));
         fields.insert("accent".into(), Value::String("puce".into()));
+        fields.insert("default_tuning".into(), Value::String("Nashville".into()));
         let back = from_fields(&fields);
         assert_eq!(back.group_by, GroupBy::Confidence);
         assert_eq!(back.accent, AccentChoice::FromSystem);
+        assert_eq!(back.default_tuning, DefaultTuning::Standard);
         // Everything else is untouched.
         assert_eq!(back.density, Density::Compact);
+    }
+
+    /// The property card H5 leans on: a database written before this card —
+    /// which is exactly what a `FieldMap` missing `default_tuning` models —
+    /// still opens, reading the preference back as the shipped default
+    /// (`DefaultTuning::Standard`) rather than failing to open at all. Also
+    /// covered by `an_empty_row_reads_back_as_the_defaults` above, which pins
+    /// the whole struct; this test names the one field the card asked about.
+    #[test]
+    fn a_row_from_before_default_tuning_existed_opens_and_reads_standard() {
+        let fields = FieldMap::new();
+        assert_eq!(from_fields(&fields).default_tuning, DefaultTuning::Standard);
     }
 
     #[test]

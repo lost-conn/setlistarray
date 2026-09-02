@@ -141,6 +141,10 @@ pub struct NavStore {
     pub sort_sheet_open: Signal<bool>,
     /// The filters bottom sheet (card G3) — the library's `Filter` chip.
     pub filter_sheet_open: Signal<bool>,
+    /// The default-tuning picker (card H5) — Settings' `Default tuning` row.
+    /// A sheet rather than inline chips: `crate::screens::settings`'s module
+    /// header says why seven tunings do not fit the way two densities do.
+    pub tuning_sheet_open: Signal<bool>,
     /// The setlist song picker (`1i`), when open over a setlist. The setlist
     /// detail screen stays mounted and visible behind it — that is the whole
     /// reason `1i` was chosen over the two-step wizard.
@@ -173,6 +177,7 @@ impl NavStore {
             add_to_setlist_for: Signal::new(None),
             sort_sheet_open: Signal::new(false),
             filter_sheet_open: Signal::new(false),
+            tuning_sheet_open: Signal::new(false),
             picking_songs_for: Signal::new(None),
             running_order_for: Signal::new(None),
             renaming_setlist: Signal::new(None),

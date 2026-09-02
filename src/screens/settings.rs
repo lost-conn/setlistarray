@@ -28,6 +28,7 @@
 //! | Attachments on device | `AttachmentsStore::total_bytes` |
 //! | Saved webpages | a count over `AttachmentsStore::items` |
 //! | Re-check saved pages | `SettingsStore::recheck_saved_pages` |
+//! | Default tuning | `SettingsStore::default_tuning` |
 //! | Library sort | `LibraryViewStore::sort_field` / `sort_dir` |
 //! | Library density | `LibraryViewStore::density` |
 //! | Keep screen awake while playing | `SettingsStore::keep_awake` |
@@ -45,13 +46,6 @@
 //!   library but a fact about this app's progress.
 //! * With all three gone the **Backup** heading has nothing under it, so the
 //!   heading is gone too. An empty section is a promise of its own.
-//! * **Default tuning** — **no card owns this, and one should.** There is no
-//!   `default_tuning` anywhere in the app: `Preferences` has no field for it,
-//!   `schema.rhype` has no line for it, and `song_form` prefills nothing. It is
-//!   also not merely plumbing — `Song::tuning` is free text, so the row needs a
-//!   decision about whether it offers a list (of what? the tunings already in
-//!   the book? a fixed six?) or a text field, and that decision belongs to a
-//!   card rather than to the last twenty lines of this one.
 //! * The **`›` chevrons** on the two storage rows. `1q` draws both as gateways
 //!   to a breakdown screen; no such screen exists and no card describes one, so
 //!   the two rows are read-only here. The number is the whole of what they can
@@ -78,6 +72,31 @@
 //! the everywhere-else and the rail are still H4's; the switch that turns it on
 //! is here, because the handoff says in as many words that density is "set in
 //! Settings → Library density".
+//!
+//! ## Default tuning opens a sheet, and only prefills — it never rewrites
+//!
+//! Card H5. `1q` draws `Default tuning · Standard ▾` and nothing behind it
+//! existed until this card: no `default_tuning` field, no line in
+//! `schema.rhype`, no prefill in `song_form`. Two decisions had to be made
+//! before this row could exist at all, and both are written down at the type
+//! that carries them rather than here, so a reader who only has this file
+//! open still gets the reasoning:
+//!
+//! * **The value is one of seven fixed tunings, not free text and not a list
+//!   built from the book's own songs.** `Song::tuning` stays free text —
+//!   [`crate::store::DefaultTuning`]'s own doc comment is where that split is
+//!   argued.
+//! * **Prefill, never retroactive meaning.** The preference fills a *new*
+//!   song's Tuning field, once, at the moment `song_form::save` creates it;
+//!   changing the preference afterwards cannot and does not reach back into a
+//!   song that already exists. `song_form::blank_draft` is the one place this
+//!   is read, and its own doc comment and the test beside it are where that
+//!   promise is kept honest.
+//!
+//! What is decided here, in this file, is the control: a `link_row` — the
+//! same shape "Library sort" already uses — rather than a `choice_row` of
+//! seven chips. `crate::screens::tuning_sheet`'s own header has the reasoning
+//! for that half.
 //!
 //! ## The accent row is four named chips, and still not a door
 //!
@@ -195,6 +214,15 @@ pub fn Settings() -> NodeHandle {
                     move || settings.set_recheck_saved_pages(!settings.recheck_saved_pages.get()))}
 
                 {section(__scope, "Defaults")}
+
+                // Opens the tuning sheet (card H5) rather than a `choice_row`
+                // of seven chips — see that sheet's own header for why seven
+                // options is the point where this app switches shapes.
+                // `nav.tuning_sheet_open` is toggled here and nowhere else;
+                // the sheet itself closes on the same tap that picks a value.
+                {link_row(__scope, "Default tuning",
+                    move || settings.default_tuning.get().label().to_string(),
+                    move || nav.tuning_sheet_open.set(true))}
 
                 // Opens the sort sheet (`2c`) rather than growing a second way
                 // to set the same two signals. The sheet is mounted in
