@@ -870,10 +870,12 @@ The `../rinch-fixes` integration branch carries the still-open fixes above
 the long press works in an APK built here and would not in one built against
 `main`. Move the pin once they land — card A1.
 
-**Fixed here, not yet filed.** Two commits sit on `local/both-fixes` ahead of
-every PR above, both found on 2026-09-02 and neither yet offered upstream:
+**Filed 2026-09-03**, both found the day before while building the backup and
+the Settings screen, and both cut from `main` rather than from the
+integration branch because neither needs anything else on it:
 
-- `write_content_uri`, the other half of the pair `read_content_uri` had been
+- [joeleaver/rinch#514](https://github.com/joeleaver/rinch/pull/514) —
+  `write_content_uri`, the other half of the pair `read_content_uri` had been
   half of since Android bring-up. `save_file` fires `ACTION_CREATE_DOCUMENT`
   and hands back the `content://` URI of a document it just created, and
   nothing in `rinch-android` could put bytes into one — the only
@@ -881,7 +883,8 @@ every PR above, both found on 2026-09-02 and neither yet offered upstream:
   hard-coded to a MediaStore JPEG. Card K4, so that card I1's backup could
   reach a file at all. Driven through the real SAF dialog on the moto g before
   it was believed.
-- Removing a `display: contents` node freed its own Taffy slot, which it never
+- [joeleaver/rinch#515](https://github.com/joeleaver/rinch/pull/515) —
+  removing a `display: contents` node freed its own Taffy slot, which it never
   had, instead of its children's, which it did. `sync_display_contents`
   polyfills the property by hiding the wrapper's Taffy node and splicing its
   *children's* ids into the grandparent's Taffy child list; `remove_node` then
