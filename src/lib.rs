@@ -793,20 +793,22 @@ mod tests {
 
     /// The floor under "one network call exists in the entire app".
     ///
-    /// `docs/PLAN.md` makes that claim in its cross-cutting section and card
-    /// X2 is on the backlog to assert it properly — walk the code, or watch a
-    /// running app, and prove nothing else dials out. This is not X2. It is
-    /// the cheap half that can be written today: rinch-http is the only HTTP
-    /// client in the dependency tree this crate names, and `src/capture/
-    /// fetch.rs` is the only file allowed to name it.
+    /// `docs/PLAN.md` makes that claim in its cross-cutting section. This is
+    /// the half of it that a single crate's source tree can prove: rinch-http
+    /// is the only HTTP client in the dependency tree this crate names, and
+    /// `src/capture/fetch.rs` is the only file allowed to name it.
     ///
     /// What that catches is somebody adding a second fetch site — an update
     /// check, a font download, a crash reporter — because they would have to
     /// name the client to do it, and this fails when they do. What it does not
     /// catch is a transitive dependency opening its own socket, or this crate
-    /// growing a *different* HTTP client. Those are X2's job. Treat a failure
-    /// here as a question about the permission in `AndroidManifest.xml`: it is
-    /// declared for one call site, and this is the test that counts them.
+    /// growing a *different* HTTP client without naming rinch-http to do it.
+    /// That is the other half of card X2, and
+    /// `no_network_capable_crate_enters_the_dependency_graph_outside_the_sanctioned_path`
+    /// below is what closes it — it reads the whole resolved graph instead of
+    /// this crate's own source. Treat a failure here as a question about the
+    /// permission in `AndroidManifest.xml`: it is declared for one call site,
+    /// and this is the test that counts them.
     #[test]
     fn the_http_client_is_named_in_exactly_one_file() {
         // Spelled in two halves so that this file, which is one of the files
@@ -832,6 +834,341 @@ mod tests {
             vec!["src/capture/fetch.rs".to_string()],
             "the HTTP client is named outside the one file that is allowed to open a socket"
         );
+    }
+
+    /// Crate names, exactly as `Cargo.lock` spells them, that this test
+    /// treats as evidence a *second* way of talking to a network has entered
+    /// the tree: other HTTP clients, async runtimes whose reason to exist is
+    /// scheduling network I/O, raw-socket and websocket crates, and
+    /// alternative TLS backends to the one `ureq` already uses.
+    ///
+    /// This cannot be, and does not try to be, exhaustive — see the doc
+    /// comment on `no_network_capable_crate_enters_the_dependency_graph_
+    /// outside_the_sanctioned_path` for exactly what that means. It is a list
+    /// of names someone reaching for a network call from Rust would plausibly
+    /// `cargo add`, or would arrive transitively behind one of those. A crate
+    /// that opens a socket under a name not on this list — a bespoke
+    /// mio-alike, an obscure vendor SDK, anything hand-rolled over
+    /// `std::net` — passes this test and is exactly the gap the comment
+    /// below is honest about.
+    const DENIED_NETWORK_CRATES: &[&str] = &[
+        // Other HTTP clients. `reqwest` is the one that would actually get
+        // reached for; the rest are its less common siblings.
+        "reqwest",
+        "hyper",
+        "hyper-util",
+        "hyper-rustls",
+        "hyper-tls",
+        "curl",
+        "curl-sys",
+        "isahc",
+        "attohttpc",
+        "surf",
+        "minreq",
+        "ehttp",
+        "http-req",
+        // Async runtimes whose selling point, unlike this app's need for one,
+        // is concurrent network I/O.
+        "tokio",
+        "async-std",
+        "smol",
+        // Raw sockets and the lowest-level async I/O reactors, one layer
+        // under an HTTP client.
+        "mio",
+        "socket2",
+        "net2",
+        // WebSocket.
+        "tungstenite",
+        "async-tungstenite",
+        "tokio-tungstenite",
+        "websocket",
+        // HTTP/2 and HTTP/3 as their own transports rather than as part of
+        // an HTTP client above.
+        "h2",
+        "h3",
+        "quinn",
+        "quinn-proto",
+        // Alternative TLS backends. `ureq` here runs on `rustls`; a second
+        // stack (a system TLS binding, or OpenSSL) arriving is a strong
+        // signal that something else is about to make its own connection.
+        "native-tls",
+        "openssl",
+        "openssl-sys",
+        "boring",
+        "boring-sys",
+        "schannel",
+        "security-framework",
+    ];
+
+    /// The names `Cargo.lock` gives every crate that `cargo tree -p ureq
+    /// --edges normal --prefix none | sort -u` lists — `ureq`'s own
+    /// transitive closure, the one network path this app allows. Most of
+    /// these (`itoa`, `smallvec`, `syn`, the `icu_*` family used by `idna`'s
+    /// Unicode normalisation, and so on) would never collide with
+    /// `DENIED_NETWORK_CRATES` above; they are listed anyway so this constant
+    /// is a complete, checkable answer to "what does the one network call in
+    /// this app actually run on", not a hand-picked subset. Re-run that
+    /// `cargo tree` command and diff it against this list before adding
+    /// anything here — the point of naming these individually, rather than
+    /// exempting `ureq` and trusting whatever comes with it, is that growing
+    /// this list is the deliberate act the card is about.
+    const ALLOWED_NETWORK_CRATES: &[&str] = &[
+        "adler2",
+        "base64",
+        "bytes",
+        "cfg-if",
+        "cookie",
+        "cookie_store",
+        "crc32fast",
+        "deranged",
+        "displaydoc",
+        "document-features",
+        "equivalent",
+        "flate2",
+        "form_urlencoded",
+        "getrandom",
+        "hashbrown",
+        "http",
+        "httparse",
+        "icu_collections",
+        "icu_locale_core",
+        "icu_normalizer",
+        "icu_normalizer_data",
+        "icu_properties",
+        "icu_properties_data",
+        "icu_provider",
+        "idna",
+        "idna_adapter",
+        "indexmap",
+        "itoa",
+        "libc",
+        "litemap",
+        "litrs",
+        "log",
+        "miniz_oxide",
+        "num-conv",
+        "once_cell",
+        "percent-encoding",
+        "potential_utf",
+        "powerfmt",
+        "proc-macro2",
+        "quote",
+        "ring",
+        "rustls",
+        "rustls-pki-types",
+        "rustls-webpki",
+        "serde",
+        "serde_core",
+        "serde_derive",
+        "simd-adler32",
+        "smallvec",
+        "stable_deref_trait",
+        "subtle",
+        "syn",
+        "synstructure",
+        "time",
+        "time-core",
+        "time-macros",
+        "tinystr",
+        "unicode-ident",
+        "untrusted",
+        "ureq",
+        "ureq-proto",
+        "url",
+        "utf8_iter",
+        "utf8-zero",
+        "webpki-roots",
+        "writeable",
+        "yoke",
+        "yoke-derive",
+        "zerofrom",
+        "zerofrom-derive",
+        "zeroize",
+        "zerotrie",
+        "zerovec",
+        "zerovec-derive",
+        "zlib-rs",
+    ];
+
+    /// The desktop half of card X2, and the stronger of the two floors under
+    /// "one network call exists in the entire app" — `the_http_client_is_
+    /// named_in_exactly_one_file` above can only see this crate's own
+    /// source; this reads `Cargo.lock`, which is the *whole* resolved
+    /// dependency graph, including everything pulled in transitively that no
+    /// line of this crate's own code ever names.
+    ///
+    /// **Why `Cargo.lock` and not `cargo metadata` or `cargo tree`.**
+    /// `Cargo.lock` is already sitting on disk as the answer to "what is in
+    /// the graph" — it needs no subprocess, no network, and no assumption
+    /// that `cargo` is even the binary running this test suite under. It is
+    /// also exactly where a new transport would show up: nobody adds a
+    /// dependency by editing `Cargo.lock` directly, so a name appearing here
+    /// that was not here before is, without exception, downstream of an edit
+    /// to some `Cargo.toml`.
+    ///
+    /// **Why `Cargo.lock` can be `include_str!`'d safely even though it is
+    /// untracked.** `.gitignore` excludes it — checked directly, `git
+    /// ls-files Cargo.lock` prints nothing — which makes it reasonable to ask
+    /// what this test does on a checkout that has never had one. The answer
+    /// is: nothing, because there is no such checkout by the time a test
+    /// binary exists. Cargo resolves dependencies and writes `Cargo.lock`
+    /// before it invokes `rustc` on anything at all, on every build, lock
+    /// file present or not going in; `include_str!` reads the file at that
+    /// same compile step, after Cargo has already written it and before this
+    /// test can run. So the two ways this could go wrong on a fresh
+    /// checkout — the crate fails to compile, or the test silently reports
+    /// nothing — collapse to the same thing a plain `assert!` cannot offer: a
+    /// compile error naming the missing file, for the whole crate, not a test
+    /// that quietly passed because it had nothing to check.
+    ///
+    /// **What this cannot catch**, stated plainly rather than implied by
+    /// silence: a crate that opens a socket under a name this test does not
+    /// recognise as network-shaped (`DENIED_NETWORK_CRATES` is a denylist,
+    /// and a denylist is only ever as good as the list); a dependency that is
+    /// declared but never actually called, which this test would still flag
+    /// — a false positive in the safe direction; and anything that reaches
+    /// the network without going through Cargo's dependency graph at all,
+    /// such as a shell command shelling out to `curl`. `the_http_client_is_
+    /// named_in_exactly_one_file` and this test together answer "does the
+    /// tree build one transport for one call site" — neither one, nor both
+    /// together, is a runtime guarantee that nothing dials out. Card K1's
+    /// Android manifest test is the same kind of floor from a different
+    /// angle: `AndroidManifest.xml` cannot get INTERNET back if the OS never
+    /// granted it, no matter what the dependency graph does.
+    #[test]
+    fn no_network_capable_crate_enters_the_dependency_graph_outside_the_sanctioned_path() {
+        let lock = include_str!("../Cargo.lock");
+        let packages = parse_lockfile_packages(lock);
+
+        // A parser this small breaking silently against a future `Cargo.lock`
+        // format change would turn every case above into a false pass — the
+        // one failure mode worse than the test never existing. This tree has
+        // 619 packages in it at the time of writing; anything far short of
+        // that means the parser stopped matching, not that the tree shrank by
+        // hundreds of crates.
+        assert!(
+            packages.len() > 300,
+            "parsed only {} packages out of Cargo.lock; that is far fewer than this tree \
+             actually resolves, so the small hand-written reader above has probably stopped \
+             matching Cargo.lock's format rather than the tree having shrunk — fix \
+             parse_lockfile_packages before trusting this test's silence",
+            packages.len()
+        );
+
+        for pkg in &packages {
+            if !DENIED_NETWORK_CRATES.contains(&pkg.name.as_str()) {
+                continue;
+            }
+            if ALLOWED_NETWORK_CRATES.contains(&pkg.name.as_str()) {
+                continue;
+            }
+
+            let parents: Vec<&str> = packages
+                .iter()
+                .filter(|p| p.dependencies.iter().any(|dep| dep == &pkg.name))
+                .map(|p| p.name.as_str())
+                .collect();
+            let brought_in = if parents.is_empty() {
+                "Cargo.lock shows nothing else depending on it, so it was most likely added \
+                 directly to a Cargo.toml in this workspace."
+                    .to_string()
+            } else {
+                format!(
+                    "Cargo.lock shows it required by: {}.",
+                    parents.join(", ")
+                )
+            };
+
+            panic!(
+                "`{name}` v{version} is in Cargo.lock, and this test's denylist treats that name \
+                 as a second way of talking to a network — a second HTTP client, a second async \
+                 runtime, a raw socket, or a websocket. {brought_in}\n\
+                 \n\
+                 This app makes exactly one network request: offline webpage capture \
+                 (src/capture/), fetching a page the user has explicitly pasted, over \
+                 rinch-http, which runs on ureq on both platforms this app ships to (see \
+                 Cargo.toml's comment on the rinch-http dependency). Settings' footer promises \
+                 \"works with no connection. Nothing is uploaded anywhere\", and \
+                 AndroidManifest.xml backs that with exactly one <uses-permission> line — \
+                 INTERNET, for this one call site, checked by \
+                 the_android_manifest_asks_only_for_internet above.\n\
+                 \n\
+                 A second transport is a decision, not a side effect of `cargo add` for \
+                 something unrelated. If `{name}` genuinely belongs — ureq picked up a new TLS \
+                 backend, a new DNS crate, whatever it is this time — the fix is to re-run \
+                 `cargo tree -p ureq --edges normal --prefix none` and fold the new names into \
+                 ALLOWED_NETWORK_CRATES above, on purpose, not to delete this test or add just \
+                 enough to make it pass.",
+                name = pkg.name,
+                version = pkg.version,
+            );
+        }
+    }
+
+    /// One `[[package]]` table read out of `Cargo.lock`: its name, its
+    /// version, and the names of the packages it depends on. Where more than
+    /// one version of a crate is in the graph, Cargo spells a dependency on
+    /// it as `"name version"` to disambiguate; the version suffix is dropped
+    /// here because every use in this file only ever needs the name.
+    struct LockedPackage {
+        name: String,
+        version: String,
+        dependencies: Vec<String>,
+    }
+
+    /// A reader for exactly the shape Cargo writes `[[package]]` tables in —
+    /// not a TOML parser, and not trying to be one. `Cargo.lock` is a
+    /// generated file this crate never hand-edits, so the format it needs to
+    /// survive is "whatever `cargo` itself writes", which has been stable
+    /// long enough that this is a reasonable bet; the size sanity check in
+    /// the test above is the guard against that bet going bad quietly.
+    fn parse_lockfile_packages(lock: &str) -> Vec<LockedPackage> {
+        let mut packages = Vec::new();
+        let mut lines = lock.lines().peekable();
+
+        while let Some(line) = lines.next() {
+            if line.trim() != "[[package]]" {
+                continue;
+            }
+
+            let mut name = String::new();
+            let mut version = String::new();
+            let mut dependencies = Vec::new();
+
+            while let Some(&next) = lines.peek() {
+                let trimmed = next.trim();
+                if trimmed.starts_with("[[") {
+                    break;
+                }
+                lines.next();
+
+                if let Some(rest) = trimmed.strip_prefix("name = \"") {
+                    name = rest.trim_end_matches('"').to_string();
+                } else if let Some(rest) = trimmed.strip_prefix("version = \"") {
+                    version = rest.trim_end_matches('"').to_string();
+                } else if trimmed == "dependencies = [" {
+                    for dep_line in lines.by_ref() {
+                        let dep_trimmed = dep_line.trim();
+                        if dep_trimmed == "]" {
+                            break;
+                        }
+                        let dep = dep_trimmed.trim_matches(',').trim_matches('"');
+                        let dep_name = dep.split_whitespace().next().unwrap_or(dep);
+                        dependencies.push(dep_name.to_string());
+                    }
+                }
+            }
+
+            if !name.is_empty() {
+                packages.push(LockedPackage {
+                    name,
+                    version,
+                    dependencies,
+                });
+            }
+        }
+
+        packages
     }
 
     /// Remove `<!-- ... -->` regions, so a test can read markup without
