@@ -13,13 +13,13 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 # Not re-exported by the rinch prelude, but ActionIcon's `icon` prop needs the type
 # and the handoff calls for Tabler icons throughout.
-rinch-tabler-icons = { path = "/tmp/claude-1000/-home-notyou-projects-personal-setlistarray/bf92f7c2-642c-4ed6-adc7-c3bdadd816e6/scratchpad/rinch-both-fixes/crates/rinch-tabler-icons" }
+rinch-tabler-icons = { path = "../rinch-fixes/crates/rinch-tabler-icons" }
 
 # Offline webpage capture (src/capture/). One HTTP API over ureq natively and
 # `fetch` on wasm, so the capture engine never names a transport — the plan's
 # call, and the reason there is no direct `ureq` line in this file even though
 # ureq is what runs underneath on both the platforms this app ships to.
-rinch-http = { path = "/tmp/claude-1000/-home-notyou-projects-personal-setlistarray/bf92f7c2-642c-4ed6-adc7-c3bdadd816e6/scratchpad/rinch-both-fixes/crates/rinch-http" }
+rinch-http = { path = "../rinch-fixes/crates/rinch-http" }
 
 # The HTML parser the capture sanitiser walks. html5ever is the parser Servo
 # uses, so it is spec-correct on the malformed markup chord sites actually
@@ -96,7 +96,7 @@ hayro-syntax = "0.7.2"
 # hayro at +2,486,352 B from a tree with no PDF code at all, D3 had already
 # paid +167,936 B of that for the parser, and 2,486,352 - 167,936 = 2,318,416
 # against the 2,424,832 measured. The 106 KB over is `png`'s encoder, the
-# `pages` module itself, and a three-function fix in `/tmp/claude-1000/-home-notyou-projects-personal-setlistarray/bf92f7c2-642c-4ed6-adc7-c3bdadd816e6/scratchpad/rinch-both-fixes` that this
+# `pages` module itself, and a three-function fix in `../rinch-fixes` that this
 # card needed and could not avoid building into the same APK.
 hayro = "0.7.1"
 
@@ -165,7 +165,7 @@ serde_json = "1"
 # one of these tables is ever active in a given build, so cargo's feature
 # unification never sees both.
 [target.'cfg(not(target_os = "android"))'.dependencies]
-rinch = { path = "/tmp/claude-1000/-home-notyou-projects-personal-setlistarray/bf92f7c2-642c-4ed6-adc7-c3bdadd816e6/scratchpad/rinch-both-fixes/crates/rinch", default-features = false, features = [
+rinch = { path = "../rinch-fixes/crates/rinch", default-features = false, features = [
     "desktop",
     "components",
     "theme",
@@ -192,14 +192,14 @@ rinch = { path = "/tmp/claude-1000/-home-notyou-projects-personal-setlistarray/b
 zbus = "5"
 
 [target.'cfg(target_os = "android")'.dependencies]
-rinch = { path = "/tmp/claude-1000/-home-notyou-projects-personal-setlistarray/bf92f7c2-642c-4ed6-adc7-c3bdadd816e6/scratchpad/rinch-both-fixes/crates/rinch", default-features = false, features = [
+rinch = { path = "../rinch-fixes/crates/rinch", default-features = false, features = [
     "android",
     "components",
     "theme",
 ] }
 # Pulled in transitively by `rinch/android`, but named here too: the safe-area
 # insets and the display density are read directly (src/platform.rs).
-rinch-android = { path = "/tmp/claude-1000/-home-notyou-projects-personal-setlistarray/bf92f7c2-642c-4ed6-adc7-c3bdadd816e6/scratchpad/rinch-both-fixes/crates/rinch-android" }
+rinch-android = { path = "../rinch-fixes/crates/rinch-android" }
 # `android_main` reports a failure to find app-private storage through the
 # logger `rinch`'s Android shell installs; stderr goes nowhere on a phone.
 log = "0.4"
