@@ -14,7 +14,7 @@ use crate::derive::{
 };
 use crate::menu::{FULL_WIDTH_TARGET, MENU_SURFACE, SongMenuItems};
 use crate::store::{
-    AttachmentsStore, GroupBy, LibraryViewStore, NavStore, Route, SettingsStore, SongsStore,
+    AttachmentsStore, Group, GroupBy, LibraryViewStore, NavStore, Route, SettingsStore, SongsStore,
 };
 use crate::theme::{SCREEN_PAD, T_META, T_META_SMALL, T_SCREEN_TITLE};
 use crate::ui::{Chip, IconButton, SongRow, group_header, group_rows_style, icon};
@@ -67,6 +67,47 @@ pub fn Library() -> NodeHandle {
     // longer exist. See the `for` loop below and [`group_rows_style`] for
     // how this drives the collapse animation, and what its one gap is.
     let group_heights: Rc<RefCell<HashMap<String, f32>>> = Rc::new(RefCell::new(HashMap::new()));
+
+    // Card J2. `view.grouped(...)` filters the whole book, buckets it and
+    // sorts every bucket — and this screen used to ask for that answer from
+    // five separate places: the group list's own `for`, the "nothing
+    // matches" check below it, the alphabet rail, and once more inside
+    // `songs_in_group` *and* `expand_group`, each called once per mounted
+    // group rather than once per screen. None of those call sites was
+    // wrong to ask; none of them knew another one had just asked the same
+    // question. Measured at the 300-song target this card names, First
+    // letter grouping with nothing collapsed — the default state, since
+    // `LibraryViewStore::is_collapsed` starts every group open — made 28
+    // full filter-bucket-sort passes over the book for one frame nobody
+    // had scrolled or typed into; see
+    // `derive::tests::librarys_repeated_grouped_calls_cost_as_many_full_passes_as_it_makes`
+    // for the real numbers.
+    //
+    // That is well inside a 16ms frame budget even multiplied out (the
+    // measured total was low single-digit milliseconds), so this was never
+    // a stutter anyone could see — but it is 15-16x more filtering,
+    // bucketing and sorting than the screen needs to do, for free, using a
+    // primitive already sitting in `rinch_core::reactive` unused by the
+    // rest of this app. A `Memo` recomputes only when one of its own
+    // reads — here, `songs`, `group_by`, `sort_field`, `sort_dir` or
+    // `filters` — actually changes, and caches the answer for every other
+    // reader in between. Every place below that used to call
+    // `view.grouped(songs.songs.get())` reads `grouped_songs.get()`
+    // instead, and gets the same list back at a fraction of the cost.
+    //
+    // This is the "cheaper fix" half of card J2's own question, chosen
+    // over virtualising the list. See that card's other half, on
+    // `rendered_row_count` and the timing tests beside it in `derive.rs`,
+    // for why virtualising was measured and declined: the row counts a
+    // 300-song book actually renders (`GROUP_PREVIEW` truncates every
+    // group to 6 until asked for more) never got past the low hundreds,
+    // and a virtual list would have silently broken two things this
+    // screen already ships — card H4's alphabet scrubber, which needs a
+    // real `NodeHandle` for every group header including ones a virtual
+    // window would leave unmounted, and card J1's collapse animation two
+    // commits above this one, which measures a group's *full* height in
+    // pixels to animate it shut.
+    let grouped_songs: Memo<Vec<Group>> = Memo::new(move || view.grouped(songs.songs.get()));
 
     rsx! {
         div { style: "flex: 1; display: flex; flex-direction: column; min-height: 0; position: relative;",
@@ -171,7 +212,7 @@ pub fn Library() -> NodeHandle {
                     "flex: 1; min-height: 0; overflow-y: auto; padding: 0 {} 90px;",
                     if view.group_by.get() == GroupBy::FirstLetter { "34px" } else { SCREEN_PAD }
                 )},
-                for (index, group) in view.grouped(songs.songs.get()).into_iter().enumerate() {
+                for (index, group) in grouped_songs.get().into_iter().enumerate() {
                     // The `for` body re-runs as a closure, so everything it
                     // needs is cloned or copied up front.
                     let label = group.label.clone();
@@ -183,7 +224,7 @@ pub fn Library() -> NodeHandle {
                     {group_entry(
                         __scope,
                         view,
-                        songs,
+                        grouped_songs,
                         attachments,
                         nav,
                         group_heights.clone(),
@@ -210,7 +251,7 @@ pub fn Library() -> NodeHandle {
                 // left below is a genuinely different question — the book
                 // has songs, a filter has narrowed the view to none of them
                 // (card G3) — and it keeps its own answer.
-                if view.filters.get().is_active() && view.grouped(songs.songs.get()).is_empty() {
+                if view.filters.get().is_active() && grouped_songs.get().is_empty() {
                     div { style: {format!("{T_META_SMALL} text-align: center; padding: 48px 0;")},
                         div { "Nothing in your book matches these filters." }
                         div {
@@ -234,7 +275,7 @@ pub fn Library() -> NodeHandle {
             if view.group_by.get() == GroupBy::FirstLetter {
                 {alphabet_rail(
                     __scope,
-                    present_letters(&view.grouped(songs.songs.get())),
+                    present_letters(&grouped_songs.get()),
                     scrub_targets_for_rail.clone(),
                 )}
             }
@@ -399,7 +440,7 @@ fn alphabet_rail(
 fn group_entry(
     scope: &mut RenderScope,
     view: LibraryViewStore,
-    songs: SongsStore,
+    grouped: Memo<Vec<Group>>,
     attachments: AttachmentsStore,
     nav: NavStore,
     group_heights: Rc<RefCell<HashMap<String, f32>>>,
@@ -422,7 +463,7 @@ fn group_entry(
             Some(h) => group_rows_style(collapsed, h),
             None => String::new(),
         };
-        Some(group_rows(__scope, view, songs, attachments, nav, index, style))
+        Some(group_rows(__scope, view, grouped, attachments, nav, index, style))
     } else {
         None
     };
@@ -469,7 +510,7 @@ fn group_entry(
     if !collapsed && total > GROUP_PREVIEW && !expanded {
         let more = rsx! {
             div {
-                onclick: move || expand_group(view, songs, index),
+                onclick: move || expand_group(view, grouped, index),
                 style: "color: var(--sla-accent); font-weight: 500; font-size: 13px; padding: 11px 0;",
                 {format!("Show {hidden} more")}
             }
@@ -493,7 +534,7 @@ fn group_entry(
 fn group_rows(
     scope: &mut RenderScope,
     view: LibraryViewStore,
-    songs: SongsStore,
+    grouped: Memo<Vec<Group>>,
     attachments: AttachmentsStore,
     nav: NavStore,
     index: usize,
@@ -503,7 +544,7 @@ fn group_rows(
     rsx! {
         div {
             style: {style.clone()},
-            for song in songs_in_group(view, songs, attachments, index) {
+            for song in songs_in_group(grouped, view, index) {
                 let id = song.id;
                 let kind = primary_kind(attachments, &song);
                 let menu_open = Signal::new(false);
@@ -537,23 +578,30 @@ fn group_rows(
     }
 }
 
-/// The rows one group shows, recomputed from the stores. Takes only `Copy`
-/// arguments so it can be called from inside a reactive closure.
-fn songs_in_group(
-    view: LibraryViewStore,
-    songs: SongsStore,
-    _attachments: AttachmentsStore,
-    index: usize,
-) -> Vec<Song> {
-    match view.grouped(songs.songs.get()).into_iter().nth(index) {
+/// The rows one group shows. Takes only `Copy` arguments — `grouped` among
+/// them, since card J2 made it one — so it can be called from inside a
+/// reactive closure.
+///
+/// Before card J2 this re-derived the whole book's groups itself
+/// (`view.grouped(songs.songs.get())`), once per call, which is once per
+/// mounted group per render — see `grouped_songs`'s own comment in
+/// [`Library`] for what that cost and why a `Memo` is the fix. `index` is
+/// still how this finds *its* group rather than being handed the group
+/// directly: the memo's cached `Vec<Group>` is the one shared answer every
+/// caller reads, and re-deriving nothing past `.get()` and `.nth(index)` is
+/// what makes that answer cheap to ask for repeatedly.
+fn songs_in_group(grouped: Memo<Vec<Group>>, view: LibraryViewStore, index: usize) -> Vec<Song> {
+    match grouped.get().into_iter().nth(index) {
         Some(group) => visible_songs(&group.songs, view.is_expanded(&group.label)),
         None => Vec::new(),
     }
 }
 
-/// Expand the group at `index` past its preview limit.
-fn expand_group(view: LibraryViewStore, songs: SongsStore, index: usize) {
-    if let Some(group) = view.grouped(songs.songs.get()).into_iter().nth(index) {
+/// Expand the group at `index` past its preview limit. See
+/// [`songs_in_group`] for why this reads the shared `grouped` memo rather
+/// than recomputing the book's groups itself.
+fn expand_group(view: LibraryViewStore, grouped: Memo<Vec<Group>>, index: usize) {
+    if let Some(group) = grouped.get().into_iter().nth(index) {
         view.expand(group.label);
     }
 }

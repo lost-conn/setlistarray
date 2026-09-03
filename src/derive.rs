@@ -4090,6 +4090,211 @@ mod tests {
         assert!(!sentence.contains('!'));
     }
 
+    // ── J2: measuring the library list before virtualising ──────────────
+    //
+    // The card's premise — "every row is currently built up front" — is
+    // false for the default rendering (`GROUP_PREVIEW` truncates every
+    // group to 6 until the user asks for more), but the card was right to
+    // ask for numbers rather than trust that observation on its own. Two
+    // things needed a real measurement: how many rows the worst realistic
+    // configuration actually renders, and what `library.rs` calling
+    // `view.grouped(...)` from several places per frame — the main `for`,
+    // the alphabet rail, and once *more* inside `songs_in_group` for every
+    // mounted group, not the "four" the card guessed — actually costs.
+    //
+    // `library_of` below is one fixture shared by the row-count test and
+    // the two timing tests, built so every `GroupBy` variant lands on more
+    // than one group and every group clears `GROUP_PREVIEW`: 26 first
+    // letters (~11-12 songs each), 40 distinct artists (~7-8 each), 4
+    // confidences (75 each), 10 tags (30 each), 5 tunings (60 each) — all
+    // over the card's stated 300-song target.
+
+    fn library_of(n: u32) -> Vec<Song> {
+        (0..n)
+            .map(|i| {
+                let letter = (b'A' + (i % 26) as u8) as char;
+                let mut s = song(i, &format!("{letter} Song {i}"), &format!("Artist {}", i % 40));
+                s.confidence = Some(match i % 4 {
+                    0 => Confidence::Solid,
+                    1 => Confidence::Rusty,
+                    2 => Confidence::Learning,
+                    _ => Confidence::Rusty, // "Unrated" needs `None`, handled below
+                });
+                if i % 4 == 3 {
+                    s.confidence = None;
+                }
+                s.tags = vec![format!("tag{}", i % 10)];
+                s.tuning = Some(format!("Tuning {}", i % 5));
+                s
+            })
+            .collect()
+    }
+
+    /// What actually paints under `GROUP_PREVIEW` truncation: every group
+    /// counts for `min(GROUP_PREVIEW, its total)` unless `expanded_label`
+    /// names it, in which case it counts in full — mirroring exactly what
+    /// `library.rs`'s `for` loop and its "Show N more" row put on screen.
+    fn rendered_row_count(groups: &[Group], expanded_label: Option<&str>) -> usize {
+        groups
+            .iter()
+            .map(|g| {
+                if Some(g.label.as_str()) == expanded_label {
+                    g.songs.len()
+                } else {
+                    g.songs.len().min(GROUP_PREVIEW)
+                }
+            })
+            .sum()
+    }
+
+    #[test]
+    fn a_three_hundred_song_library_renders_far_fewer_than_three_hundred_rows_by_default() {
+        let songs = library_of(300);
+        let filters = Filters::default();
+
+        let confidence = grouped(songs.clone(), GroupBy::Confidence, SortField::Title, SortDir::Asc, &filters);
+        assert_eq!(confidence.len(), 4, "Solid, Rusty, Learning, Unrated");
+        assert_eq!(rendered_row_count(&confidence, None), 24, "4 groups × GROUP_PREVIEW");
+
+        // First letter is the card's own "interesting one" — up to 26
+        // groups. It lands on exactly 26 here, each comfortably over the
+        // preview limit, so the default render is 26 × 6.
+        let letters = grouped(songs.clone(), GroupBy::FirstLetter, SortField::Title, SortDir::Asc, &filters);
+        assert_eq!(letters.len(), 26, "one group per letter of the alphabet");
+        assert_eq!(rendered_row_count(&letters, None), 156, "26 groups × GROUP_PREVIEW — the card's own estimate");
+
+        // Artist is not named in the card, and it is worse: 40 distinct
+        // artists beats 26 letters, so a library grouped by artist with
+        // many one-off songwriters renders *more* default rows than the
+        // "interesting" first-letter case the card called out.
+        let artists = grouped(songs.clone(), GroupBy::Artist, SortField::Title, SortDir::Asc, &filters);
+        assert_eq!(artists.len(), 40);
+        assert_eq!(rendered_row_count(&artists, None), 240, "40 groups × GROUP_PREVIEW — worse than first-letter");
+
+        // A single expanded group, first-letter grouping: the other case
+        // the card asked about. "A" holds 12 songs (300 songs, i % 26).
+        assert_eq!(
+            rendered_row_count(&letters, Some("A")),
+            156 - GROUP_PREVIEW + 12,
+            "one expanded group adds its members past the preview, the rest stay truncated"
+        );
+
+        // The true worst case: `GroupBy::None` is one group holding the
+        // whole book, and expanding it renders every song — this is where
+        // "up to 300" in the card actually lives, not in first-letter.
+        let all = grouped(songs.clone(), GroupBy::None, SortField::Title, SortDir::Asc, &filters);
+        assert_eq!(all.len(), 1);
+        assert_eq!(rendered_row_count(&all, Some("All songs")), 300);
+
+        eprintln!(
+            "row counts at 300 songs — Confidence: {} groups/{} rows, \
+             FirstLetter: {} groups/{} rows (one expanded: {} rows), \
+             Artist: {} groups/{} rows, \
+             GroupBy::None fully expanded: 300 rows",
+            confidence.len(),
+            rendered_row_count(&confidence, None),
+            letters.len(),
+            rendered_row_count(&letters, None),
+            rendered_row_count(&letters, Some("A")),
+            artists.len(),
+            rendered_row_count(&artists, None),
+        );
+    }
+
+    /// The cost of one `derive::grouped` call — filter, bucket and sort —
+    /// over the stated 300-song target, for every `GroupBy` variant. There
+    /// is no `GroupBy::ALL` constant in this codebase (the card assumed
+    /// one); this enumerates the six variants by hand so a seventh doesn't
+    /// silently go unmeasured.
+    ///
+    /// The bound is generous for the same reason G2's search timing test's
+    /// is: CI boxes are noisy, and a linear pass over 300 small structs is
+    /// sub-millisecond work on any machine this runs on. It exists to catch
+    /// a quadratic regression, not to certify a performance target.
+    #[test]
+    fn grouping_a_three_hundred_song_library_stays_fast_however_you_bucket_it() {
+        use std::time::Instant;
+
+        let songs = library_of(300);
+        let filters = Filters::default();
+        let variants = [
+            GroupBy::Confidence,
+            GroupBy::FirstLetter,
+            GroupBy::Artist,
+            GroupBy::Tag,
+            GroupBy::Tuning,
+            GroupBy::None,
+        ];
+
+        for group_by in variants {
+            let start = Instant::now();
+            let groups = grouped(songs.clone(), group_by, SortField::Title, SortDir::Asc, &filters);
+            let elapsed = start.elapsed();
+            eprintln!(
+                "grouped() once, {group_by:?}, 300 songs: {elapsed:?} ({} groups)",
+                groups.len()
+            );
+            assert!(
+                elapsed.as_millis() < 50,
+                "a single grouped() call under {group_by:?} took {elapsed:?}, expected well under 50ms"
+            );
+        }
+    }
+
+    /// What `library.rs` actually pays per render, not per call.
+    ///
+    /// Card J2 flagged "`view.grouped(...)` four separate times per
+    /// render" and asked for a measurement rather than trusting the count.
+    /// The real number, read off `src/screens/library.rs`, is worse than
+    /// four and depends on how many groups are mounted: the main `for`
+    /// loop calls it once, the alphabet rail's `present_letters` call
+    /// (First letter grouping only) calls it once more, and
+    /// `group_entry`/`group_rows` call `songs_in_group`, which calls it
+    /// *again*, once per mounted group — and every group is mounted by
+    /// default, since `LibraryViewStore::is_collapsed` starts empty. For
+    /// First letter grouping at the 300-song target that is 26 groups: 28
+    /// full filter+bucket+sort passes over the whole book, to paint one
+    /// frame nobody scrolled or typed into.
+    ///
+    /// This times that real call count against a single call, so the
+    /// multiplier is a measured number rather than an assumption on either
+    /// side of this card's argument.
+    #[test]
+    fn librarys_repeated_grouped_calls_cost_as_many_full_passes_as_it_makes() {
+        use std::time::Instant;
+
+        let songs = library_of(300);
+        let filters = Filters::default();
+        let group_by = GroupBy::FirstLetter;
+
+        let once = {
+            let start = Instant::now();
+            let groups = grouped(songs.clone(), group_by, SortField::Title, SortDir::Asc, &filters);
+            (start.elapsed(), groups.len())
+        };
+        let group_count = once.1;
+        // The main `for`, the alphabet rail, and one `songs_in_group` call
+        // per mounted group — every group, since nothing starts collapsed.
+        let calls_per_render = 2 + group_count;
+
+        let start = Instant::now();
+        for _ in 0..calls_per_render {
+            std::hint::black_box(grouped(songs.clone(), group_by, SortField::Title, SortDir::Asc, &filters));
+        }
+        let repeated = start.elapsed();
+
+        eprintln!(
+            "single grouped() call: {:?}; library.rs's actual {calls_per_render} calls per render \
+             (First letter, {group_count} groups, nothing collapsed): {repeated:?} — {:.1}x a single call",
+            once.0,
+            repeated.as_secs_f64() / once.0.as_secs_f64().max(1e-9)
+        );
+        assert!(
+            repeated.as_millis() < 200,
+            "library.rs's real per-render grouped() cost took {repeated:?}, expected well under 200ms"
+        );
+    }
+
     // ── helpers ─────────────────────────────────────────────────────────
 
     fn durated(id: u32, seconds: u32) -> Song {
