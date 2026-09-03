@@ -7,36 +7,59 @@
 //!
 //! ## What `1p` draws that is not here
 //!
-//! The wireframe is a picture of the finished screen, and two thirds of what it
-//! draws belong to cards that do not exist yet. Both are absent on the record
-//! rather than by oversight, and the second one is a decision this card was
-//! asked to make and defend.
+//! The wireframe is a picture of the finished screen, and one third of what it
+//! draws belongs to a card that does not exist yet.
 //!
 //! **The facet chips** — `Key ▾`, `Tuning ▾`, `Capo ▾`, `Tag ▾`, `Tempo ▾` and
 //! the two active pills — are card **G3**. They are a filter engine with a
 //! popover per facet and an active-state model of their own; drawing the row
 //! without it would be seven controls that open nothing.
 //!
-//! **The "Inside attachments" group** — matching text inside typed charts and
-//! captured pages — is card **G2**, and the question this card had to answer is
-//! whether to draw its *heading* now, over nothing, and let G2 fill it in.
+//! **The "Inside attachments" group is card G2, and it is drawn now** —
+//! matching text inside typed charts and captured pages, one heading and a row
+//! per hit, exactly like the other two groups. It was not always: this card
+//! shipped after G1, whose own version of this section spent several
+//! paragraphs on the reasoning for leaving the heading undrawn rather than
+//! showing it over nothing, because "Inside attachments" followed by no rows
+//! is a sentence — *we looked inside your charts and your saved pages, and the
+//! word is not in any of them* — and a search screen cannot tell that lie
+//! about a library it never actually searched. That reasoning is not wasted
+//! now that the group is real: it is the whole justification for
+//! [`crate::derive::search_rows`] still dropping any group with no hits rather
+//! than drawing its heading over an empty one, this group included, and for
+//! [`Prompt`] and [`NoMatch`] naming exactly what has been searched rather
+//! than a rounder, vaguer claim.
 //!
-//! **It is not drawn.** A heading with nothing under it is the dead-row problem
-//! H1 spent its own paragraphs avoiding one screen over, and here it is worse
-//! than a row that does nothing, because of what the empty shell would be
-//! *saying*. "Inside attachments" followed by nothing is a sentence: we looked
-//! inside your charts and your saved pages, and the word is not in any of them.
-//! That is a false negative about the user's own library — the one lie a search
-//! screen cannot tell and stay useful, because the whole value of a search is
-//! that a blank answer means the thing is not there. A user who trusts it stops
-//! opening the chart they would have found it in.
+//! **Where the searched text comes from, and why a PDF is not one of the
+//! kinds.** A typed chart's `Attachment::body` has carried its text since the
+//! editor that writes one (`chart_editor::save`) first existed, and a captured
+//! page's has carried its extracted text since `capture::attach_captured` — G2
+//! is the first *reader* of a field two earlier cards already wrote, not the
+//! card that had to start writing it. That also answers the question every
+//! card adding a persisted field has to answer for the rows that predate it:
+//! there is no backfill here because there is no gap to backfill. `body` has
+//! been in `db/schema.rhype` since this app's very first schema, both
+//! producers have set it at creation from day one, and neither has ever had a
+//! code path that attaches one of these two kinds without it. A PDF is the
+//! one kind genuinely left out, and it is named rather than silently skipped:
+//! `hayro-syntax` parses far enough to count a PDF's pages and `hayro`
+//! rasterises a page as a picture, and neither of those is a text layer, so
+//! `pdf::import` writes `body: None` with a comment saying so, and this
+//! screen's own two sentences below are careful never to claim otherwise.
 //!
-//! The cost of leaving it out is that the group is invisible until G2 lands,
-//! and that cost is paid by nobody but the next developer, who has this
-//! paragraph. So instead of a heading, the empty states below say in words what
-//! search does look at — titles, artists, tags, set names — which is a true
-//! statement today, is the honest boundary of what has been searched, and is
-//! one line for G2 to extend rather than a promise for it to make good.
+//! **The scan, not an index.** `docs/PLAN.md`'s Phase G entry offers "our own
+//! inverted index over extracted text, built at attachment import" as one
+//! option and a linear scan as the other, and this card took the scan: every
+//! attachment's body, read once per keystroke by
+//! [`attachment_texts`](self::attachment_texts) and searched by
+//! [`crate::derive::attachment_hits`], which is a few hundred linear string
+//! searches at the stated 300-song target — measured in
+//! `derive::tests::searching_a_three_hundred_song_library_s_attachments_stays_fast`
+//! at a few milliseconds, nowhere near where an index would start paying for
+//! itself. If a real library ever grows past that, the index this paragraph
+//! declined is still exactly the fix, built once at import rather than walked
+//! on every keystroke; `derive::attachment_hits`'s own doc comment is where
+//! that note lives closest to the code it is about.
 //!
 //! ## The route carries nothing; the query is library view state
 //!
@@ -78,8 +101,13 @@
 //! a multi-byte character rather than a wrong answer;
 //! [`search_songs`](crate::derive::search_songs) and
 //! [`search_setlists`](crate::derive::search_setlists) are the matcher and the
-//! order; [`search_count_line`](crate::derive::search_count_line) is the line
-//! under the field, which counts each group against its own total; and
+//! order; [`attachment_hits`](crate::derive::attachment_hits) and
+//! [`attachment_snippet`](crate::derive::attachment_snippet) are card G2's
+//! addition — the third group's matcher, and the one line of context around
+//! each hit; [`search_count_line`](crate::derive::search_count_line) is the
+//! line under the field, which counts each of the first two groups against
+//! its own total (not the third — see its own doc comment for why "inside
+//! attachments" is not a count of the book); and
 //! [`search_rows`](crate::derive::search_rows) is the whole scrolling area —
 //! headings, results and both empty states — as one list of keyed values.
 //!
@@ -100,9 +128,10 @@ use rinch::prelude::*;
 use rinch_tabler_icons::TablerIcon;
 
 use crate::derive::{
-    Highlight, SearchRow, SetlistHit, SongHit, search_count_line, search_rows, setlist_hits,
-    song_hits,
+    AttachmentHit, AttachmentText, Highlight, SearchRow, SetlistHit, SongHit, search_count_line,
+    search_rows, setlist_hits, song_hits,
 };
+use crate::model::{AttachmentKind, Song};
 use crate::store::{
     AttachmentsStore, LibraryViewStore, NavStore, Route, SetlistsStore, SongsStore,
 };
@@ -170,6 +199,7 @@ pub fn Search() -> NodeHandle {
     let nav = use_store::<NavStore>();
     let songs = use_store::<SongsStore>();
     let setlists = use_store::<SetlistsStore>();
+    let attachments = use_store::<AttachmentsStore>();
     let view = use_store::<LibraryViewStore>();
 
     rsx! {
@@ -247,7 +277,7 @@ pub fn Search() -> NodeHandle {
             // found on the phone rather than a preference.
             div {
                 style: {format!("flex: 1; min-height: 0; overflow-y: auto; padding: 0 {SCREEN_PAD} 90px;")},
-                for row in rows(view, songs, setlists) {
+                for row in rows(view, songs, setlists, attachments) {
                     // The `for` body re-runs as a closure, so everything it
                     // keeps is cloned or copied up front — the same rule the
                     // library list is written to. Each row is a component so
@@ -292,6 +322,7 @@ fn Row(row: SearchRow) -> NodeHandle {
         },
         SearchRow::Song(hit) => rsx! { SongResult { hit: {hit} } },
         SearchRow::Setlist(hit) => rsx! { SetlistResult { hit: {hit} } },
+        SearchRow::Attachment(hit) => rsx! { AttachmentResult { hit: {hit} } },
         SearchRow::Prompt => rsx! { Prompt {} },
         SearchRow::NoMatch(query) => rsx! { NoMatch { query: {query} } },
     }
@@ -386,9 +417,73 @@ fn SetlistResult(hit: SetlistHit) -> NodeHandle {
     }
 }
 
+/// The snippet line under an "Inside attachments" hit: small and muted, the
+/// same register [`T_META_SMALL`] reads the row above it in.
+///
+/// **Not monospace, and that is a measurement rather than a preference.** The
+/// text a snippet quotes is a chord chart or a chord-and-lyric line from a
+/// captured page more often than it is prose, and `theme::T_CHART` is exactly
+/// the register this app already reads one in — so that was the first thing
+/// tried here. Screenshotted, it drew every snippet unmarked: `Highlighted`'s
+/// matched runs turned neither the accent colour nor the 600 weight on, over
+/// `font-family: var(--sla-font-mono)`. Swapping in the bare `monospace`
+/// keyword got the weight back but not the colour; dropping the monospace
+/// family entirely — the app's own UI font, which is what [`SongResult`] and
+/// [`SetlistResult`]'s marked lines already use — got both back at once. So
+/// whatever is going on is between rinch's inline-run styling and a
+/// monospaced face specifically, not a fault in [`attachment_snippet`] or in
+/// [`Highlighted`]: the runs it hands over are right in all three cases
+/// (pinned in `derive`'s own tests), and the same `Highlighted` component
+/// draws them correctly everywhere else on this screen. Measured with
+/// `scripts/with-display.sh`, not just guessed at, and worth a closer look
+/// the next time anyone needs a marked run inside a monospaced line — but this
+/// row does not need monospace badly enough to ship an unmarked hit while
+/// that fix waits.
+const T_SNIPPET: &str = "font-size: 12px; color: var(--sla-muted);";
+
+/// One hit inside an attachment's text: the song it belongs to, which chart
+/// answered, and the line of context the match sits in.
+///
+/// Three lines where [`SongResult`] and [`SetlistResult`] have two, and the
+/// third is the whole reason this group exists — see this file's module
+/// header on why card G1 left it out until the group could say more than
+/// *that* a chart matched. The song's own title is never marked here, unlike
+/// the other two groups' first lines: the query landed inside the chart, not
+/// the title, and marking a substring the title happens to share with it
+/// would claim the hit came from somewhere it did not.
+#[component]
+fn AttachmentResult(hit: AttachmentHit) -> NodeHandle {
+    let nav = use_store::<NavStore>();
+    let song = hit.song;
+    let attachment = hit.attachment;
+
+    rsx! {
+        div {
+            onclick: move || nav.go(Route::ViewAttachment { song, attachment }),
+            style: {ROW},
+            AttachmentThumb { kind: {Some(hit.kind)} }
+            div { style: "flex: 1; min-width: 0;",
+                div {
+                    style: {format!("{T_ROW_TITLE} {ONE_LINE}")},
+                    {hit.song_title.clone()}
+                }
+                div {
+                    style: {format!("{T_META_SMALL} margin-top: 1px; {ONE_LINE}")},
+                    {format!("{} · {}", hit.attachment_title, hit.kind.descriptor())}
+                }
+                div {
+                    style: {format!("{T_SNIPPET} margin-top: 3px; {ONE_LINE}")},
+                    Highlighted { runs: {hit.snippet.clone()} }
+                }
+            }
+        }
+    }
+}
+
 /// Nothing typed yet. Not a blank screen: this is where the screen says what it
-/// can be asked, which is also the honest edge of what it searches until card
-/// G2 widens it.
+/// can be asked — and, since card G2, the honest full edge of what it
+/// searches, PDFs excluded: see this file's module header on why a PDF's text
+/// is not part of that sentence.
 #[component]
 fn Prompt() -> NodeHandle {
     rsx! {
@@ -398,7 +493,8 @@ fn Prompt() -> NodeHandle {
             }
             div { style: {format!("{T_ROW_TITLE} margin-top: 14px;")}, "Find something to play" }
             div { style: {format!("{T_META} margin-top: 6px;")},
-                "Type a title, an artist, a tag, or the name of a set."
+                "Type a title, an artist, a tag, the name of a set, or a word from a chart \
+                 or a saved page."
             }
         }
     }
@@ -408,17 +504,18 @@ fn Prompt() -> NodeHandle {
 ///
 /// It names the query back — a search that says only "no results" leaves you
 /// wondering whether it heard you — and then says what it looked at, which is
-/// the same sentence [`Prompt`] opens with and the same one card G2 gets to
-/// extend. Saying it here is the other half of leaving the "Inside attachments"
-/// heading out: this screen must not let a blank answer be read as "and not in
-/// your charts either".
+/// the same sentence [`Prompt`] opens with. Saying it here is the other half of
+/// card G1's "Inside attachments" reasoning, now that G2 has landed the group
+/// this sentence describes: this screen must not let a blank answer be read as
+/// "and not in your charts either" when it has, in fact, looked.
 #[component]
 fn NoMatch(query: String) -> NodeHandle {
     rsx! {
         div { style: "padding: 60px 8px; text-align: center;",
             div { style: {format!("{T_ROW_TITLE}")}, {format!("Nothing matches “{query}”")} }
             div { style: {format!("{T_META} margin-top: 6px;")},
-                "Search looks at song titles, artists and tags, and at set names."
+                "Search looks at song titles, artists and tags, at set names, and at the \
+                 text inside typed charts and saved pages."
             }
         }
     }
@@ -448,15 +545,70 @@ fn Highlighted(runs: Vec<Highlight>) -> NodeHandle {
     }
 }
 
-/// Everything the screen scrolls. Takes only `Copy` arguments so it can be
-/// called from inside a reactive closure — the same shape as
-/// `library::songs_in_group`.
-fn rows(view: LibraryViewStore, songs: SongsStore, setlists: SetlistsStore) -> Vec<SearchRow> {
-    search_rows(
-        songs.songs.get(),
-        setlists.setlists.get(),
-        &view.query.get(),
-    )
+/// Every song's attachment paired with the text card G2 can search, for the
+/// screen to hand to [`crate::derive::attachment_hits`].
+///
+/// This is the one place on this screen that reads an attachment body, and it
+/// does that once per attachment per keystroke — [`AttachmentsStore::body`]'s
+/// own doc names the cost, one object read. `derive` cannot do this lookup
+/// itself: its module header rules out I/O, and `Attachment` does not carry
+/// the id of the song that owns it (`AttachmentsStore`'s header again — the
+/// arrow runs songs → attachments and never back), so walking every song's
+/// own `attachments` list here is the only place this join can happen at all.
+///
+/// A PDF is skipped before its body is ever asked for, not after: `pdf::
+/// import`'s own comment says a PDF's `body` is always `None` today, so
+/// calling [`AttachmentsStore::body`] for one would spend a database read to
+/// learn a fact this screen already has for free from the metadata it holds
+/// in memory.
+fn attachment_texts(songs: &[Song], attachments: AttachmentsStore) -> Vec<AttachmentText> {
+    let mut out = Vec::new();
+    for song in songs {
+        for &id in &song.attachments {
+            let Some(meta) = attachments.get(id) else {
+                continue;
+            };
+            if meta.kind == AttachmentKind::Pdf {
+                continue;
+            }
+            let Some(body) = attachments.body(id) else {
+                continue;
+            };
+            out.push(AttachmentText {
+                song: song.id,
+                song_title: song.title.clone(),
+                attachment: id,
+                attachment_title: meta.title,
+                kind: meta.kind,
+                body,
+            });
+        }
+    }
+    out
+}
+
+/// Everything the screen scrolls.
+///
+/// Unlike [`count_line`] below, this cannot stay a function of only `Copy`
+/// arguments the way `library::songs_in_group` manages — building the third
+/// group means reading a database row per attachment, which is exactly the
+/// cost [`Prompt`]'s own empty screen must not pay, so an empty query skips
+/// [`attachment_texts`] entirely rather than gathering a list [`search_rows`]
+/// would throw away unread.
+fn rows(
+    view: LibraryViewStore,
+    songs: SongsStore,
+    setlists: SetlistsStore,
+    attachments: AttachmentsStore,
+) -> Vec<SearchRow> {
+    let query = view.query.get();
+    let library = songs.songs.get();
+    let texts = if query.trim().is_empty() {
+        Vec::new()
+    } else {
+        attachment_texts(&library, attachments)
+    };
+    search_rows(library, setlists.setlists.get(), texts, &query)
 }
 
 /// The line under the field: how much of the book is on screen.

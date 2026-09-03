@@ -656,11 +656,13 @@ fn preview_of_row(
 /// six grey bars. A skeleton says "loading"; three of the six lines here would
 /// have been a lie about a PDF that has never been rasterised.
 ///
-/// This is the one place in the app that reads an attachment body, and it costs
-/// one object read per redraw of one card. The performance budget's rule is
-/// about *rows* — the library builds three hundred of them and must not touch a
-/// body for any — and the row list still cannot: `AttachmentsStore::items`
-/// never carries one.
+/// This was the one place in the app that read an attachment body until card
+/// G2's search screen became the second — see `screens::search::
+/// attachment_texts`, which reads every one of them, once per keystroke,
+/// rather than once per redraw of one open card. Both cost one object read
+/// per attachment; the performance budget's rule is about *rows* — the
+/// library builds three hundred of them and must not touch a body for any —
+/// and the row list still cannot: `AttachmentsStore::items` never carries one.
 fn preview(attachments: AttachmentsStore, id: AttachmentId) -> Vec<(usize, String, bool)> {
     let Some(attachment) = attachments.get(id) else {
         return Vec::new();

@@ -614,6 +614,43 @@ mod tests {
         assert!(s.attachments.get(id).is_none());
     }
 
+    /// Card G2's search screen calls [`AttachmentsStore::body`] once per
+    /// attachment per keystroke, and the acceptance bar for that card is
+    /// "nothing opens a file during a search". This is the proof rather than
+    /// an assertion taken on faith: delete the directory a chart's bytes live
+    /// in — `page.html`, the rendered PDF pages, everything `directory()`
+    /// points at — and the text still comes back exactly, because
+    /// `Repo::attachment_body` reads the `body` field off the database
+    /// object, which is a row in the LSM tree and was never the file this
+    /// test just removed.
+    ///
+    /// This is also the only place in the suite that can make this claim.
+    /// Nothing else stubs out or wraps the filesystem, so there is no seam to
+    /// assert "no `open()` syscall happened" from the outside; making the
+    /// file disappear and watching the read succeed anyway is what "did not
+    /// need it" looks like from here.
+    #[test]
+    fn a_search_reading_an_attachments_body_never_touches_its_own_directory() {
+        let dir = scratch("store-body-no-file");
+        let s = Session::open(&dir);
+        let song = s.songs.add("Landslide", "Fleetwood Mac");
+        let mut typed = chart("Landslide — my version");
+        typed.kind = AttachmentKind::Text;
+        typed.body = Some("Capo 3. Eb shapes played as C.".into());
+        let id = s.songs.attach(song, typed).unwrap();
+
+        let path = s.attachments.directory(id).unwrap();
+        assert!(path.is_dir(), "the directory `body` must not need exists");
+        std::fs::remove_dir_all(&path).expect("the directory could be removed");
+        assert!(!path.exists());
+
+        assert_eq!(
+            s.attachments.body(id).as_deref(),
+            Some("Capo 3. Eb shapes played as C."),
+            "the text came from the database row, not the directory just deleted"
+        );
+    }
+
     #[test]
     fn an_attachment_and_its_link_to_a_song_survive_a_restart() {
         let dir = scratch("store-attachment-restart");

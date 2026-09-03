@@ -9,7 +9,10 @@ use rinch_tabler_icons::TablerIcon;
 
 use std::collections::BTreeSet;
 
-use crate::model::{Confidence, Day, Setlist, SetlistId, Song, SongId, fmt_bytes, fmt_duration};
+use crate::model::{
+    AttachmentId, AttachmentKind, Confidence, Day, Setlist, SetlistId, Song, SongId, fmt_bytes,
+    fmt_duration,
+};
 use crate::store::{
     AccentChoice, Density, Filters, Group, GroupBy, PerformanceTheme, Route, SortDir, SortField,
 };
@@ -383,21 +386,7 @@ pub fn highlight(text: &str, query: &str) -> Vec<Highlight> {
         return whole(text);
     }
 
-    let mut hay = String::with_capacity(text.len());
-    // `map[i]` is the byte in `text` that `hay`'s byte `i` came from; the extra
-    // entry at the end is what lets a match that runs to the end of the string
-    // be looked up the same way as every other one.
-    let mut map: Vec<usize> = Vec::with_capacity(text.len() + 1);
-    for (at, ch) in text.char_indices() {
-        let before = hay.len();
-        for lowered in ch.to_lowercase() {
-            hay.push(lowered);
-        }
-        for _ in before..hay.len() {
-            map.push(at);
-        }
-    }
-    map.push(text.len());
+    let (hay, map) = lowered_with_map(text);
 
     let mut runs: Vec<Highlight> = Vec::new();
     let mut cursor = 0; // into `hay`
@@ -434,6 +423,34 @@ pub fn highlight(text: &str, query: &str) -> Vec<Highlight> {
         });
     }
     runs
+}
+
+/// The lower-cased haystack `highlight` (and card G2's [`first_match_span`])
+/// search, and the map back from each of its bytes to the byte in the
+/// original `text` its character started at.
+///
+/// Pulled out of `highlight` rather than inlined twice: both callers need the
+/// exact same length-preserving construction — see `highlight`'s own doc for
+/// why a lowercased copy alone is not enough — and a second, slightly
+/// different copy of this loop is exactly how the two would quietly drift
+/// apart on the one case (`İ`) that is hard to get right by eye.
+fn lowered_with_map(text: &str) -> (String, Vec<usize>) {
+    let mut hay = String::with_capacity(text.len());
+    // `map[i]` is the byte in `text` that `hay`'s byte `i` came from; the extra
+    // entry at the end is what lets a match that runs to the end of the string
+    // be looked up the same way as every other one.
+    let mut map: Vec<usize> = Vec::with_capacity(text.len() + 1);
+    for (at, ch) in text.char_indices() {
+        let before = hay.len();
+        for lowered in ch.to_lowercase() {
+            hay.push(lowered);
+        }
+        for _ in before..hay.len() {
+            map.push(at);
+        }
+    }
+    map.push(text.len());
+    (hay, map)
 }
 
 /// The songs `1p` lists, in the order it lists them.
@@ -546,6 +563,216 @@ pub fn setlist_hits(setlists: Vec<Setlist>, songs: &[Song], query: &str) -> Vec<
         .collect()
 }
 
+// ---------------------------------------------------------------------------
+// Inside attachments (card G2)
+// ---------------------------------------------------------------------------
+
+/// One attachment, ready for [`attachment_hits`] to search: everything that
+/// module needs to know about a chart *except* whether it matches.
+///
+/// The screen builds this list, not this module. `AttachmentsStore`'s own
+/// header explains why the ownership arrow runs songs → attachments and never
+/// back — an `Attachment` does not carry the id of the song it belongs to —
+/// and this module's header explains the other half: no signals, no I/O, so a
+/// pure function here cannot go fetch a body out of the database itself. So
+/// the screen walks every song's own `attachments` list, looks each one up,
+/// reads its body once, and hands over the flattened result. See
+/// `screens::search::attachment_texts`.
+///
+/// `kind` only ever arrives as [`AttachmentKind::Text`] or
+/// [`AttachmentKind::CapturedPage`] in practice — a PDF's `body` is always
+/// `None`, because nothing in this app extracts text from one yet (`hayro`
+/// parses far enough to count pages and to rasterise a page as a picture;
+/// neither is a text layer, and no other crate in this tree has one). This
+/// struct does not enforce that split itself, on purpose: which kinds carry
+/// extracted text is a fact about the capture and typed-chart pipelines, and
+/// a search matcher that hard-codes an assumption about its own callers is
+/// how a rule like that goes stale the day a fourth kind is added and nobody
+/// remembers this file exists.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AttachmentText {
+    pub song: SongId,
+    pub song_title: String,
+    pub attachment: AttachmentId,
+    pub attachment_title: String,
+    pub kind: AttachmentKind,
+    pub body: String,
+}
+
+/// One "Inside attachments" row: the song it belongs to, the chart to open,
+/// and the window of text the match sits in.
+///
+/// `Default` for the same reason [`SongHit`] and [`SetlistHit`] carry one —
+/// the row's own component takes this as a prop, and the rsx macro builds
+/// every prop with `..Default::default()`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AttachmentHit {
+    pub song: SongId,
+    pub song_title: String,
+    pub attachment: AttachmentId,
+    pub attachment_title: String,
+    pub kind: AttachmentKind,
+    pub snippet: Vec<Highlight>,
+}
+
+/// How many characters either side of a match [`attachment_snippet`] keeps.
+///
+/// Forty was picked on the phone against a 393px row with an icon and its
+/// inset already spent: a chord line and the lyric under it both fit inside
+/// eighty-odd monospace characters with room for the row's own padding, and a
+/// captured page's prose reads as a real sentence fragment rather than three
+/// words swimming in ellipses.
+const SNIPPET_RADIUS: usize = 40;
+
+/// The song title and artist are deliberately not searched a second time
+/// here — [`song_hits`] already covers both, and a chart whose *song* also
+/// happens to answer the query would otherwise put the same song under two
+/// headings for one keystroke, which reads as a screen that cannot count.
+///
+/// This is the whole of card G2's "scan, not an inverted index": every
+/// attachment's body, read once already (by the screen, into `entries`), is
+/// asked whether it contains the query, in the order the songs were handed
+/// over. At the stated library size — 300 songs — that is a few hundred
+/// linear string scans per keystroke, not the kind of workload an index earns
+/// its keep against; `derive_tests::searching_a_three_hundred_song_library_s_
+/// attachments_stays_fast` is where that claim is measured rather than
+/// assumed. If a real library ever gets large enough to make this slow, the
+/// fix is the inverted index the stale card body already named — built once
+/// at import time rather than walked at every keystroke — and this comment is
+/// where the next person should start.
+pub fn attachment_hits(entries: Vec<AttachmentText>, query: &str) -> Vec<AttachmentHit> {
+    if query.trim().is_empty() {
+        return Vec::new();
+    }
+    let mut hits: Vec<AttachmentHit> = entries
+        .into_iter()
+        .filter_map(|entry| {
+            let snippet = attachment_snippet(&entry.body, query)?;
+            Some(AttachmentHit {
+                song: entry.song,
+                song_title: entry.song_title,
+                attachment: entry.attachment,
+                attachment_title: entry.attachment_title,
+                kind: entry.kind,
+                snippet,
+            })
+        })
+        .collect();
+    // A–Z by the song's own title, the same order the Songs group above it
+    // reads in — so a query that lands in both groups does not read as two
+    // unrelated shuffles of the same book.
+    hits.sort_by(|a, b| {
+        a.song_title
+            .to_lowercase()
+            .cmp(&b.song_title.to_lowercase())
+            .then_with(|| {
+                a.attachment_title
+                    .to_lowercase()
+                    .cmp(&b.attachment_title.to_lowercase())
+            })
+    });
+    hits
+}
+
+/// The first case-insensitive match of `needle` (already trimmed and
+/// lower-cased) in `text`, as a byte span into the *original* string.
+///
+/// `highlight`'s own loop collects every match because a title or an artist
+/// name is a handful of words and the whole point is marking each one. A
+/// captured page can be tens of thousands of characters, and a snippet only
+/// ever shows the first hit, so this stops there rather than building a `Vec`
+/// of every place the query appears in somebody else's whole webpage.
+fn first_match_span(text: &str, needle: &str) -> Option<(usize, usize)> {
+    let (hay, map) = lowered_with_map(text);
+    let mut cursor = 0;
+    while let Some(at) = hay[cursor..].find(needle) {
+        let (from, to) = (cursor + at, cursor + at + needle.len());
+        cursor = to;
+        let (from, to) = (map[from], map[to]);
+        if to > from {
+            return Some((from, to));
+        }
+        // Half a character — see `highlight`'s doc on `İstanbul` — skipped,
+        // never sliced; the scan just keeps going past it.
+    }
+    None
+}
+
+/// The byte offset that starts a window of up to `chars` characters ending
+/// exactly at `idx`. Always a char boundary, because it only ever lands on
+/// one `char_indices` gave back.
+fn char_boundary_back(text: &str, idx: usize, chars: usize) -> usize {
+    text[..idx]
+        .char_indices()
+        .rev()
+        .nth(chars.saturating_sub(1))
+        .map(|(i, _)| i)
+        .unwrap_or(0)
+}
+
+/// The byte offset that ends a window of up to `chars` characters starting at
+/// `idx`. The mirror of [`char_boundary_back`].
+fn char_boundary_forward(text: &str, idx: usize, chars: usize) -> usize {
+    text[idx..]
+        .char_indices()
+        .nth(chars)
+        .map(|(i, _)| idx + i)
+        .unwrap_or(text.len())
+}
+
+/// A window of context around the first match inside an attachment's text,
+/// marked the way every other group on this screen marks its hits.
+///
+/// **One line, always**, per card G2's own instruction — a hit inside a
+/// 200-line chart has to show *where* it matched, not the whole chart, and
+/// the row it sits in is one line tall like every other result on this
+/// screen. So every run of whitespace in the window — including the chord
+/// chart's own significant spacing and every newline a captured page's
+/// extracted text still carries — collapses to a single space. That is an
+/// honest cost, not a free one: a chord sitting three tabs above its syllable
+/// reads as `G       D` run together with the lyric below it, on the one
+/// line this function is allowed to draw. The alternative was drawing the
+/// match's own line at full width and letting `ONE_LINE`'s ellipsis eat
+/// whichever half did not fit, which for a chord chart is usually the half
+/// with the highlight in it — worse than a legible line that has lost its
+/// alignment.
+///
+/// An ellipsis marks whichever edge was actually cut, the way a search result
+/// snippet reads anywhere else. `None` means the query is not in `text` at
+/// all, which is the caller's cue to leave the attachment out of the group
+/// entirely — the same shape [`search_songs`] answers with an empty `Vec`.
+///
+/// **One trade named rather than hidden.** Collapsing whitespace runs the
+/// window through `str::split_whitespace` *before* handing it to
+/// [`highlight`], so a query that itself contains more than one run of
+/// whitespace — two spaces, or a line break, typed into the search field on
+/// purpose — can fail to re-find itself in the now-collapsed window and fall
+/// back to drawing the line unmarked. Accepted for the same reason
+/// `highlight` accepts losing the first letter of `İstanbul`: a rare wrong
+/// answer on an unusual query beats a panic, and beats the common case
+/// staying legible.
+pub fn attachment_snippet(text: &str, query: &str) -> Option<Vec<Highlight>> {
+    let needle = query.trim();
+    if needle.is_empty() {
+        return None;
+    }
+    let (from, to) = first_match_span(text, &needle.to_lowercase())?;
+
+    let start = char_boundary_back(text, from, SNIPPET_RADIUS);
+    let end = char_boundary_forward(text, to, SNIPPET_RADIUS);
+
+    let mut window = String::new();
+    if start > 0 {
+        window.push('…');
+    }
+    window.push_str(&text[start..end].split_whitespace().collect::<Vec<_>>().join(" "));
+    if end < text.len() {
+        window.push('…');
+    }
+
+    Some(highlight(&window, needle))
+}
+
 /// `1p`'s count line: `6 of 300 songs · 1 of 2 setlists · sorted A–Z`.
 ///
 /// The wireframe draws `6 of 300 songs · sorted by title`, from a search screen
@@ -567,6 +794,17 @@ pub fn setlist_hits(setlists: Vec<Setlist>, songs: &[Song], query: &str) -> Vec<
 /// 0 setlists` is not a fact about a search, it is a fact about a user who has
 /// never made a setlist, and it does not belong on the line that says how the
 /// search went.
+///
+/// **Card G2 does not add a third clause here.** This line answers "how much
+/// of the book am I looking at", and a book is songs and setlists — the two
+/// things this app lets you own and browse a list of. A hit inside an
+/// attachment's text is not a third kind of thing in the book, it is a reason
+/// one of the songs already counted above is in the list; a `2 of 4
+/// attachments` clause would be counting *chart matches*, a number with no
+/// "of how many" that means anything (of how many attachments exist? of how
+/// many this song has? neither is what a user asking "how much of my search
+/// came back" wants), on a line that has been careful until now to only ever
+/// count things this app already shows you a browsable total of.
 pub fn search_count_line(
     songs_found: usize,
     songs_total: usize,
@@ -605,7 +843,8 @@ pub fn search_count_line(
 /// those: every row, heading and empty panel alike, is an item with a key, and
 /// what is on screen is a value this module produces and tests rather than four
 /// conditions evaluated in a layout. Card G2's "Inside attachments" group is a
-/// heading and some rows appended in the same function.
+/// heading and some [`SearchRow::Attachment`] rows appended in the same
+/// function, on exactly this same rule — see [`attachment_hits`].
 // `Default` because the screen draws each row through a component that takes
 // one as a prop, and the rsx macro builds every prop struct with
 // `..Default::default()`. `Prompt` is the variant to default to: it is the row
@@ -622,6 +861,11 @@ pub enum SearchRow {
     },
     Song(SongHit),
     Setlist(SetlistHit),
+    /// One hit inside a chart's text — card G2. Named `Attachment` rather than
+    /// `Inside` or `Text` because what it carries and what a row draws from it
+    /// is an [`AttachmentHit`], and every other variant here is named after
+    /// its own payload the same way.
+    Attachment(AttachmentHit),
     /// Nothing typed yet.
     #[default]
     Prompt,
@@ -643,6 +887,7 @@ impl SearchRow {
             SearchRow::Heading { label, .. } => format!("h:{label}"),
             SearchRow::Song(hit) => format!("s:{}", hit.song.id),
             SearchRow::Setlist(hit) => format!("l:{}", hit.setlist.id),
+            SearchRow::Attachment(hit) => format!("a:{}", hit.attachment),
             SearchRow::Prompt => "prompt".to_string(),
             SearchRow::NoMatch(_) => "nomatch".to_string(),
         }
@@ -651,20 +896,27 @@ impl SearchRow {
 
 /// Everything `1p` scrolls, in order.
 ///
-/// Three states, and each is the whole list rather than a layer over the
+/// Four states, and each is the whole list rather than a layer over the
 /// others: nothing typed is one [`SearchRow::Prompt`]; a query with no answer
 /// is one [`SearchRow::NoMatch`]; anything else is a heading and its rows per
 /// group that has any. A group with no matches contributes nothing at all — not
-/// a heading over nothing, which is the same rule this screen applies to card
-/// G2's absent "Inside attachments" group and for the same reason.
-pub fn search_rows(songs: Vec<Song>, setlists: Vec<Setlist>, query: &str) -> Vec<SearchRow> {
+/// a heading over nothing, which is the reason card G1 left "Inside
+/// attachments" undrawn until this card could answer it honestly rather than
+/// with an empty shell — see this file's module header.
+pub fn search_rows(
+    songs: Vec<Song>,
+    setlists: Vec<Setlist>,
+    attachments: Vec<AttachmentText>,
+    query: &str,
+) -> Vec<SearchRow> {
     if query.trim().is_empty() {
         return vec![SearchRow::Prompt];
     }
 
     let sets = setlist_hits(setlists, &songs, query);
     let found = song_hits(songs, query);
-    if found.is_empty() && sets.is_empty() {
+    let inside = attachment_hits(attachments, query);
+    if found.is_empty() && sets.is_empty() && inside.is_empty() {
         return vec![SearchRow::NoMatch(query.trim().to_string())];
     }
 
@@ -678,16 +930,25 @@ pub fn search_rows(songs: Vec<Song>, setlists: Vec<Setlist>, query: &str) -> Vec
         rows.extend(found.into_iter().map(SearchRow::Song));
     }
     if !sets.is_empty() {
-        // `first: false` even with no songs above it, so the two headings never
+        // `first: false` even with no songs above it, so the headings never
         // trade colours depending on what the query happened to find — a
         // heading that is accent in one search and muted in the next reads as a
-        // state rather than as a label.
+        // state rather than as a label. The same reasoning applies to the
+        // Inside-attachments heading just below.
         rows.push(SearchRow::Heading {
             label: "Setlists",
             count: sets.len(),
             first: false,
         });
         rows.extend(sets.into_iter().map(SearchRow::Setlist));
+    }
+    if !inside.is_empty() {
+        rows.push(SearchRow::Heading {
+            label: "Inside attachments",
+            count: inside.len(),
+            first: false,
+        });
+        rows.extend(inside.into_iter().map(SearchRow::Attachment));
     }
     rows
 }
@@ -2243,6 +2504,7 @@ mod tests {
                 }
                 SearchRow::Song(hit) => format!("song {}", hit.song.title),
                 SearchRow::Setlist(hit) => format!("setlist {}", hit.setlist.name),
+                SearchRow::Attachment(hit) => format!("attachment {}", hit.song_title),
                 SearchRow::Prompt => "prompt".to_string(),
                 SearchRow::NoMatch(q) => format!("nomatch {q}"),
             })
@@ -2259,11 +2521,30 @@ mod tests {
         (songs, sets)
     }
 
+    /// An attachment entry for `book()`'s "Ripple", carrying a body a caller
+    /// can search — the fixture [`attachment_hits`]'s own tests build by hand.
+    fn ripple_chart(kind: AttachmentKind, body: &str) -> AttachmentText {
+        AttachmentText {
+            song: 2,
+            song_title: "Ripple".to_string(),
+            attachment: 20,
+            attachment_title: "Ripple chart".to_string(),
+            kind,
+            body: body.to_string(),
+        }
+    }
+
     #[test]
     fn an_untouched_screen_is_one_prompt_row_and_nothing_else() {
         let (songs, sets) = book();
-        assert_eq!(shape(&search_rows(songs.clone(), sets.clone(), "")), ["prompt"]);
-        assert_eq!(shape(&search_rows(songs, sets, "   ")), ["prompt"]);
+        assert_eq!(
+            shape(&search_rows(songs.clone(), sets.clone(), Vec::new(), "")),
+            ["prompt"]
+        );
+        assert_eq!(
+            shape(&search_rows(songs, sets, Vec::new(), "   ")),
+            ["prompt"]
+        );
     }
 
     #[test]
@@ -2272,7 +2553,7 @@ mod tests {
         // Trimmed, because the panel prints it and a quoted trailing space is
         // an answer that looks like a bug.
         assert_eq!(
-            shape(&search_rows(songs, sets, "  wedding ")),
+            shape(&search_rows(songs, sets, Vec::new(), "  wedding ")),
             ["nomatch wedding"]
         );
     }
@@ -2281,7 +2562,7 @@ mod tests {
     fn a_query_that_finds_both_gets_a_heading_over_each_group() {
         let (songs, sets) = book();
         assert_eq!(
-            shape(&search_rows(songs, sets, "dylan")),
+            shape(&search_rows(songs, sets, Vec::new(), "dylan")),
             [
                 "heading Songs 2 first=true",
                 "song Buckets Of Rain",
@@ -2292,26 +2573,73 @@ mod tests {
         );
     }
 
+    /// The third group, over a query that also happens to answer both of the
+    /// others — the shape a real "what's playing this song" search produces.
+    #[test]
+    fn a_query_that_finds_all_three_gets_a_heading_over_each_group() {
+        let (songs, sets) = book();
+        let attachments = vec![ripple_chart(
+            AttachmentKind::Text,
+            "Verse:\nG       D\nIf my words did glow\n",
+        )];
+        assert_eq!(
+            shape(&search_rows(songs, sets, attachments, "glow")),
+            [
+                "heading Inside attachments 1 first=false",
+                "attachment Ripple",
+            ]
+        );
+    }
+
     /// A group with no matches contributes nothing — not a heading over
-    /// nothing. The same rule the absent "Inside attachments" group follows.
+    /// nothing. Card G1 left "Inside attachments" out of the wireframe on
+    /// exactly this rule, before this card could answer it; this pins the same
+    /// rule now that the group is real.
     #[test]
     fn a_group_with_no_matches_has_no_heading() {
         let (songs, sets) = book();
         assert_eq!(
-            shape(&search_rows(songs.clone(), sets.clone(), "ripple")),
+            shape(&search_rows(songs.clone(), sets.clone(), Vec::new(), "ripple")),
             ["heading Songs 1 first=true", "song Ripple"]
         );
         assert_eq!(
-            shape(&search_rows(songs, sets, "quiet")),
+            shape(&search_rows(songs.clone(), sets.clone(), Vec::new(), "quiet")),
             ["heading Setlists 1 first=false", "setlist Quiet set"]
+        );
+        // A query that answers the Songs group but not a single attachment
+        // draws no "Inside attachments" heading over an empty group.
+        let attachments = vec![ripple_chart(AttachmentKind::Text, "G D Em C\n")];
+        assert_eq!(
+            shape(&search_rows(songs, sets, attachments, "ripple")),
+            ["heading Songs 1 first=true", "song Ripple"]
+        );
+    }
+
+    /// The one lie [`search::NoMatch`](crate::screens::search) must not tell:
+    /// a query that only lives inside a chart still needs the other two
+    /// groups to come back empty before this screen says "nothing matches".
+    #[test]
+    fn a_query_that_only_a_chart_answers_is_not_a_nomatch() {
+        let (songs, sets) = book();
+        let attachments = vec![ripple_chart(
+            AttachmentKind::CapturedPage,
+            "the ocean sighed under a paper moon\n",
+        )];
+        assert_eq!(
+            shape(&search_rows(songs, sets, attachments, "paper moon")),
+            [
+                "heading Inside attachments 1 first=false",
+                "attachment Ripple",
+            ]
         );
     }
 
     #[test]
     fn every_row_has_a_key_and_no_two_rows_share_one() {
         let (songs, sets) = book();
+        let attachments = vec![ripple_chart(AttachmentKind::Text, "the E chord rings out\n")];
         for query in ["", "nothing at all", "dylan", "e"] {
-            let rows = search_rows(songs.clone(), sets.clone(), query);
+            let rows = search_rows(songs.clone(), sets.clone(), attachments.clone(), query);
             let mut keys: Vec<String> = rows.iter().map(|r| r.key()).collect();
             let total = keys.len();
             keys.sort();
@@ -2326,8 +2654,8 @@ mod tests {
     #[test]
     fn a_row_keeps_its_key_across_a_keystroke_and_changes_its_marks() {
         let (songs, sets) = book();
-        let before = search_rows(songs.clone(), sets.clone(), "dyl");
-        let after = search_rows(songs, sets, "dyla");
+        let before = search_rows(songs.clone(), sets.clone(), Vec::new(), "dyl");
+        let after = search_rows(songs, sets, Vec::new(), "dyla");
 
         let song_key = |rows: &[SearchRow]| {
             rows.iter()
@@ -2377,6 +2705,239 @@ mod tests {
         // query would match digits in it.
         let digits = setlist_hits(vec![set(1, "Set 2", vec![1, 2])], &songs, "2");
         assert_eq!(digits[0].summary, "2 songs · 6:02");
+    }
+
+    // ── inside attachments (card G2) ────────────────────────────────────
+
+    fn text_entry(song: SongId, title: &str, body: &str) -> AttachmentText {
+        AttachmentText {
+            song,
+            song_title: title.to_string(),
+            attachment: song as AttachmentId + 100,
+            attachment_title: format!("{title} chart"),
+            kind: AttachmentKind::Text,
+            body: body.to_string(),
+        }
+    }
+
+    /// Acceptance criterion: a word that appears only inside a typed chart
+    /// finds it, and the result names its song.
+    #[test]
+    fn a_word_found_only_inside_a_typed_chart_names_its_song() {
+        let entries = vec![text_entry(
+            1,
+            "Carolina In My Mind",
+            "Capo 3. Eb shapes played as C.\n",
+        )];
+        let hits = attachment_hits(entries, "capo 3");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].song_title, "Carolina In My Mind");
+        assert_eq!(hits[0].kind, AttachmentKind::Text);
+    }
+
+    /// The same claim, for a captured page rather than a typed chart — the
+    /// other kind [`AttachmentText::body`] actually carries text for.
+    #[test]
+    fn a_word_found_only_inside_a_captured_page_names_its_song() {
+        let entries = vec![AttachmentText {
+            kind: AttachmentKind::CapturedPage,
+            ..text_entry(7, "Hallelujah", "a cold and it's a broken hallelujah\n")
+        }];
+        let hits = attachment_hits(entries, "broken hallelujah");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].song_title, "Hallelujah");
+        assert_eq!(hits[0].kind, AttachmentKind::CapturedPage);
+    }
+
+    #[test]
+    fn a_query_absent_from_every_body_finds_no_attachments() {
+        let entries = vec![text_entry(1, "Ripple", "G D Em C\n")];
+        assert!(attachment_hits(entries.clone(), "zzyzx").is_empty());
+        // Card G1's own rule, carried into this group: nothing typed answers
+        // nothing, not everything.
+        assert!(attachment_hits(entries, "").is_empty());
+    }
+
+    #[test]
+    fn the_song_s_own_title_is_not_searched_a_second_time_here() {
+        // "Ripple" is the song's title, not a word in its chart, so a query
+        // for it must not surface this attachment — song_hits already found
+        // it, and a second copy under "Inside attachments" would be the same
+        // song listed twice for one keystroke.
+        let entries = vec![text_entry(1, "Ripple", "G D Em C\n")];
+        assert!(attachment_hits(entries, "ripple").is_empty());
+    }
+
+    #[test]
+    fn attachment_results_sort_a_to_z_by_song_title() {
+        let entries = vec![
+            text_entry(1, "Zimmerman", "the word rings out\n"),
+            text_entry(2, "Absolutely Sweet Marie", "the word rings out\n"),
+        ];
+        let hits = attachment_hits(entries, "rings out");
+        let titles: Vec<&str> = hits.iter().map(|h| h.song_title.as_str()).collect();
+        assert_eq!(titles, ["Absolutely Sweet Marie", "Zimmerman"]);
+    }
+
+    #[test]
+    fn a_snippet_marks_the_match_the_same_way_every_other_group_does() {
+        let snippet = attachment_snippet("the word rings out clearly", "rings").unwrap();
+        assert_eq!(
+            snippet,
+            [
+                Highlight { text: "the word ".into(), matched: false },
+                Highlight { text: "rings".into(), matched: true },
+                Highlight { text: " out clearly".into(), matched: false },
+            ]
+        );
+    }
+
+    #[test]
+    fn no_match_in_the_body_is_no_snippet_at_all() {
+        assert_eq!(attachment_snippet("the word rings out", "zzyzx"), None);
+        assert_eq!(attachment_snippet("the word rings out", ""), None);
+        assert_eq!(attachment_snippet("the word rings out", "   "), None);
+    }
+
+    /// A match far from either edge of a long body gets an ellipsis on both
+    /// sides — the reader is told there is more chart above and below this
+    /// line, not just handed a fragment that looks like the whole thing.
+    #[test]
+    fn a_match_in_the_middle_of_a_long_body_is_windowed_on_both_sides() {
+        let filler = "x".repeat(200);
+        let body = format!("{filler} the loud chord rings out {filler}");
+        let snippet = attachment_snippet(&body, "rings").unwrap();
+        let text: String = snippet.iter().map(|h| h.text.as_str()).collect();
+        assert!(text.starts_with('…'), "{text}");
+        assert!(text.ends_with('…'), "{text}");
+        assert!(text.contains("rings"), "{text}");
+        // The window is a fixed budget either side of the match, not the
+        // whole four-hundred-character body.
+        assert!(text.len() < 150, "window ran long: {} chars: {text}", text.len());
+    }
+
+    /// A match at the very start, or the very end, of a body gets an ellipsis
+    /// only on the side that was actually cut — the honest half of the claim
+    /// the ellipsis makes.
+    #[test]
+    fn a_match_at_either_edge_of_a_body_gets_only_one_ellipsis() {
+        let filler = "x".repeat(200);
+        let at_start = format!("rings out loud {filler}");
+        let snippet = attachment_snippet(&at_start, "rings").unwrap();
+        let text: String = snippet.iter().map(|h| h.text.as_str()).collect();
+        assert!(!text.starts_with('…'), "{text}");
+        assert!(text.ends_with('…'), "{text}");
+
+        let at_end = format!("{filler} it rings out loud");
+        let snippet = attachment_snippet(&at_end, "rings").unwrap();
+        let text: String = snippet.iter().map(|h| h.text.as_str()).collect();
+        assert!(text.starts_with('…'), "{text}");
+        assert!(!text.ends_with('…'), "{text}");
+    }
+
+    /// A short body that fits inside the window entirely gets no ellipsis on
+    /// either side — nothing was cut, so nothing should claim to be.
+    #[test]
+    fn a_short_body_gets_no_ellipsis_at_all() {
+        let snippet = attachment_snippet("rings out", "rings").unwrap();
+        let text: String = snippet.iter().map(|h| h.text.as_str()).collect();
+        assert_eq!(text, "rings out");
+    }
+
+    /// The chart's own significant whitespace — a chord sitting several tabs
+    /// above its syllable — collapses to one space, and a newline separating
+    /// two lines of a captured page's extracted text does too, because a
+    /// snippet is one line by the card's own instruction and cannot draw
+    /// either faithfully.
+    #[test]
+    fn a_snippet_is_always_one_line_whatever_shape_the_source_text_had() {
+        // Short enough that the whole thing fits inside the window (so no
+        // ellipsis complicates the expected string) and carries both kinds of
+        // whitespace a real chart does: a chord's alignment spacing and the
+        // newline between two lines.
+        let body = "G   D\nCarolina in my mind\n";
+        let snippet = attachment_snippet(body, "Carolina in").unwrap();
+        let text: String = snippet.iter().map(|h| h.text.as_str()).collect();
+        assert!(!text.contains('\n'), "{text}");
+        assert_eq!(text, "G D Carolina in my mind");
+    }
+
+    /// Card G2's own instruction: build a library at the stated target size —
+    /// 300 songs — and time a query against it, rather than trust that "it's
+    /// just a scan" stays true as the code around it changes.
+    ///
+    /// Half the library gets a typed chart and half a captured page, each a
+    /// few dozen lines of realistic filler — a chord line over a lyric line,
+    /// repeated — so the scan has an actual corpus to walk rather than three
+    /// hundred empty strings timing nothing. One attachment, buried in the
+    /// middle of the book, carries a line the other 299 do not.
+    ///
+    /// The bound is generous on wall-clock time (CI boxes are noisy) and tight
+    /// on what it would take to blow through: 300 attachments of a couple of
+    /// kilobytes each is a few hundred KB total, and a linear scan over that
+    /// is sub-millisecond work on any machine this runs on. A quadratic
+    /// mistake — re-scanning the whole corpus once per attachment instead of
+    /// once each, say, or rebuilding every song's own text on every one of
+    /// its own attachments — would multiply that by the same 300 and land
+    /// somewhere this bound catches on the first run, not on a flake.
+    #[test]
+    fn searching_a_three_hundred_song_library_s_attachments_stays_fast() {
+        use std::time::Instant;
+
+        const LIBRARY_SIZE: u32 = 300;
+        const NEEDLE: &str = "zzyzxquery";
+
+        let mut songs = Vec::with_capacity(LIBRARY_SIZE as usize);
+        let mut attachments = Vec::with_capacity(LIBRARY_SIZE as usize);
+        for i in 0..LIBRARY_SIZE {
+            let mut s = song(i, &format!("Song {i}"), &format!("Artist {}", i % 40));
+            let attachment_id = i + 1000;
+            s.attachments.push(attachment_id);
+
+            let mut body = String::new();
+            for line in 0..30 {
+                body.push_str(&format!(
+                    "G       D        Em       C  -- verse {line} of song {i}\n"
+                ));
+            }
+            let kind = if i % 2 == 0 {
+                AttachmentKind::Text
+            } else {
+                AttachmentKind::CapturedPage
+            };
+            attachments.push(AttachmentText {
+                song: s.id,
+                song_title: s.title.clone(),
+                attachment: attachment_id,
+                attachment_title: format!("chart {i}"),
+                kind,
+                body,
+            });
+            songs.push(s);
+        }
+        // Song 150's chart is the only one that answers the query.
+        attachments[150]
+            .body
+            .push_str(&format!("this line hides the word {NEEDLE} in it\n"));
+
+        let start = Instant::now();
+        let rows = search_rows(songs, Vec::new(), attachments, NEEDLE);
+        let elapsed = start.elapsed();
+
+        assert_eq!(
+            shape(&rows),
+            ["heading Inside attachments 1 first=false", "attachment Song 150"],
+            "the scan found the one hit and nothing else"
+        );
+        assert!(
+            elapsed.as_millis() < 200,
+            "search over a {LIBRARY_SIZE}-song library's attachments took {elapsed:?}, \
+             expected well under 200ms — see this test's own comment before raising the bound"
+        );
+        eprintln!(
+            "searching_a_three_hundred_song_library_s_attachments_stays_fast: {elapsed:?} \
+             for {LIBRARY_SIZE} songs"
+        );
     }
 
     #[test]

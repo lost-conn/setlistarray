@@ -160,8 +160,15 @@ fn civil_from_days(z: i64) -> (i32, u32, u32) {
     (year as i32, m, d)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+// `Default` exists so card G2's `AttachmentHit` can be a component prop the
+// same way `Song` is (see its own comment on the same rule): the rsx macro
+// builds every prop with `..Default::default()`. `Pdf` is the arm to default
+// to for the same reason `db::convert::kind_from` already falls back to it on
+// a string it does not recognise — an unknown or not-yet-set kind reading as
+// "a file this app cannot look inside" is the safer wrong answer of the three.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum AttachmentKind {
+    #[default]
     Pdf,
     CapturedPage,
     Text,
