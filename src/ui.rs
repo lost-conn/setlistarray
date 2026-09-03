@@ -343,6 +343,40 @@ pub fn sheet_panel_style(open: bool, height_pct: u32) -> String {
     )
 }
 
+// ---------------------------------------------------------------------------
+// Group collapse (card J1)
+// ---------------------------------------------------------------------------
+//
+// The same transition engine the sheets use has a second gap that matters
+// here and never did there: `rinch-dom/src/transition/diff.rs`'s
+// `diff_dimension` only emits a `PropertyChange` for `height` when *both*
+// the old and the new computed value are already a concrete pixel `Length`
+// — `(DimensionValue::Length(a), DimensionValue::Length(b))` is the only arm
+// that matches. `Auto` on either side (an unconstrained, "just flow"
+// height, which is what every element has until something says otherwise)
+// falls through to the wildcard and is skipped, so a height that starts or
+// ends at `auto` does not animate — it snaps, same as the sheets' percentage
+// translate did before `SHEET_PARKED` moved to pixels. `max-height` is not
+// in the picture at all: it is not one of the `TransitionProperty` variants
+// `types.rs` defines, so there is no fallback to reach for there either.
+//
+// So a group's rows can only animate shut and open between two pixel
+// numbers it already has on record — never from `auto`. `crate::screens::
+// library`'s `group_rows` measures that number the ordinary way: it reads
+// `NodeHandle::scroll_height()` on the rows wrapper, which is a live query
+// against whatever layout last resolved for that node, not a snapshot taken
+// when the handle was built — so it is accurate however long ago that
+// layout happened, including "the last time this exact group was open,
+// several toggles ago." `library.rs`'s own comment on its `group_heights`
+// map has the one consequence that leaves unsolved: the very first close of
+// a group that has never been measured has nothing to interpolate the
+// closing edge away from, so that one transition snaps; every open and
+// close after it, once a height is on record, animates.
+pub fn group_rows_style(collapsed: bool, height_px: f32) -> String {
+    let target = if collapsed { 0.0 } else { height_px };
+    format!("overflow: hidden; height: {target}px; transition: height {SHEET_EASE};")
+}
+
 /// The grab handle every sheet wears.
 #[component]
 pub fn SheetHandle() -> NodeHandle {
@@ -400,5 +434,44 @@ mod tests {
         );
         assert_eq!(comfortable, 12, "comfortable header stays at T_LABEL_CAPS's own size");
         assert_eq!(compact, 11);
+    }
+
+    // ── J1: the collapse wrapper ────────────────────────────────────────
+
+    /// A collapsed group is zero-height and clipped, and an open one stands
+    /// at whatever the last measurement said. Both carry the transition, and
+    /// both must: a wrapper that only declares it in one state has nothing to
+    /// interpolate *from* on the way back, which is the whole shape of the
+    /// `Auto`-on-either-side gap `group_rows_style`'s own comment describes.
+    #[test]
+    fn a_collapsed_group_is_zero_height_and_an_open_one_is_its_measured_height() {
+        let open = group_rows_style(false, 412.0);
+        assert!(open.contains("height: 412px"), "{open}");
+        assert!(open.contains("transition: height"), "{open}");
+
+        let shut = group_rows_style(true, 412.0);
+        assert!(shut.contains("height: 0px"), "{shut}");
+        assert!(shut.contains("transition: height"), "{shut}");
+    }
+
+    /// The measurement is ignored while collapsed rather than negated or
+    /// carried through — a collapsed group is 0px whatever it last measured,
+    /// so a stale or absent measurement can never leave rows visible in a
+    /// group the user shut.
+    #[test]
+    fn a_collapsed_group_is_zero_height_whatever_it_last_measured() {
+        for measured in [0.0, 1.0, 412.0, 99_999.0] {
+            let shut = group_rows_style(true, measured);
+            assert!(shut.contains("height: 0px"), "measured {measured}: {shut}");
+        }
+    }
+
+    /// It clips. Without `overflow: hidden` the rows inside a 0px box are
+    /// still painted, so the "collapsed" group would animate to no height and
+    /// go on showing its contents over whatever followed it.
+    #[test]
+    fn the_collapse_wrapper_clips_what_it_is_shrinking() {
+        assert!(group_rows_style(true, 412.0).contains("overflow: hidden"));
+        assert!(group_rows_style(false, 412.0).contains("overflow: hidden"));
     }
 }

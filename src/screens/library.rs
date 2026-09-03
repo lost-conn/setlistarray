@@ -17,7 +17,7 @@ use crate::store::{
     AttachmentsStore, GroupBy, LibraryViewStore, NavStore, Route, SettingsStore, SongsStore,
 };
 use crate::theme::{SCREEN_PAD, T_META, T_META_SMALL, T_SCREEN_TITLE};
-use crate::ui::{Chip, IconButton, SongRow, group_header, icon};
+use crate::ui::{Chip, IconButton, SongRow, group_header, group_rows_style, icon};
 
 /// Where the alphabet scrubber's taps land: one `NodeHandle` per first-letter
 /// group, captured the moment that group's header is built (see
@@ -59,6 +59,14 @@ pub fn Library() -> NodeHandle {
     // built move the only copy out from under the second.
     let scrub_targets_for_rows = scrub_targets.clone();
     let scrub_targets_for_rail = scrub_targets.clone();
+
+    // Card J1: each group's last measured open height in pixels, by label.
+    // Fresh on every mount of this component for the same reason
+    // `scrub_targets` is — a remount rebuilds every row from scratch, so a
+    // map surviving past that point would hold heights for nodes that no
+    // longer exist. See the `for` loop below and [`group_rows_style`] for
+    // how this drives the collapse animation, and what its one gap is.
+    let group_heights: Rc<RefCell<HashMap<String, f32>>> = Rc::new(RefCell::new(HashMap::new()));
 
     rsx! {
         div { style: "flex: 1; display: flex; flex-direction: column; min-height: 0; position: relative;",
@@ -172,69 +180,22 @@ pub fn Library() -> NodeHandle {
                     let expanded = view.is_expanded(&label);
                     let hidden = total.saturating_sub(GROUP_PREVIEW);
 
-                    div { key: {label.clone()},
-                        {insert_group_header(
-                            __scope,
-                            scrub_targets_for_rows.clone(),
-                            view.group_by.get(),
-                            label.clone(),
-                            total,
-                            index == 0,
-                            collapsed,
-                            view.density.get().is_compact(),
-                            {
-                                let label = label.clone();
-                                move || view.toggle_collapsed(label.clone())
-                            },
-                        )}
-
-                        if !collapsed {
-                            div {
-                                // Nested control flow re-runs as its own
-                                // closure, so it takes only `Copy` inputs and
-                                // recomputes the rows from the stores.
-                                for song in songs_in_group(view, songs, attachments, index) {
-                                    let id = song.id;
-                                    let kind = primary_kind(attachments, &song);
-                                    let menu_open = Signal::new(false);
-                                    // Right-click stands in for long-press —
-                                    // see the note in `crate::menu`.
-                                    div {
-                                        key: id,
-                                        oncontextmenu: move || menu_open.set(true),
-                                        DropdownMenu {
-                                            opened_fn: move || menu_open.get(),
-                                            on_close: move || menu_open.set(false),
-                                            position: "bottom-start",
-                                            style: {FULL_WIDTH_TARGET},
-                                            DropdownMenuTarget {
-                                                style: {FULL_WIDTH_TARGET},
-                                                SongRow {
-                                                    song: {song.clone()},
-                                                    kind: {kind},
-                                                    compact: {view.density.get().is_compact()},
-                                                    onclick: move || nav.go(Route::SongDetail(id)),
-                                                }
-                                            }
-                                            DropdownMenuDropdown {
-                                                style: {MENU_SURFACE},
-                                                SongMenuItems { id: id }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Per-group truncation, until the user asks for the rest.
-                            if total > GROUP_PREVIEW && !expanded {
-                                div {
-                                    onclick: move || expand_group(view, songs, index),
-                                    style: "color: var(--sla-accent); font-weight: 500; font-size: 13px; padding: 11px 0;",
-                                    {format!("Show {hidden} more")}
-                                }
-                            }
-                        }
-                    }
+                    {group_entry(
+                        __scope,
+                        view,
+                        songs,
+                        attachments,
+                        nav,
+                        group_heights.clone(),
+                        scrub_targets_for_rows.clone(),
+                        index,
+                        label,
+                        total,
+                        index == 0,
+                        collapsed,
+                        expanded,
+                        hidden,
+                    )}
                 }
 
                 // This screen used to answer "the book is empty" here too —
@@ -398,6 +359,178 @@ fn alphabet_rail(
                         )
                     },
                     {letter.clone()}
+                }
+            }
+        }
+    }
+}
+
+/// One group: its header, its rows (if mounted), and its "Show N more" row
+/// (if any) — built and wired up as a plain function rather than inline `rsx!`
+/// control flow, and appended imperatively via [`NodeHandle::append_child`].
+///
+/// That is a deliberate downgrade from the `if !collapsed { … }` this
+/// replaced, for the same reason [`group_header`] became a plain function
+/// for card H4: card J1's collapse animation needs the rows' own
+/// `NodeHandle` back so the header's `onclick` can read `scroll_height()`
+/// off it, and reactive `if`/`if let` sugar inside `rsx!` re-runs its body as
+/// a closure that has to be callable more than once — which is exactly what
+/// broke here first: an `Option<NodeHandle>` built once and *moved* into
+/// that closure could not also be read back out for the "Show more" row
+/// beside it. Building the container by hand and appending each piece once
+/// sidesteps the question entirely; nothing here needs to re-run on its own,
+/// because the whole group is already inside the `for` loop in [`Library`]
+/// that recreates it from scratch on every relevant change.
+///
+/// Card J1's collapse animation. `group_heights` (declared in [`Library`],
+/// alongside `scrub_targets`, for the same fresh-per-mount reason) remembers
+/// each group's last measured open height in pixels, keyed by label — and a
+/// group that has never been in that map yet renders exactly as it did
+/// before this card: mounted only while `!collapsed`, nothing measured,
+/// nothing animated. See [`crate::ui::group_rows_style`] for why a
+/// *measured* group stays mounted even while collapsed, and its doc comment
+/// plus `crate::ui`'s `SHEET_EASE` block for why `rinch`'s transition engine
+/// leaves exactly one gap in that plan: the very first close of any group,
+/// every session, snaps instead of animating, because there is no previous
+/// *pixel* height on record yet for the diff engine to interpolate away
+/// from — only that one transition; every open and close after it, for that
+/// same group, animates.
+#[allow(clippy::too_many_arguments)]
+fn group_entry(
+    scope: &mut RenderScope,
+    view: LibraryViewStore,
+    songs: SongsStore,
+    attachments: AttachmentsStore,
+    nav: NavStore,
+    group_heights: Rc<RefCell<HashMap<String, f32>>>,
+    scrub_targets: ScrubTargets,
+    index: usize,
+    label: String,
+    total: usize,
+    is_first: bool,
+    collapsed: bool,
+    expanded: bool,
+    hidden: usize,
+) -> NodeHandle {
+    let __scope = scope;
+
+    let known_height = group_heights.borrow().get(&label).copied();
+    let mount_rows = !collapsed || known_height.is_some();
+
+    let rows_handle = if mount_rows {
+        let style = match known_height {
+            Some(h) => group_rows_style(collapsed, h),
+            None => String::new(),
+        };
+        Some(group_rows(__scope, view, songs, attachments, nav, index, style))
+    } else {
+        None
+    };
+
+    let onclick = {
+        let label = label.clone();
+        let rows_handle = rows_handle.clone();
+        move || {
+            // Measured *before* the toggle flips, while the rows (if
+            // mounted) still reflect whatever this group's layout settled
+            // to last frame — `NodeHandle::scroll_height` is a live query
+            // against that resolved layout, not a snapshot taken when the
+            // handle was built, so this is accurate however long ago that
+            // frame was.
+            if let Some(handle) = &rows_handle {
+                let measured = handle.scroll_height() as f32;
+                if measured > 0.0 {
+                    group_heights.borrow_mut().insert(label.clone(), measured);
+                }
+            }
+            view.toggle_collapsed(label.clone());
+        }
+    };
+
+    let header = insert_group_header(
+        __scope,
+        scrub_targets,
+        view.group_by.get(),
+        label.clone(),
+        total,
+        is_first,
+        collapsed,
+        view.density.get().is_compact(),
+        onclick,
+    );
+
+    let container = rsx! { div { key: {label.clone()} } };
+    container.append_child(&header);
+    if let Some(rows) = &rows_handle {
+        container.append_child(rows);
+    }
+
+    // Per-group truncation, until the user asks for the rest.
+    if !collapsed && total > GROUP_PREVIEW && !expanded {
+        let more = rsx! {
+            div {
+                onclick: move || expand_group(view, songs, index),
+                style: "color: var(--sla-accent); font-weight: 500; font-size: 13px; padding: 11px 0;",
+                {format!("Show {hidden} more")}
+            }
+        };
+        container.append_child(&more);
+    }
+
+    container
+}
+
+/// One group's mounted song rows, wrapped in the container whose `height`
+/// card J1's collapse animation transitions.
+///
+/// A plain function rather than a `#[component]`, for the same reason
+/// [`group_header`] is (see its doc comment, and [`insert_group_header`]
+/// above): the `for` loop in [`Library`] needs the real `NodeHandle` back so
+/// it can read `scroll_height()` off it when the group is toggled, and a
+/// `#[component]` call is spliced away by the macro's own codegen with no
+/// handle ever handed back to the caller.
+#[allow(clippy::too_many_arguments)]
+fn group_rows(
+    scope: &mut RenderScope,
+    view: LibraryViewStore,
+    songs: SongsStore,
+    attachments: AttachmentsStore,
+    nav: NavStore,
+    index: usize,
+    style: String,
+) -> NodeHandle {
+    let __scope = scope;
+    rsx! {
+        div {
+            style: {style.clone()},
+            for song in songs_in_group(view, songs, attachments, index) {
+                let id = song.id;
+                let kind = primary_kind(attachments, &song);
+                let menu_open = Signal::new(false);
+                // Right-click stands in for long-press — see the note in
+                // `crate::menu`.
+                div {
+                    key: id,
+                    oncontextmenu: move || menu_open.set(true),
+                    DropdownMenu {
+                        opened_fn: move || menu_open.get(),
+                        on_close: move || menu_open.set(false),
+                        position: "bottom-start",
+                        style: {FULL_WIDTH_TARGET},
+                        DropdownMenuTarget {
+                            style: {FULL_WIDTH_TARGET},
+                            SongRow {
+                                song: {song.clone()},
+                                kind: {kind},
+                                compact: {view.density.get().is_compact()},
+                                onclick: move || nav.go(Route::SongDetail(id)),
+                            }
+                        }
+                        DropdownMenuDropdown {
+                            style: {MENU_SURFACE},
+                            SongMenuItems { id: id }
+                        }
+                    }
                 }
             }
         }
