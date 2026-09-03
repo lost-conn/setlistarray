@@ -54,6 +54,19 @@
 //! [`Wanted::No`] from the progress callback, it carries no page, and it is the
 //! one outcome that is not a verdict on the site.
 //!
+//! ## The one place a site gets special treatment
+//!
+//! Card E7. [`site`] holds a small registry of per-site extractors, and
+//! [`capture`] consults it in exactly one spot: the moment the generic engine
+//! has already decided, from [`detect::verdict`], that a page is a
+//! [`BlockReason::ScriptShell`] and is about to give up on it. Nowhere else —
+//! a paywall or a plain no-chart page never reaches the registry, because
+//! nowhere else is the generic path actually giving up. `site`'s own header
+//! carries the argument against this existing at all and what happens on the
+//! day Ultimate Guitar's markup changes underneath it; the short version is
+//! that the fallback is silent and total, so a rotted extractor costs nothing
+//! beyond the `Blocked(ScriptShell)` screen this app already draws.
+//!
 //! ## Where the bytes go
 //!
 //! Nothing is written until the whole capture is in hand, and then all of it
@@ -98,6 +111,7 @@ pub mod reader;
 // file in here that runs long after a capture is over.
 pub mod render;
 pub mod sanitise;
+pub mod site;
 
 use std::io;
 use std::path::Path;
@@ -654,6 +668,34 @@ pub fn capture(
     let signals = detect::signals(&document, &full_text, &stripped);
     let verdict = detect::verdict(response.status, &signals, &full_text);
 
+    // Card E7's registry, consulted in exactly the one place `mod.rs`'s
+    // header promises: the generic engine has just decided this is a
+    // JavaScript shell and is about to throw it away. `document` here is the
+    // sanitised tree — sanitising never touches an attribute it does not
+    // recognise as a URL or an event handler, so a site-specific extractor
+    // reading `data-content` sees exactly what the site sent. Succeeding here
+    // returns straight out of `capture`, before a single image is downloaded
+    // for a page whose real chart does not need any: the images an ordinary
+    // JS shell references belong to a bundle nobody is keeping.
+    if verdict == Some(BlockReason::ScriptShell) {
+        let host = url::Url::parse(&url)
+            .ok()
+            .and_then(|parsed| parsed.host_str().map(str::to_string));
+        if let Some(host) = host {
+            let raw_html = dom::to_html(&dom::root(&document));
+            if let Some(chart) = site::extract(&host, &raw_html) {
+                return Outcome::Captured(site_captured_page(
+                    url,
+                    title,
+                    chart,
+                    stripped,
+                    signals,
+                    fetched_bytes,
+                ));
+            }
+        }
+    }
+
     let (downloaded, missed) = match &base {
         Some(base) => assets::rewrite(&document, base, fetcher, limits, |done, total, spent| {
             // The page's own bytes are added here rather than inside `rewrite`,
@@ -770,6 +812,44 @@ fn read_narrowed(full_html: &str, url: &str) -> Option<Alternate> {
         text: dom::text_of(&dom::root(&document)),
         html: framed(&dom::to_html(&dom::root(&document)), url, CaptureMode::Reader),
     })
+}
+
+/// Turn a registry hit into the same [`CapturedPage`] shape a generic capture
+/// produces, so nothing downstream — attaching, rendering, G2's search, E6's
+/// re-check — has to know a site extractor was ever involved.
+///
+/// `stripped` and `signals` are the measurements the generic pass already
+/// took of what actually came down over the wire; they stay true regardless
+/// of which path decided what to do with the page, so there is no reason to
+/// re-derive them. There is no `alternate` reading — a site extractor has one
+/// answer, not two — and no assets: the images an ordinary JavaScript shell
+/// references belong to its bundle, not to the chart the registry found
+/// inside it, so `write_into` has nothing to save alongside the text.
+fn site_captured_page(
+    url: String,
+    fallback_title: String,
+    chart: site::ExtractedChart,
+    stripped: Stripped,
+    signals: Signals,
+    fetched_bytes: u64,
+) -> CapturedPage {
+    let pre = dom::new_element("pre");
+    dom::append(&pre, &dom::new_text(&chart.text));
+    let html = framed(&dom::to_html(&pre), &url, CaptureMode::Reader);
+    CapturedPage {
+        title: chart.title.unwrap_or(fallback_title),
+        mode: CaptureMode::Reader,
+        html,
+        text: chart.text,
+        alternate: None,
+        assets: Vec::new(),
+        missed: Vec::new(),
+        stripped,
+        signals,
+        fetched_bytes,
+        reader_fell_back: false,
+        url,
+    }
 }
 
 /// The saved file: a doctype, a comment saying where it came from, the tree.
@@ -962,6 +1042,99 @@ mod tests {
         assert_eq!(reason, BlockReason::ScriptShell);
         assert!(page.is_some(), "the shell is still handed back");
         assert!(reason.explain().contains("JavaScript"));
+    }
+
+    /// A page shaped the way Ultimate Guitar's actually is: an empty React
+    /// mount (`signals.empty_mount`, conclusive on its own per
+    /// `detect::verdict`) and, elsewhere in the same response, a
+    /// `div.js-store` carrying the chart as JSON nobody's reader would see as
+    /// text. `js_store` is `None` for the "the registry finds nothing"
+    /// tests below.
+    fn ultimate_guitar_shaped_html(js_store: Option<&str>) -> String {
+        let div = js_store
+            .map(|data_content| {
+                format!(
+                    r#"<div class="js-store" data-content="{}"></div>"#,
+                    data_content.replace('&', "&amp;").replace('"', "&quot;")
+                )
+            })
+            .unwrap_or_default();
+        format!(
+            r#"<html><head><title>Placeholder Chords @ Example Tab Co</title></head>
+               <body><div id="root"></div>{div}
+               <script>{filler}</script></body></html>"#,
+            div = div,
+            filler = "var boot=1;".repeat(200),
+        )
+    }
+
+    fn placeholder_tab_json() -> String {
+        serde_json::json!({
+            "store": { "page": { "data": {
+                "tab": { "song_name": "Placeholder Song", "artist_name": "The Example Band" },
+                "tab_view": { "wiki_tab": { "content":
+                    "[Intro]\r\n[ch]G[/ch]   [ch]C[/ch]\r\n\r\n[Verse]\r\n[tab][ch]G[/ch]  [ch]D[/ch]\r\n  A placeholder lyric line[/tab]\r\n"
+                } }
+            }}}
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn ultimate_guitar_bytes_produce_a_real_chart_through_the_registry() {
+        let html = ultimate_guitar_shaped_html(Some(&placeholder_tab_json()));
+        let net = Canned::default().html("https://tabs.ultimate-guitar.com/tab/example/song-chords-1", &html);
+        let outcome = capture(
+            "https://tabs.ultimate-guitar.com/tab/example/song-chords-1",
+            CaptureMode::Reader,
+            &Limits::default(),
+            &net,
+            |_| Wanted::Yes,
+        );
+        let Outcome::Captured(page) = outcome else {
+            panic!("expected the registry to turn this into a capture, got {outcome:?}");
+        };
+        assert_eq!(page.title, "Placeholder Song — The Example Band");
+        assert!(page.text.contains("G   C"), "{}", page.text);
+        assert!(page.text.contains("A placeholder lyric line"), "{}", page.text);
+        assert!(!page.text.contains("[ch]"), "{}", page.text);
+        assert!(page.assets.is_empty(), "no bundle image is part of this chart");
+        assert!(page.missed.is_empty());
+    }
+
+    #[test]
+    fn a_page_from_a_host_the_registry_does_not_claim_stays_blocked_even_with_ultimate_guitar_shaped_bytes() {
+        // Same bytes, same JSON, a different host. Proves the registry is
+        // gated on the host and not merely on finding a `js-store` div —
+        // nobody else on earth should have their markup read this closely.
+        let html = ultimate_guitar_shaped_html(Some(&placeholder_tab_json()));
+        let net = Canned::default().html("https://tabs.example/song/1", &html);
+        let Outcome::Blocked { reason, page } = run(net, CaptureMode::Reader) else {
+            panic!("expected a block: this host is not in the registry");
+        };
+        assert_eq!(reason, BlockReason::ScriptShell);
+        assert!(page.is_some());
+    }
+
+    #[test]
+    fn broken_ultimate_guitar_bytes_fall_back_to_the_honest_script_shell_verdict() {
+        // The right host, but no `js-store` div at all — the shape a
+        // redesign leaves behind. The registry finds nothing and today's
+        // behaviour, unchanged, is what the user sees.
+        let html = ultimate_guitar_shaped_html(None);
+        let net = Canned::default().html("https://tabs.ultimate-guitar.com/tab/example/song-chords-1", &html);
+        let outcome = capture(
+            "https://tabs.ultimate-guitar.com/tab/example/song-chords-1",
+            CaptureMode::Reader,
+            &Limits::default(),
+            &net,
+            |_| Wanted::Yes,
+        );
+        let Outcome::Blocked { reason, page } = outcome else {
+            panic!("expected the honest fallback, got {outcome:?}");
+        };
+        assert_eq!(reason, BlockReason::ScriptShell);
+        assert!(page.is_some(), "the shell is still handed back, exactly as before this card");
     }
 
     #[test]
