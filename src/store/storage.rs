@@ -224,6 +224,61 @@ impl Storage {
         }
     }
 
+    /// Card J6's sweep: drop every directory under `attachments/` that
+    /// `known` — the attachment ids `crate::app` just read back from
+    /// [`load`](Self::load) — does not name. `crate::app` calls this exactly
+    /// once, right after that load and before anything in the session can
+    /// attach a chart of its own; see [`Repo::sweep_orphaned_attachments`] for
+    /// the walk itself and the audit of why an orphan needs an actual crash
+    /// to exist at all.
+    ///
+    /// Two refusals, and both are the whole risk of this method:
+    ///
+    /// * **No repository.** The in-memory fallback has no `attachments/` to
+    ///   sweep, and there is no [`Repo`] to ask — [`is_persistent`](Self::is_persistent)
+    ///   names the same condition and is not reused here only because the
+    ///   `Some`/`None` match is what hands back the repository this needs
+    ///   anyway.
+    /// * **A fault already on record.** [`load`](Self::load) hands back an
+    ///   *empty* [`Loaded`] both when a library genuinely holds nothing and
+    ///   when reading it failed and recorded exactly this fault — the two are
+    ///   indistinguishable from `known.is_empty()` alone. Sweeping on the
+    ///   second reading would mean "the read hiccuped" and "delete every
+    ///   attachment directory in the library" have become the same event.
+    ///   The fault this checks is deliberately whatever is on record at call
+    ///   time, not one this method takes an extra look for — a caller that
+    ///   sweeps anywhere but immediately after its own `open` + `load`, before
+    ///   any other write had a chance to fail and be cleared, would be
+    ///   trusting a signal that has moved on.
+    ///
+    /// A failure in the walk itself — the directory listing refused, a
+    /// removal that would not go through — is recorded like any other write
+    /// and comes back as an empty list, the same shape a caller cannot tell
+    /// apart from "there was nothing to sweep." That is acceptable here in a
+    /// way it would not be for a normal write: the cost of under-sweeping is
+    /// a few stray kilobytes on disk, and the cost of a sweep that panics on
+    /// startup because a permissions bit was wrong somewhere is the whole
+    /// app.
+    #[must_use]
+    pub fn sweep_orphaned_attachments(
+        self,
+        known: &[crate::model::AttachmentId],
+    ) -> Vec<crate::model::AttachmentId> {
+        if self.fault.get().is_some() {
+            return Vec::new();
+        }
+        let Some(repo) = self.repo.get() else {
+            return Vec::new();
+        };
+        match repo.sweep_orphaned_attachments(known) {
+            Ok(removed) => removed,
+            Err(e) => {
+                self.record("sweeping orphaned attachment directories", e.to_string());
+                Vec::new()
+            }
+        }
+    }
+
     /// View state and settings, written on every change. Failures are recorded
     /// like any other, but a lost preference never blocks the change itself —
     /// the toggle the user just pressed still moves.
@@ -999,6 +1054,87 @@ mod tests {
         );
         let id = songs.add("Carolina", "M. Ward");
         assert_eq!(songs.get(id).unwrap().title, "Carolina");
+    }
+
+    // ── sweep_orphaned_attachments (J6) ──────────────────────────────────────
+
+    #[test]
+    fn a_sweep_against_a_non_persistent_storage_does_nothing_at_all() {
+        let storage = Storage::in_memory();
+        assert!(!storage.is_persistent());
+
+        let removed = storage.sweep_orphaned_attachments(&[]);
+
+        assert!(removed.is_empty(), "there is no repository to sweep and nothing was touched");
+    }
+
+    /// The failed-load case this card asked to be thought through: an opened
+    /// database whose own read then failed. `Storage::load` hands the caller
+    /// an *empty* `Loaded` here exactly as it would for a library that is
+    /// genuinely empty, and the two must not be swept the same way — reading
+    /// "nothing came back" as "nothing is referenced" would delete a real
+    /// library's charts the moment its read had a bad day. The fault this
+    /// checks is the same signal `crate::app` would have on hand at the one
+    /// moment it is allowed to call this — right after its own `open` and
+    /// `load`, before anything else has run to clear or replace it.
+    #[test]
+    fn a_sweep_does_nothing_once_a_fault_is_already_on_record() {
+        let dir = scratch("store-sweep-after-fault");
+        let repo = Repo::open(&dir).unwrap();
+        // A real orphan, so this test would fail for the right reason if the
+        // fault check were ever removed rather than passing by accident.
+        std::fs::create_dir_all(dir.attachment(999)).unwrap();
+        drop(repo);
+
+        let storage = Storage::open(&dir);
+        assert!(storage.is_persistent());
+        storage.record("reading the library", "a bad read, for this test".into());
+
+        let removed = storage.sweep_orphaned_attachments(&[]);
+
+        assert!(removed.is_empty(), "a fault on record means nothing is trusted enough to sweep");
+        assert!(dir.attachment(999).exists(), "and the orphan is still there to prove it");
+    }
+
+    #[test]
+    fn a_sweep_removes_only_what_a_freshly_loaded_library_does_not_name() {
+        let dir = scratch("store-sweep-live");
+        let storage = Storage::open(&dir);
+        let loaded = storage.load();
+        let songs = SongsStore::restored(
+            storage,
+            AttachmentsStore::restored(storage, loaded.attachments.clone()),
+            SetlistsStore::restored(storage, Vec::new()),
+            loaded.songs,
+        );
+        let owner = songs.add("Landslide", "Fleetwood Mac");
+        let kept = songs
+            .attach(
+                owner,
+                Attachment {
+                    id: 0,
+                    kind: AttachmentKind::Text,
+                    title: "landslide.txt".into(),
+                    bytes_on_disk: 10,
+                    page_count: None,
+                    source_url: None,
+                    captured_at: None,
+                    body: Some("Capo 3".into()),
+                },
+            )
+            .expect("attached");
+        // The orphan a crash between `attach` and a producer's write would
+        // leave — nothing in `loaded.attachments` or anything created since
+        // names this one.
+        std::fs::create_dir_all(dir.attachment(999)).unwrap();
+
+        let known: Vec<_> = songs.get(owner).unwrap().attachments;
+        assert_eq!(known, vec![kept], "the real chart, and only the real chart");
+        let removed = storage.sweep_orphaned_attachments(&known);
+
+        assert_eq!(removed, vec![999]);
+        assert!(!dir.attachment(999_u64).exists());
+        assert!(dir.attachment(kept as u64).exists(), "the real chart survives its own sweep");
     }
 
     #[test]

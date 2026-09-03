@@ -322,6 +322,72 @@ impl Repo {
         }
     }
 
+    /// Card J6's sweep: a directory under `attachments/` whose name no row in
+    /// `known` names is gone the moment this returns.
+    ///
+    /// The audit for this card found the crash window is narrower than it
+    /// first looked. `create_attachment` above makes the row and the
+    /// directory in the same call, and every place that later takes a row
+    /// back out — `delete_attachment`, and therefore
+    /// `AttachmentsStore::forget`, which is every ordinary failure exit
+    /// `SongsStore::attach`/`detach`, `capture::attach_captured` and
+    /// `pdf::import` have — deletes the directory right along with it. None
+    /// of those leak; an orphan needs an actual crash between `attach`
+    /// minting the row+directory and a producer (`capture::write_into`,
+    /// `pdf::import`'s own write, the typed editor's save) finishing the
+    /// bytes inside it, or a `remove_attachment_dir` that failed partway
+    /// (the row already gone, the directory refusing to follow — a full
+    /// disk or a permissions error, not a code path this app chooses).
+    /// Nothing here can tell those two apart, and it does not need to: both
+    /// leave the same thing behind, a directory nothing points at.
+    ///
+    /// `known` is handed in rather than re-read here because the caller —
+    /// `crate::lib::app`, right after its own `Storage::load` — already paid
+    /// for that scan, and this walk has to run against the *same* answer the
+    /// caller is trusting, not a second one that could disagree with it by
+    /// the time this runs.
+    ///
+    /// Two refusals inside the walk itself, both about not touching what this
+    /// app did not put there:
+    /// * A directory whose name does not parse as a bare id is left alone.
+    ///   `DataDir::attachment` only ever names one after an id, so anything
+    ///   else under `attachments/` was not written by this app.
+    /// * A file sitting directly in `attachments/` (there should never be
+    ///   one) is left alone for the same reason — this only ever removes
+    ///   directories.
+    ///
+    /// A missing `attachments/` altogether is not a fault, it is nothing to
+    /// sweep, and comes back as an empty list rather than an error.
+    pub fn sweep_orphaned_attachments(&self, known: &[AttachmentId]) -> DbResult<Vec<AttachmentId>> {
+        let entries = match std::fs::read_dir(self.dir.attachments_root()) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(DbError::Io(e)),
+        };
+
+        let mut removed = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(DbError::Io)?;
+            if !entry.file_type().map_err(DbError::Io)?.is_dir() {
+                continue;
+            }
+            let Some(id) = entry
+                .file_name()
+                .to_str()
+                .and_then(|name| name.parse::<AttachmentId>().ok())
+            else {
+                continue;
+            };
+            if known.contains(&id) {
+                continue;
+            }
+            std::fs::remove_dir_all(entry.path()).map_err(DbError::Io)?;
+            removed.push(id);
+        }
+        removed.sort_unstable();
+        Ok(removed)
+    }
+
     // ── preferences ─────────────────────────────────────────────────────────
 
     pub fn preferences(&self) -> DbResult<Option<Preferences>> {
@@ -574,6 +640,110 @@ mod tests {
         assert!(repo.songs().unwrap()[0].attachments.is_empty());
     }
 
+    // ── sweep_orphaned_attachments (J6) ──────────────────────────────────────
+
+    #[test]
+    fn the_sweep_removes_a_directory_no_row_names() {
+        let dir = scratch("repo-sweep-orphan");
+        let repo = Repo::open(&dir).unwrap();
+        // Nobody's row: a plausible orphan, the shape a crash between
+        // `create_attachment` and a producer finishing its write would leave.
+        std::fs::create_dir_all(dir.attachment(999)).unwrap();
+        std::fs::write(dir.attachment(999).join("page.html"), b"orphaned").unwrap();
+
+        let removed = repo.sweep_orphaned_attachments(&[]).unwrap();
+
+        assert_eq!(removed, vec![999]);
+        assert!(!dir.attachment(999).exists());
+    }
+
+    #[test]
+    fn the_sweep_leaves_a_directory_a_row_names_alone() {
+        let dir = scratch("repo-sweep-referenced");
+        let repo = Repo::open(&dir).unwrap();
+        let owner = repo.create_song(&song("Landslide", "Fleetwood Mac")).unwrap() as SongId;
+        let id = repo.create_attachment(owner, &chart("landslide.txt")).unwrap() as AttachmentId;
+
+        let removed = repo.sweep_orphaned_attachments(&[id]).unwrap();
+
+        assert!(removed.is_empty());
+        assert!(dir.attachment(id as u64).exists());
+    }
+
+    /// The row-with-no-files state `captured_page.rs` already renders — a
+    /// capture that minted its row but has not written a byte into it yet, or
+    /// hasn't since a crash. The directory `create_attachment` makes exists,
+    /// it is empty, and a row still names it: the sweep has to survive on the
+    /// same evidence a live session would, not assume a directory with
+    /// nothing in it is fair game.
+    #[test]
+    fn the_sweep_leaves_a_named_directory_alone_even_with_no_files_in_it() {
+        let dir = scratch("repo-sweep-empty-but-named");
+        let repo = Repo::open(&dir).unwrap();
+        let owner = repo.create_song(&song("Landslide", "Fleetwood Mac")).unwrap() as SongId;
+        let id = repo.create_attachment(owner, &chart("landslide.txt")).unwrap() as AttachmentId;
+        // `create_attachment` already made the directory; empty it out to
+        // stand in for a producer that never got to write anything.
+        assert!(std::fs::read_dir(dir.attachment(id as u64)).unwrap().next().is_none());
+
+        let removed = repo.sweep_orphaned_attachments(&[id]).unwrap();
+
+        assert!(removed.is_empty());
+        assert!(dir.attachment(id as u64).exists());
+    }
+
+    #[test]
+    fn the_sweep_leaves_a_directory_whose_name_is_not_an_attachment_id_alone() {
+        let dir = scratch("repo-sweep-not-ours");
+        let repo = Repo::open(&dir).unwrap();
+        std::fs::create_dir_all(dir.attachments_root().join(".DS_Store")).unwrap();
+        std::fs::create_dir_all(dir.attachments_root().join("thumbnails")).unwrap();
+
+        let removed = repo.sweep_orphaned_attachments(&[]).unwrap();
+
+        assert!(removed.is_empty());
+        assert!(dir.attachments_root().join(".DS_Store").exists());
+        assert!(dir.attachments_root().join("thumbnails").exists());
+    }
+
+    #[test]
+    fn the_sweep_does_nothing_when_attachments_root_does_not_exist_yet() {
+        // `DataDir::new` alone, never opened — `attachments_root()` was never
+        // created, which is not the same thing as "everything in it is an
+        // orphan."
+        let dir = DataDir::new(std::env::temp_dir().join("sla-sweep-never-opened"));
+        let _ = std::fs::remove_dir_all(dir.path());
+        let repo = Repo::open(&dir).unwrap();
+        std::fs::remove_dir_all(dir.attachments_root()).unwrap();
+
+        let removed = repo.sweep_orphaned_attachments(&[]).unwrap();
+
+        assert!(removed.is_empty());
+    }
+
+    /// The failure path this card asked to be checked directly: `attach`
+    /// minting a row and then having the song's own write refused. Traced
+    /// through `SongsStore::attach` → `AttachmentsStore::forget` →
+    /// `delete_attachment`, which is exercised here at the `Repo` layer the
+    /// same way `an_attachment_gets_a_directory_and_loses_it_again` proves the
+    /// ordinary path: nothing is left for the sweep to find because
+    /// `delete_attachment` already took the directory with the row.
+    #[test]
+    fn the_attach_failure_path_leaves_nothing_for_the_sweep_to_find() {
+        let dir = scratch("repo-sweep-attach-failure");
+        let repo = Repo::open(&dir).unwrap();
+        let owner = repo.create_song(&song("Landslide", "Fleetwood Mac")).unwrap() as SongId;
+        let id = repo.create_attachment(owner, &chart("landslide.txt")).unwrap() as AttachmentId;
+
+        // Stand in for the song's own save refusing the pointer — the branch
+        // `SongsStore::attach` takes it back out on, whatever the reason.
+        repo.delete_attachment(id).unwrap();
+
+        let removed = repo.sweep_orphaned_attachments(&[]).unwrap();
+
+        assert!(removed.is_empty(), "there was nothing left to sweep");
+        assert!(!dir.attachment(id as u64).exists());
+    }
 
     /// Attaching a chart writes the link *and* then updates the song, because
     /// the song now has a primary chart to point at. Deleting that song

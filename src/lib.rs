@@ -135,6 +135,37 @@ pub fn app() -> NodeHandle {
     let storage = create_store(Storage::open(&dir));
     let mut loaded = storage.load();
 
+    // Card J6: a directory under `attachments/` that no row names, left by a
+    // crash between `SongsStore::attach` minting the row (and, with it, the
+    // directory `Repo::create_attachment` makes in the same call) and a
+    // producer — `capture::write_into`, `pdf::import`, the typed editor —
+    // finishing the bytes inside it. Every *ordinary* failure on that path
+    // was audited for this card and none of them leak: `AttachmentsStore::
+    // forget` already deletes a row's directory along with its row, which is
+    // what `attach`/`detach`/`capture::attach_captured`/`pdf::import` all call
+    // on their own failure exits. Only an actual crash, or a directory
+    // removal that itself failed partway, leaves one behind — which is
+    // exactly what this sweep is for.
+    //
+    // Right here and nowhere else: `loaded.attachments` is the read this
+    // session is trusting, before the `--seed` block below can add its own
+    // and before any store exists that could attach a chart of its own.
+    // `Storage::sweep_orphaned_attachments` carries its own two refusals —
+    // no repository, or a fault already on record from the load just above —
+    // see its doc comment for why a failed read must never be mistaken for an
+    // empty library.
+    let orphaned = storage.sweep_orphaned_attachments(
+        &loaded.attachments.iter().map(|a| a.id).collect::<Vec<_>>(),
+    );
+    if !orphaned.is_empty() {
+        eprintln!(
+            "setlistarray: swept {} orphaned attachment director{} with no row: {:?}",
+            orphaned.len(),
+            if orphaned.len() == 1 { "y" } else { "ies" },
+            orphaned
+        );
+    }
+
     // `--seed`, and only into an empty library: running it twice must not give
     // you two of everything, and it must never land on top of real songs.
     if startup.seed && loaded.songs.is_empty() && loaded.setlists.is_empty() {

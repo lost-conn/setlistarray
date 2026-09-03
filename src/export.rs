@@ -501,6 +501,62 @@ mod tests {
         let _ = chart_id;
     }
 
+    /// Card J6 closing the loop the module header's own comment on
+    /// `attachment_count` left open: "rather than a second count taken by
+    /// listing directories that could disagree with it if something in
+    /// `<data>/attachments/` were ever orphaned." I1 shipped before anything
+    /// could be orphaned to notice; this proves the promise now that
+    /// `Repo::sweep_orphaned_attachments` exists and `crate::app` runs it
+    /// before a session can touch anything else. `add_tree` walks
+    /// `attachments_root()` wholesale and has no way to tell a real chart
+    /// from an orphan on its own — the only thing standing between an orphan
+    /// and a user's backup zip is that the sweep already removed it.
+    #[test]
+    fn an_export_does_not_package_a_directory_the_startup_sweep_already_removed() {
+        let source_dir = scratch("export-no-orphans");
+        let repo = Repo::open(&source_dir).expect("library opens");
+        let song = repo
+            .create_song(&crate::model::Song::new(0, "Carolina", "M. Ward"))
+            .expect("song created");
+        let kept = repo
+            .create_attachment(song as crate::model::SongId, &chart("carolina-chords.pdf"))
+            .expect("attachment created");
+        std::fs::write(
+            source_dir.attachment(kept).join("carolina-chords.pdf"),
+            b"%PDF-1.4 not a real pdf, just bytes to carry across",
+        )
+        .unwrap();
+        // The shape a crash between `attach` and a producer's write leaves:
+        // a directory `create_attachment` never made, naming an id nothing
+        // in the database points at.
+        std::fs::create_dir_all(source_dir.attachment(999)).expect("a plausible orphan");
+        std::fs::write(source_dir.attachment(999).join("page.html"), b"orphaned").unwrap();
+
+        let known: Vec<crate::model::AttachmentId> = repo
+            .attachments()
+            .unwrap()
+            .into_iter()
+            .map(|a| a.id)
+            .collect();
+        let removed = repo.sweep_orphaned_attachments(&known).expect("the sweep runs clean");
+        assert_eq!(removed, vec![999], "the sweep is what this test relies on");
+
+        let bytes = build_zip(&repo).expect("the zip builds");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("a valid zip");
+        let names: Vec<String> = (0..archive.len())
+            .map(|i| archive.by_index(i).unwrap().name().to_string())
+            .collect();
+
+        assert!(
+            names.iter().any(|n| n == &format!("attachments/{kept}/carolina-chords.pdf")),
+            "the real chart is still in the zip: {names:?}"
+        );
+        assert!(
+            names.iter().all(|n| !n.starts_with("attachments/999/")),
+            "the orphan the sweep removed is not in the zip: {names:?}"
+        );
+    }
+
     #[test]
     fn an_export_leaves_no_scratch_directory_behind() {
         let source_dir = scratch("export-no-litter");
