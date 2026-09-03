@@ -262,6 +262,7 @@ pub fn ChartEditor(song: Option<SongId>, chart: Option<AttachmentId>) -> NodeHan
                         source_url: None,
                         captured_at: None,
                         body: Some(body.clone()),
+                        rechecked_at: None,
                     },
                 )
                 .is_some(),

@@ -280,6 +280,11 @@ pub fn import(
         // want it and D4's rasteriser is where it would come from; until then
         // this is honestly empty rather than a copy of the file as mojibake.
         body: None,
+        // A PDF has no source to check against. E6's re-check reads
+        // `source_url` before it ever reads this, so a PDF is already
+        // excluded on the field above — this stays `None` rather than a day
+        // that would never mean anything.
+        rechecked_at: None,
     };
 
     let attachments = songs.attachments();

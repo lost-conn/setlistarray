@@ -542,6 +542,7 @@ mod tests {
             source_url: None,
             captured_at: None,
             body: None,
+            rechecked_at: None,
         }
     }
 

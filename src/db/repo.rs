@@ -37,13 +37,19 @@ pub const PREFERENCES: &str = "Preferences";
 /// Every attachment field except `body`. The startup scan asks for exactly
 /// these, so a library row physically cannot pull an extracted chart into
 /// memory — the performance budget in the plan, enforced rather than promised.
-const ATTACHMENT_META: [&str; 6] = [
+const ATTACHMENT_META: [&str; 7] = [
     "kind",
     "title",
     "bytes_on_disk",
     "page_count",
     "source_url",
     "captured_at",
+    // Card E6: small enough to sit beside the rest of the metadata rather
+    // than behind the same on-demand door as `body` — it is one `Day`, not
+    // megabytes of extracted text — and a list row needs it in memory to
+    // decide, without a second read, whether opening this page is even
+    // allowed to fire a check today. See `Attachment::rechecked_at`.
+    "rechecked_at",
 ];
 
 /// What a fresh launch reads.
@@ -457,6 +463,7 @@ mod tests {
             source_url: None,
             captured_at: None,
             body: Some("Capo 3. Eb shapes played as C.".into()),
+            rechecked_at: None,
         }
     }
 

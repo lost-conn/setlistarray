@@ -267,6 +267,13 @@ pub fn attachment_fields(attachment: &Attachment) -> FieldMap {
             .map(|d| Value::DateTime(millis_from_day(d))),
     );
     put_some(&mut fields, "body", attachment.body.clone().map(Value::String));
+    put_some(
+        &mut fields,
+        "rechecked_at",
+        attachment
+            .rechecked_at
+            .map(|d| Value::DateTime(millis_from_day(d))),
+    );
     fields
 }
 
@@ -281,6 +288,7 @@ pub fn attachment_from(object: &Object) -> Attachment {
         source_url: string(f, "source_url"),
         captured_at: day(f, "captured_at"),
         body: string(f, "body"),
+        rechecked_at: day(f, "rechecked_at"),
     }
 }
 
@@ -423,6 +431,7 @@ mod tests {
             source_url: Some("https://tabs.example/angel".into()),
             captured_at: Some(Day::new(2026, 5, 9)),
             body: Some("[D] I am an old woman…".into()),
+            rechecked_at: Some(Day::new(2026, 5, 12)),
         };
         let object = object_of("Attachment", 102, attachment_fields(&attachment));
         assert_eq!(attachment_from(&object), attachment);

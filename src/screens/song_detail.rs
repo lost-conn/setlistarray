@@ -940,6 +940,7 @@ mod tests {
             source_url: None,
             captured_at: None,
             body: body.map(str::to_string),
+            rechecked_at: None,
         }
     }
 

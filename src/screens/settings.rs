@@ -268,12 +268,12 @@ pub fn Settings() -> NodeHandle {
                 {reading_row(__scope, "Saved webpages", move || {
                     saved_pages_note(saved_pages(attachments))
                 })}
-                // The switch persists today; card E6 is the re-fetch-and-diff
-                // engine that will read it. That order is deliberate and is the
-                // bet card F3 made with the keep-awake toggle and won: the
-                // preference is a real, stored, tested value either way, and E6
-                // arrives needing a signal to read rather than a screen to
-                // redesign. Said out loud here so it is a plan and not a lie.
+                // The switch persisted for a while before anything read it —
+                // the bet card F3 made with the keep-awake toggle and won: a
+                // real, stored, tested value first, a screen to redesign
+                // never. Card E6 is the reader now: `captured_page::RecheckNote`
+                // asks this signal, on the one screen a captured page is
+                // opened, before it ever touches a socket.
                 {switch_row(__scope, "Re-check saved pages",
                     move || settings.recheck_saved_pages.get(),
                     move || settings.set_recheck_saved_pages(!settings.recheck_saved_pages.get()))}

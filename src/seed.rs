@@ -87,6 +87,7 @@ pub fn attachments() -> Vec<Attachment> {
             source_url: None,
             captured_at: None,
             body: None,
+            rechecked_at: None,
         },
         Attachment {
             id: 102,
@@ -97,6 +98,12 @@ pub fn attachments() -> Vec<Attachment> {
             source_url: Some("https://tabs.example/angel-from-montgomery".into()),
             captured_at: Some(Day::new(2026, 5, 9)),
             body: Some("[D] I am an old woman, named after my mother…".into()),
+            // `--seed` builds an in-memory library with no directory behind
+            // any attachment — see `AttachmentsStore::directory` — so E6's
+            // re-check has nothing on disk to read a mode off of and never
+            // fires here regardless of this field. `None` is still the right
+            // seed: it is what "never checked" actually looks like.
+            rechecked_at: None,
         },
         Attachment {
             id: 103,
@@ -107,6 +114,7 @@ pub fn attachments() -> Vec<Attachment> {
             source_url: None,
             captured_at: None,
             body: None,
+            rechecked_at: None,
         },
         Attachment {
             id: 104,
@@ -117,6 +125,7 @@ pub fn attachments() -> Vec<Attachment> {
             source_url: None,
             captured_at: None,
             body: Some("Capo 3. Eb shapes played as C.".into()),
+            rechecked_at: None,
         },
         Attachment {
             id: 105,
@@ -127,6 +136,7 @@ pub fn attachments() -> Vec<Attachment> {
             source_url: Some("https://tabs.example/wagon-wheel".into()),
             captured_at: Some(Day::new(2026, 2, 2)),
             body: None,
+            rechecked_at: None,
         },
         Attachment {
             id: 106,
@@ -137,6 +147,7 @@ pub fn attachments() -> Vec<Attachment> {
             source_url: None,
             captured_at: None,
             body: None,
+            rechecked_at: None,
         },
         Attachment {
             id: 107,
@@ -147,6 +158,7 @@ pub fn attachments() -> Vec<Attachment> {
             source_url: None,
             captured_at: None,
             body: None,
+            rechecked_at: None,
         },
         Attachment {
             id: 108,
@@ -157,6 +169,7 @@ pub fn attachments() -> Vec<Attachment> {
             source_url: None,
             captured_at: None,
             body: None,
+            rechecked_at: None,
         },
     ]
 }

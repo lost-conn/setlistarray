@@ -205,6 +205,21 @@ pub struct Attachment {
     pub captured_at: Option<Day>,
     /// Extracted text, for TXT attachments and for search inside captures.
     pub body: Option<String>,
+    /// Card E6: the calendar day this attachment's saved page was last
+    /// checked against its live source, or `None` if it never has been.
+    ///
+    /// Only `AttachmentKind::CapturedPage` rows ever get one — nothing else
+    /// in this app has a "source" to re-fetch — but it lives on every
+    /// attachment for the same reason `captured_at` does: one struct, one
+    /// column, and no second table to keep in step for a feature that only
+    /// ever reads and writes through `AttachmentsStore::update`, the same
+    /// door D4's page count and E2's byte count already use.
+    ///
+    /// A calendar `Day` rather than a millisecond timestamp on purpose — see
+    /// `screens::captured_page::should_recheck` for the interval this picked
+    /// and why `Day` is precise enough for it: reusing the type `captured_at`
+    /// already is means this needs no new precision to test or persist.
+    pub rechecked_at: Option<Day>,
 }
 
 // Default exists so `Song` can be a component prop: the rsx macro builds

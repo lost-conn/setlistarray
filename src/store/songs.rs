@@ -372,6 +372,7 @@ mod tests {
             source_url: None,
             captured_at: None,
             body: Some("Capo 3.".into()),
+            rechecked_at: None,
         }
     }
 

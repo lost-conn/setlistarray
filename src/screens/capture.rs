@@ -934,6 +934,9 @@ pub fn attach_captured(
         // attachments reads and what `song_detail` previews under the card
         // until E5 can render the page itself.
         body: Some(page.text.clone()),
+        // Never checked yet — E6's own rate limit reads this as "due now",
+        // which a freshly captured page always is.
+        rechecked_at: None,
     };
 
     let id = songs
