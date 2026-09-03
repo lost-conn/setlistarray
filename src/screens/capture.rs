@@ -150,7 +150,8 @@ use rinch_tabler_icons::TablerIcon;
 
 use crate::capture::render::{self, Page, Sizing};
 use crate::capture::{
-    CaptureMode, CapturedPage, Limits, Outcome, Progress, Wanted, capture, write_into,
+    BlockReason, CaptureMode, CapturedPage, Limits, Missed, Outcome, Progress, Wanted, capture,
+    write_into,
 };
 use crate::menu::MENU_SURFACE;
 use crate::model::{Attachment, AttachmentId, AttachmentKind, Day, SongId, fmt_bytes};
@@ -817,14 +818,21 @@ pub fn mode_label(page: Option<&CapturedPage>, mode: CaptureMode) -> String {
 pub const NO_READER_VIEW: &str =
     "There is no article on this page to narrow to, so the whole page was kept.";
 
-/// The sentence describing what came back, under the preview.
+/// The sentence describing what came back.
 ///
-/// E4 owns the *screens* for the three failures; this is the one line E2 owes
-/// each of them in the meantime, so that a capture that went wrong says so
-/// rather than showing an empty box with a live Attach button under it. Every
-/// string it can produce comes from the engine — `Failure`'s `Display` and
-/// `BlockReason::explain` are both written next to the rule that fires them, so
-/// that the reason and its explanation cannot drift apart.
+/// E2 wrote this so a capture gone wrong said one true thing rather than
+/// showing an empty box with a live Attach button under it, and **card E4 did
+/// not replace it — it builds on it.** `Partial`'s headline, `Blocked`'s
+/// headline and `Failed`'s headline below are all this string; what E4 adds
+/// around it is the missing-image list, the reason-specific icon and colour,
+/// and the "Type the chart instead" way forward. `Captured` and `Cancelled`
+/// still show this sentence completely alone, exactly as E2 left them — a
+/// full success and a stopped capture both say everything there is to say in
+/// one line, and a panel built to hold a caveat or an action would be an
+/// empty box under them. Every string this can produce comes from the engine
+/// — `Failure`'s `Display` and `BlockReason::explain` are both written next
+/// to the rule that fires them, so that the reason and its explanation cannot
+/// drift apart.
 pub fn verdict(outcome: &Outcome) -> String {
     match outcome {
         Outcome::Captured(page) => format!(
@@ -1077,6 +1085,35 @@ const PREVIEW_MAX_PX: u32 = 240;
 /// end of the one ladder, and the viewer is the large end. A preview at a size
 /// nothing else in the app uses would be a third rendering of the same object.
 const PREVIEW_BASE_PX: f32 = 12.5;
+
+/// How long a missed image's name is allowed to get on `Partial`'s list
+/// before it is cut, in characters.
+///
+/// The same idea `TITLE_LIMIT` is for a page's title, sized for the shorter
+/// line it sits on: a filename beside its reason (`· the site answered 404`)
+/// has less room than a title has on its own, and the CDN paths chord sites
+/// actually serve run to a hash-and-a-half past anything worth reading in
+/// full.
+const MISSED_NAME_LIMIT: usize = 28;
+
+/// How tall `Partial`'s "what didn't come down" list is allowed to get before
+/// it scrolls inside itself, in CSS pixels.
+///
+/// The same worry [`PREVIEW_MAX_PX`] exists for, answered the same way: a page
+/// that missed forty images must not push Cancel and Attach off the bottom of
+/// a 393×852 phone. Ninety-two is about four lines at [`T_META_SMALL`]'s size
+/// — enough to show the shape of the problem (one bad CDN path, repeated)
+/// without the list becoming its own scrollable screen bolted onto this one.
+const MISSED_LIST_MAX_PX: u32 = 92;
+
+/// "Type the chart instead" — the way forward under a `Blocked` or `Failed`
+/// panel, where no amount of pressing Capture again will produce a chart.
+/// Tinted with the accent rather than `--sla-fill`'s neutral chip, because
+/// this is the one real answer these two panels have and it should not read
+/// as a filter chip beside a headline that just said the fetch failed.
+const TYPE_INSTEAD: &str = "display: inline-flex; align-items: center; gap: 6px; \
+    align-self: flex-start; background: var(--sla-accent-tint); color: var(--sla-accent-on-tint); \
+    border-radius: 999px; padding: 9px 14px 9px 12px; font-size: 14px; font-weight: 600;";
 
 #[component]
 pub fn CaptureScreen(song: Option<SongId>) -> NodeHandle {
@@ -1429,10 +1466,20 @@ pub fn CaptureScreen(song: Option<SongId>) -> NodeHandle {
                     }
                 }
 
-                // What the engine made of it. E4 replaces this with its three
-                // designed screens; until then a capture that went wrong says
-                // one true sentence rather than nothing.
-                if flow.with(|state| matches!(state, Flow::Settled { .. } | Flow::NoWorker { .. })) {
+                // What the engine made of it. Card E4: three designed panels
+                // for `Partial`, `Blocked` and `Failed`, each below; the plain
+                // sentence here is what is left over — `Captured`, `Cancelled`
+                // and `NoWorker`, none of which needed more than the one line
+                // E2 always gave them. A full success has nothing to add to
+                // its own byte count; a stopped capture said everything there
+                // is to say the moment it stopped; and a device that would not
+                // hand out a thread is not a capture that went wrong, it is a
+                // capture that never got to try.
+                if flow.with(|state| matches!(
+                    state,
+                    Flow::Settled { outcome: Outcome::Captured(_) | Outcome::Cancelled, .. }
+                        | Flow::NoWorker { .. }
+                )) {
                     div { style: {format!("{T_META} color: {};",
                             if flow.with(|state| state.attachable().is_some()) {
                                 "var(--sla-muted)"
@@ -1440,6 +1487,110 @@ pub fn CaptureScreen(song: Option<SongId>) -> NodeHandle {
                                 "var(--sla-danger)"
                             })},
                         {move || flow.with(explanation)}
+                    }
+                }
+
+                // `Partial` — a success with a caveat, and it has to read like
+                // one. Not the danger colour above: a chart that came down
+                // with a couple of missing images is a page that opens
+                // offline and works, and colouring that red would teach
+                // exactly the wrong lesson about what just happened. The
+                // check mark is the same glyph the checklist above uses for
+                // `Tick::Done`, in the same accent — this panel is the
+                // checklist's own conclusion, not a different kind of news.
+                if flow.with(|state| matches!(state, Flow::Settled { outcome: Outcome::Partial(_), .. })) {
+                    div { style: {PANEL},
+                        div { style: "display: flex; align-items: flex-start; gap: 10px;",
+                            span { style: "display: flex; color: var(--sla-accent); flex-shrink: 0; margin-top: 1px;",
+                                {icon(__scope, TablerIcon::CircleCheck, 18)}
+                            }
+                            div { style: {format!("{T_META} color: var(--sla-ink-2);")},
+                                {move || flow.with(explanation)}
+                            }
+                        }
+                        // Which images, named rather than merely counted — the
+                        // card's own words are "say which". Bounded the same
+                        // way the preview above is: see `MISSED_LIST_MAX_PX`.
+                        div {
+                            style: {format!("max-height: {MISSED_LIST_MAX_PX}px; overflow-y: auto; \
+                                             display: flex; flex-direction: column; gap: 4px; \
+                                             padding-left: 28px;")},
+                            for (index, line) in flow.with(missed_rows) {
+                                div { key: {index}, style: {T_META_SMALL}, {line} }
+                            }
+                        }
+                    }
+                }
+
+                // `Blocked` — and the reason is not decoration. A bot wall, a
+                // paywall, a JavaScript shell and a real page with no chart in
+                // it are four different problems with four different ways
+                // forward, so each gets its own icon and, via `explanation`,
+                // its own sentence — `BlockReason::explain` is what keeps the
+                // four from reading as one. `has_page` is the other axis: it
+                // is what colours this panel (a page worth keeping is not
+                // drawn in danger red) and it is what puts "Attach anyway" on
+                // the footer instead of "Try again" — see `primary_label`.
+                //
+                // `for` over a nought-or-one `Vec` rather than an `if let`,
+                // the same shape `chart_surface::captured_of` uses for the
+                // same reason: it is how a computed value gets into template
+                // scope here, and zero-or-one items is exactly what "only
+                // when the state is `Blocked`" means to a `for`.
+                for (reason, headline, has_page) in flow.with(blocked_details) {
+                    div {
+                        key: {headline.clone()},
+                        style: {PANEL},
+                        div { style: "display: flex; align-items: flex-start; gap: 10px;",
+                            span {
+                                style: {format!("display: flex; flex-shrink: 0; margin-top: 1px; color: {};",
+                                    if has_page { "var(--sla-muted)" } else { "var(--sla-danger)" })},
+                                {icon(__scope, block_icon(&reason), 18)}
+                            }
+                            div {
+                                style: {format!("{T_META} color: {};",
+                                    if has_page { "var(--sla-ink-2)" } else { "var(--sla-danger)" })},
+                                {headline}
+                            }
+                        }
+                        // No amount of retrying wins against a page that
+                        // builds itself with JavaScript or a wall that only
+                        // talks to browsers, so the way forward on offer is
+                        // the one that always works: give up capturing this
+                        // page and type the chart in by hand, on the song
+                        // this screen already knows.
+                        div {
+                            onclick: move || nav.go(Route::TypeChart { song, chart: None }),
+                            style: {TYPE_INSTEAD},
+                            {icon(__scope, TablerIcon::Keyboard, 15)}
+                            "Type the chart instead"
+                        }
+                    }
+                }
+
+                // `Failed` — nothing came down at all, in the engine's own
+                // words (`Failure`'s `Display`, capitalised into a sentence by
+                // `verdict`). The same escape hatch `Blocked` offers: a fetch
+                // that could not reach the site, or was refused, or was too
+                // big to keep, is not going to succeed on a second press any
+                // more than a JavaScript shell would, and typing the chart in
+                // costs nothing this screen has not already asked for once.
+                if flow.with(|state| matches!(state, Flow::Settled { outcome: Outcome::Failed(_), .. })) {
+                    div { style: {PANEL},
+                        div { style: "display: flex; align-items: flex-start; gap: 10px;",
+                            span { style: "display: flex; color: var(--sla-danger); flex-shrink: 0; margin-top: 1px;",
+                                {icon(__scope, TablerIcon::CloudOff, 18)}
+                            }
+                            div { style: {format!("{T_META} color: var(--sla-danger);")},
+                                {move || flow.with(explanation)}
+                            }
+                        }
+                        div {
+                            onclick: move || nav.go(Route::TypeChart { song, chart: None }),
+                            style: {TYPE_INSTEAD},
+                            {icon(__scope, TablerIcon::Keyboard, 15)}
+                            "Type the chart instead"
+                        }
                     }
                 }
 
@@ -1621,13 +1772,98 @@ fn explanation(state: &Flow) -> String {
     }
 }
 
+/// One line of `Partial`'s "what didn't come down" list: which image, and
+/// why it did not arrive.
+///
+/// `Missed::source` is the URL the image was fetched from, and a bare URL is
+/// the wrong thing to put in a list meant to be scanned at a glance — chord
+/// sites keep their images behind CDN paths a hundred characters long, query
+/// string and all. What a person actually recognises is the filename
+/// (`capo-chart.png`, not `https://cdn.example.com/v3/assets/…`), so that is
+/// what this keeps: the query string dropped as noise, the last path segment
+/// kept as the name, and the name itself cut at [`MISSED_NAME_LIMIT`] for the
+/// one CDN that names a file after its own hash. A source with no path at all
+/// falls back to showing the whole thing, because a truncated nothing is
+/// worse than an ugly something.
+fn missed_line(missed: &Missed) -> String {
+    let path = missed.source.split('?').next().unwrap_or_default();
+    let name = path
+        .rsplit('/')
+        .find(|segment| !segment.is_empty())
+        .unwrap_or(path);
+    let name = if name.chars().count() > MISSED_NAME_LIMIT {
+        let cut: String = name.chars().take(MISSED_NAME_LIMIT).collect();
+        format!("{}…", cut.trim_end())
+    } else {
+        name.to_string()
+    };
+    format!("{name} · {}", missed.why)
+}
+
+/// `Partial`'s missed-image rows, indexed for `key:` — nought outside a
+/// partial capture, which is what lets the panel's `for` draw nothing rather
+/// than needing an `if` wrapped around it too.
+fn missed_rows(state: &Flow) -> Vec<(usize, String)> {
+    let Flow::Settled { outcome: Outcome::Partial(page), .. } = state else {
+        return Vec::new();
+    };
+    page.missed.iter().map(missed_line).enumerate().collect()
+}
+
+/// Which glyph fronts a `Blocked` panel.
+///
+/// Four reasons, four pictures — the card's own words are that a bot wall and
+/// a paywall "must not flatten" into one sentence, and an identical icon over
+/// four different explanations would flatten them right back down to one
+/// picture wearing four captions. `ShieldLock` reads as "this site is
+/// checking who you are", not as an error; `Lock` is the one glyph everyone
+/// already reads as "pay to unlock"; `Code` says the page is a program rather
+/// than a document, which is the one sentence `ScriptShell` exists to carry;
+/// and `SearchOff` is a page that came down clean but has nothing this app
+/// was looking for in it.
+fn block_icon(reason: &BlockReason) -> TablerIcon {
+    match reason {
+        BlockReason::Challenged => TablerIcon::ShieldLock,
+        BlockReason::Paywalled => TablerIcon::Lock,
+        BlockReason::ScriptShell => TablerIcon::Code,
+        BlockReason::NoChart => TablerIcon::SearchOff,
+    }
+}
+
+/// `Blocked`'s three pieces, nought-or-one — the same shape
+/// `chart_surface::captured_of` uses for the same reason: `rsx!`'s `for` is
+/// how a computed value gets into template scope here, and zero-or-one items
+/// is exactly what "only when the state is `Blocked`" means to a `for`.
+///
+/// `headline` is [`explanation`]'s sentence, which for a `Blocked` state is
+/// `BlockReason::explain` word for word — read here from the same `reason`
+/// this function hands back for the icon, so the panel's picture and its
+/// sentence are guaranteed to be about the same one of the four reasons.
+fn blocked_details(state: &Flow) -> Vec<(BlockReason, String, bool)> {
+    let Flow::Settled { outcome, .. } = state else {
+        return Vec::new();
+    };
+    let Outcome::Blocked { reason, page } = outcome else {
+        return Vec::new();
+    };
+    vec![(reason.clone(), explanation(state), page.is_some())]
+}
+
 fn primary_label(state: &Flow) -> String {
     match state {
         Flow::Waiting => "Capture".to_string(),
         Flow::Running { .. } => "Capturing…".to_string(),
+        // A blocked page still worth keeping gets its own word for it. The
+        // bytes behind a paywall's teaser, or a script shell's markup, are
+        // not the chart that was asked for — plain "Attach" would read as
+        // though this screen thought they were, and the card's own name for
+        // this action is "Attach anyway".
+        Flow::Settled { outcome: Outcome::Blocked { page: Some(_), .. }, .. } => {
+            "Attach anyway".to_string()
+        }
         Flow::Settled { outcome, .. } if outcome.page().is_some() => "Attach".to_string(),
         // Nothing came down. The button becomes the retry, which is the
-        // transition E4 will keep when it draws these properly.
+        // transition E4 kept when it drew these properly.
         Flow::Settled { .. } | Flow::NoWorker { .. } => "Try again".to_string(),
         Flow::Attached { .. } => "Attach".to_string(),
     }
@@ -1653,7 +1889,7 @@ impl CancelThrough for Signal<Flow> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capture::{BlockReason, Failure, Missed, Stripped};
+    use crate::capture::{Failure, Stripped};
 
     fn page(url: &str) -> CapturedPage {
         CapturedPage {
@@ -1734,7 +1970,9 @@ mod tests {
             }),
         );
         assert!(flow.attachable().is_some());
-        assert_eq!(primary_label(&flow), "Attach");
+        // Not plain "Attach" — card E4's word for keeping a page the engine
+        // has already said is not the chart that was asked for.
+        assert_eq!(primary_label(&flow), "Attach anyway");
         assert!(verdict_of(&flow).contains("subscription"));
     }
 
@@ -2256,6 +2494,128 @@ mod tests {
         assert!(flow.attachable().is_some());
         assert_eq!(primary_label(&flow), "Attach");
         assert_eq!(flow.url(), "https://tabs.example/song");
+    }
+
+    // ── E4: the three failure panels ────────────────────────────────────────
+
+    #[test]
+    fn a_missed_image_is_named_after_its_filename_not_its_whole_url() {
+        let missed = Missed::new(
+            "https://cdn.example.com/v3/assets/img/capo-chart.png",
+            "the site answered 404",
+        );
+        assert_eq!(missed_line(&missed), "capo-chart.png · the site answered 404");
+    }
+
+    #[test]
+    fn a_missed_images_query_string_is_dropped_as_noise() {
+        let missed = Missed::new("https://cdn.example.com/img.png?token=abc123&v=2", "timed out");
+        assert_eq!(missed_line(&missed), "img.png · timed out");
+    }
+
+    #[test]
+    fn a_missed_image_with_no_path_at_all_falls_back_to_the_whole_source() {
+        let missed = Missed::new("not-a-url-at-all", "could not be parsed");
+        assert_eq!(missed_line(&missed), "not-a-url-at-all · could not be parsed");
+    }
+
+    /// A CDN that names a file after its own hash must not wrap the list —
+    /// the same argument `page_title`'s cut makes, on the shorter line this
+    /// list draws its names on.
+    #[test]
+    fn a_long_filename_is_cut_rather_than_wrapping_the_list() {
+        let long_name = format!("{}.png", "a".repeat(60));
+        let missed = Missed::new(&format!("https://x/{long_name}"), "too large");
+        let line = missed_line(&missed);
+        assert!(line.starts_with(&"a".repeat(MISSED_NAME_LIMIT)), "{line}");
+        assert!(line.contains('…'), "{line}");
+        assert!(line.ends_with("· too large"), "{line}");
+    }
+
+    #[test]
+    fn missed_rows_lists_every_image_a_partial_capture_lost() {
+        let mut partial = page("https://x/1");
+        partial.missed = vec![
+            Missed::new("https://x/a.png", "the site answered 404"),
+            Missed::new("https://x/b.png", "timed out"),
+        ];
+        let mut flow = running();
+        flow.deliver(1, Message::Done(Outcome::Partial(partial)));
+
+        let rows = missed_rows(&flow);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0], (0, "a.png · the site answered 404".to_string()));
+        assert_eq!(rows[1], (1, "b.png · timed out".to_string()));
+    }
+
+    #[test]
+    fn missed_rows_is_empty_outside_a_partial_capture() {
+        assert!(missed_rows(&Flow::Waiting).is_empty());
+
+        let mut flow = running();
+        flow.deliver(1, Message::Done(Outcome::Captured(page("https://x/1"))));
+        assert!(missed_rows(&flow).is_empty(), "a clean capture has nothing missing to list");
+    }
+
+    #[test]
+    fn blocked_details_carries_the_reason_the_headline_and_whether_theres_a_page() {
+        let mut flow = running();
+        flow.deliver(
+            1,
+            Message::Done(Outcome::Blocked {
+                reason: BlockReason::Paywalled,
+                page: Some(Box::new(page("https://x/1"))),
+            }),
+        );
+
+        let details = blocked_details(&flow);
+        assert_eq!(details.len(), 1);
+        let (reason, headline, has_page) = &details[0];
+        assert_eq!(*reason, BlockReason::Paywalled);
+        assert!(headline.contains("subscription"), "{headline}");
+        assert!(*has_page);
+    }
+
+    /// A bot wall answers before any bytes worth keeping arrive, and the
+    /// panel has to know that so it can colour itself danger and leave
+    /// "Attach anyway" off the footer.
+    #[test]
+    fn blocked_details_says_there_is_no_page_when_the_site_refused_at_the_door() {
+        let mut flow = running();
+        flow.deliver(
+            1,
+            Message::Done(Outcome::Blocked { reason: BlockReason::Challenged, page: None }),
+        );
+
+        let (_, _, has_page) = &blocked_details(&flow)[0];
+        assert!(!has_page);
+    }
+
+    #[test]
+    fn blocked_details_is_empty_outside_a_blocked_capture() {
+        assert!(blocked_details(&Flow::Waiting).is_empty());
+
+        let mut flow = running();
+        flow.deliver(1, Message::Done(Outcome::Captured(page("https://x/1"))));
+        assert!(blocked_details(&flow).is_empty());
+    }
+
+    /// The card's own requirement: a paywall and a bot wall "must not
+    /// flatten" into one sentence. This is the same guarantee for the
+    /// picture beside the sentence.
+    #[test]
+    fn the_four_block_reasons_draw_four_different_icons() {
+        use std::collections::HashSet;
+        let icons: HashSet<TablerIcon> = [
+            BlockReason::Challenged,
+            BlockReason::Paywalled,
+            BlockReason::ScriptShell,
+            BlockReason::NoChart,
+        ]
+        .iter()
+        .map(block_icon)
+        .collect();
+        assert_eq!(icons.len(), 4, "a paywall and a bot wall must not look like the same problem");
     }
 
     fn verdict_of(flow: &Flow) -> String {
