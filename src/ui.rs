@@ -186,12 +186,27 @@ pub fn group_header_font_size(compact: bool) -> u32 {
 /// converting it in place cost nothing; a component with call sites that
 /// still needed the DSL form would keep both, the way `MetaChip` and this one
 /// used to coexist.
+/// `collapsed_fn` is a closure, not a plain `bool`, and that is card K51's
+/// fix, not a style choice. Every call site used to hand this a `bool` read
+/// once, outside any reactive closure, while the `for` loop in [`Library`]
+/// built the header — so the `if collapsed { … }` below auto-wrapped by the
+/// rsx macro (`generate_if_block`, `move || { #condition }`) closed over a
+/// *frozen* value rather than a live signal read. Writing
+/// `LibraryViewStore::collapsed` through `toggle_collapsed` therefore
+/// invalidated nothing this header subscribed to: the badge, and the
+/// group's row height beside it, sat exactly as they were until some
+/// unrelated change (adding a song, re-sorting) rebuilt the whole group from
+/// scratch and read the signal fresh. A tap looked like it did nothing.
+/// Taking a closure and calling it *inside* the `if` — so the condition
+/// itself performs the `.get()` — makes the auto-wrapped closure a genuine
+/// subscription, and `show_dom` updates just this badge when the signal
+/// changes, with no help from anything else on screen.
 pub fn group_header(
     scope: &mut RenderScope,
     label: String,
     count: usize,
     is_first: bool,
-    collapsed: bool,
+    collapsed_fn: impl Fn() -> bool + 'static,
     compact: bool,
     onclick: impl Fn() + 'static,
 ) -> NodeHandle {
@@ -215,7 +230,7 @@ pub fn group_header(
                 style: {format!("{T_META_SMALL}")},
                 {format!("{count}")}
             }
-            if collapsed {
+            if collapsed_fn() {
                 span { style: {format!("{T_META_SMALL}")}, "collapsed" }
             }
             div { style: "flex: 1; height: 1px; background: var(--sla-hairline);" }
@@ -344,38 +359,61 @@ pub fn sheet_panel_style(open: bool, height_pct: u32) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Group collapse (card J1)
+// Group collapse (card J1, removed by card K51)
 // ---------------------------------------------------------------------------
 //
-// The same transition engine the sheets use has a second gap that matters
-// here and never did there: `rinch-dom/src/transition/diff.rs`'s
+// This block used to hold `group_rows_style`, which animated a library
+// group's rows shut and open by transitioning a wrapper's `height` between
+// two measured pixel values — `rinch-dom/src/transition/diff.rs`'s
 // `diff_dimension` only emits a `PropertyChange` for `height` when *both*
-// the old and the new computed value are already a concrete pixel `Length`
-// — `(DimensionValue::Length(a), DimensionValue::Length(b))` is the only arm
-// that matches. `Auto` on either side (an unconstrained, "just flow"
-// height, which is what every element has until something says otherwise)
-// falls through to the wildcard and is skipped, so a height that starts or
-// ends at `auto` does not animate — it snaps, same as the sheets' percentage
-// translate did before `SHEET_PARKED` moved to pixels. `max-height` is not
-// in the picture at all: it is not one of the `TransitionProperty` variants
-// `types.rs` defines, so there is no fallback to reach for there either.
+// the old and new computed value are already a concrete pixel `Length`
+// (`Auto` on either side, which is what every element starts at, falls
+// through to the wildcard and is skipped), so `crate::screens::library`
+// measured each group's open height with `NodeHandle::scroll_height()` the
+// first time it was seen and interpolated between that and zero on every
+// toggle after. That much worked, and animated correctly on the device.
 //
-// So a group's rows can only animate shut and open between two pixel
-// numbers it already has on record — never from `auto`. `crate::screens::
-// library`'s `group_rows` measures that number the ordinary way: it reads
-// `NodeHandle::scroll_height()` on the rows wrapper, which is a live query
-// against whatever layout last resolved for that node, not a snapshot taken
-// when the handle was built — so it is accurate however long ago that
-// layout happened, including "the last time this exact group was open,
-// several toggles ago." `library.rs`'s own comment on its `group_heights`
-// map has the one consequence that leaves unsolved: the very first close of
-// a group that has never been measured has nothing to interpolate the
-// closing edge away from, so that one transition snaps; every open and
-// close after it, once a height is on record, animates.
-pub fn group_rows_style(collapsed: bool, height_px: f32) -> String {
-    let target = if collapsed { 0.0 } else { height_px };
-    format!("overflow: hidden; height: {target}px; transition: height {SHEET_EASE};")
-}
+// What card J1 could not see from a diff, and what verifying K51's actual
+// fix — that tapping a header repaints at all — turned up on the device, is
+// that the transition engine only half-implements a `height` change:
+// `rinch-dom/src/transition/apply.rs` updates the node's `computed_style`
+// for paint every frame of the animation, but it never pushes the
+// interpolated value into Taffy and never marks the node's layout dirty.
+// Paint and layout only agree by accident, at the two ends of a transition
+// that both happen to be values Taffy already had on record from some
+// earlier real layout pass — which is exactly true the first time a group
+// closes (Taffy laid it out open at its natural height a moment ago, and
+// "0px, clipped" needs no new layout to look right) and exactly false the
+// first time that same group reopens: the animation walks `computed_style`
+// back up from 0 toward the remembered height for *paint*, but the node's
+// actual layout box, as far as Taffy is concerned, never left 0. The rows
+// were correctly back in the DOM, correctly re-mounted, and permanently
+// invisible, because the box holding them had a resolved height of zero
+// that nothing in this animation ever asked Taffy to change.
+//
+// That is not a bug in how this screen drove the engine; it is a hole in
+// the engine itself, on the layout side rather than the paint side of the
+// two `../rinch-fixes` (`8526ce6`) already fixed there — a zero-sized box
+// painting children regardless of `overflow`, and a degenerate clip treated
+// as no clip, both found by exercising this same animation and both worth
+// keeping upstream whether or not this app still animates anything. This
+// one has no fix yet, upstream or local, so card K51 took the animation
+// back out rather than ship a group that reopens looking broken. See
+// [`crate::screens::library::group_entry`]'s doc comment for where the
+// mount/unmount code that replaced it lives, and this file's git history
+// for `group_rows_style` itself if the shape of the pixel math is ever
+// worth reading again.
+//
+// The two sheets below are still the only things in this app that animate,
+// and they get to keep doing it for a reason this bug makes concrete rather
+// than aesthetic: a sheet's panel stays mounted, translated off-screen,
+// for exactly as long as it exists — `sheet_panel_style` never asks
+// anything to unmount and remount across the transition, so there is never
+// a moment where paint and layout are allowed to describe two different
+// boxes. A collapsing library group cannot make that same promise and
+// still be a list that scrolls, which is the whole reason mounting and
+// unmounting it outright, with no animation, is correct here and would not
+// be a downgrade even if the engine grew a fix for this tomorrow.
 
 /// The grab handle every sheet wears.
 #[component]
@@ -436,42 +474,22 @@ mod tests {
         assert_eq!(compact, 11);
     }
 
-    // ── J1: the collapse wrapper ────────────────────────────────────────
-
-    /// A collapsed group is zero-height and clipped, and an open one stands
-    /// at whatever the last measurement said. Both carry the transition, and
-    /// both must: a wrapper that only declares it in one state has nothing to
-    /// interpolate *from* on the way back, which is the whole shape of the
-    /// `Auto`-on-either-side gap `group_rows_style`'s own comment describes.
-    #[test]
-    fn a_collapsed_group_is_zero_height_and_an_open_one_is_its_measured_height() {
-        let open = group_rows_style(false, 412.0);
-        assert!(open.contains("height: 412px"), "{open}");
-        assert!(open.contains("transition: height"), "{open}");
-
-        let shut = group_rows_style(true, 412.0);
-        assert!(shut.contains("height: 0px"), "{shut}");
-        assert!(shut.contains("transition: height"), "{shut}");
-    }
-
-    /// The measurement is ignored while collapsed rather than negated or
-    /// carried through — a collapsed group is 0px whatever it last measured,
-    /// so a stale or absent measurement can never leave rows visible in a
-    /// group the user shut.
-    #[test]
-    fn a_collapsed_group_is_zero_height_whatever_it_last_measured() {
-        for measured in [0.0, 1.0, 412.0, 99_999.0] {
-            let shut = group_rows_style(true, measured);
-            assert!(shut.contains("height: 0px"), "measured {measured}: {shut}");
-        }
-    }
-
-    /// It clips. Without `overflow: hidden` the rows inside a 0px box are
-    /// still painted, so the "collapsed" group would animate to no height and
-    /// go on showing its contents over whatever followed it.
-    #[test]
-    fn the_collapse_wrapper_clips_what_it_is_shrinking() {
-        assert!(group_rows_style(true, 412.0).contains("overflow: hidden"));
-        assert!(group_rows_style(false, 412.0).contains("overflow: hidden"));
-    }
+    // ── J1: the collapse wrapper (removed by K51) ───────────────────────
+    //
+    // Three tests lived here, on `group_rows_style`: that a collapsed group
+    // was zero-height and an open one stood at its last measured height,
+    // that a stale measurement couldn't leave a collapsed group's rows
+    // visible, and that the wrapper clipped what it was shrinking. All
+    // three were correct descriptions of that function right up until the
+    // device showed the function's whole approach was wrong — see the
+    // "Group collapse" comment block above, where `group_rows_style` used
+    // to live, for what verifying K51 actually found. A test asserting
+    // behaviour of code that no longer exists is worse than no test: it
+    // would not even compile, and fixing that by re-deriving three
+    // assertions about pixel-height strings the app no longer produces
+    // would only dress up dead reasoning as live coverage. Collapse itself
+    // is exercised by mounting, not by a style string — there is nothing
+    // left in this file for a unit test to check without a window to tap
+    // in, which is exactly `crate::screens::library`'s own note on why the
+    // density-chip test above reads source text instead of pixels.
 }

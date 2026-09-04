@@ -17,7 +17,7 @@ use crate::store::{
     AttachmentsStore, Group, GroupBy, LibraryViewStore, NavStore, Route, SettingsStore, SongsStore,
 };
 use crate::theme::{SCREEN_PAD, T_META, T_META_SMALL, T_SCREEN_TITLE};
-use crate::ui::{Chip, IconButton, SongRow, group_header, group_rows_style, icon};
+use crate::ui::{Chip, IconButton, SongRow, group_header, icon};
 
 /// Where the alphabet scrubber's taps land: one `NodeHandle` per first-letter
 /// group, captured the moment that group's header is built (see
@@ -60,14 +60,6 @@ pub fn Library() -> NodeHandle {
     let scrub_targets_for_rows = scrub_targets.clone();
     let scrub_targets_for_rail = scrub_targets.clone();
 
-    // Card J1: each group's last measured open height in pixels, by label.
-    // Fresh on every mount of this component for the same reason
-    // `scrub_targets` is — a remount rebuilds every row from scratch, so a
-    // map surviving past that point would hold heights for nodes that no
-    // longer exist. See the `for` loop below and [`group_rows_style`] for
-    // how this drives the collapse animation, and what its one gap is.
-    let group_heights: Rc<RefCell<HashMap<String, f32>>> = Rc::new(RefCell::new(HashMap::new()));
-
     // Card J2. `view.grouped(...)` filters the whole book, buckets it and
     // sorts every bucket — and this screen used to ask for that answer from
     // five separate places: the group list's own `for`, the "nothing
@@ -101,12 +93,13 @@ pub fn Library() -> NodeHandle {
     // for why virtualising was measured and declined: the row counts a
     // 300-song book actually renders (`GROUP_PREVIEW` truncates every
     // group to 6 until asked for more) never got past the low hundreds,
-    // and a virtual list would have silently broken two things this
-    // screen already ships — card H4's alphabet scrubber, which needs a
-    // real `NodeHandle` for every group header including ones a virtual
-    // window would leave unmounted, and card J1's collapse animation two
-    // commits above this one, which measures a group's *full* height in
-    // pixels to animate it shut.
+    // and a virtual list would have silently broken card H4's alphabet
+    // scrubber, which needs a real `NodeHandle` for every group header
+    // including ones a virtual window would leave unmounted. (Card J1 also
+    // built a collapse animation here that measured a group's full height
+    // in pixels — card K51's own device pass took that back out; see
+    // [`group_entry`]'s doc comment for why. That reason for declining
+    // virtualisation is gone with it, but the scrubber's is not.)
     let grouped_songs: Memo<Vec<Group>> = Memo::new(move || view.grouped(songs.songs.get()));
 
     rsx! {
@@ -227,7 +220,6 @@ pub fn Library() -> NodeHandle {
                         grouped_songs,
                         attachments,
                         nav,
-                        group_heights.clone(),
                         scrub_targets_for_rows.clone(),
                         index,
                         label,
@@ -326,11 +318,11 @@ fn insert_group_header(
     label: String,
     count: usize,
     is_first: bool,
-    collapsed: bool,
+    collapsed_fn: impl Fn() -> bool + 'static,
     compact: bool,
     onclick: impl Fn() + 'static,
 ) -> NodeHandle {
-    let header = group_header(scope, label.clone(), count, is_first, collapsed, compact, onclick);
+    let header = group_header(scope, label.clone(), count, is_first, collapsed_fn, compact, onclick);
     if group_by == GroupBy::FirstLetter {
         targets.borrow_mut().insert(label, header.clone());
     }
@@ -406,36 +398,61 @@ fn alphabet_rail(
     }
 }
 
-/// One group: its header, its rows (if mounted), and its "Show N more" row
-/// (if any) — built and wired up as a plain function rather than inline `rsx!`
-/// control flow, and appended imperatively via [`NodeHandle::append_child`].
+/// One group: its header, its rows (mounted only while the group is open),
+/// and its "Show N more" row (if any) — a plain function so [`Library`]'s own
+/// `for` loop stays a single expression per header rather than a `let` plus a
+/// side-effecting statement, which the rsx macro's children grammar does not
+/// have a clean shape for (a bare `if` in that position parses as *reactive
+/// conditional content*, not a plain Rust statement — see this file's own
+/// card-H4 writeup for the reachability question that sidesteps).
 ///
-/// That is a deliberate downgrade from the `if !collapsed { … }` this
-/// replaced, for the same reason [`group_header`] became a plain function
-/// for card H4: card J1's collapse animation needs the rows' own
-/// `NodeHandle` back so the header's `onclick` can read `scroll_height()`
-/// off it, and reactive `if`/`if let` sugar inside `rsx!` re-runs its body as
-/// a closure that has to be callable more than once — which is exactly what
-/// broke here first: an `Option<NodeHandle>` built once and *moved* into
-/// that closure could not also be read back out for the "Show more" row
-/// beside it. Building the container by hand and appending each piece once
-/// sidesteps the question entirely; nothing here needs to re-run on its own,
-/// because the whole group is already inside the `for` loop in [`Library`]
-/// that recreates it from scratch on every relevant change.
+/// **Card J1 built a collapse animation here, and card K51's own device pass
+/// took it back out.** J1 wrapped a group's rows in a container whose
+/// `height` transitioned between two measured pixel values (`crate::ui::
+/// group_rows_style`, now deleted) instead of mounting and unmounting them
+/// outright, because `rinch`'s transition engine only interpolates `height`
+/// between two concrete pixel lengths and snaps on `auto` — see that
+/// function's own former doc comment, preserved in this file's git history,
+/// for the framework read that motivated it. That worked for *closing* a
+/// group. It did not work for reopening one, and nobody could see that from
+/// the diff: verifying K51's actual fix — that a tap on a header repaints at
+/// all — on the device turned up a second bug the animation had been hiding
+/// underneath the first the whole time. Rinch's transition engine
+/// (`rinch-dom/src/transition/*`) updates a node's `computed_style` for
+/// paint but never pushes the new value into Taffy and never marks the
+/// node's layout dirty. So a group animated shut kept a real, correct, 0px
+/// *layout* box forever after — reopening it changed the `style` string the
+/// paint step reads, and changed nothing Taffy would ever lay out again.
+/// The header would say "12 songs," correctly, sitting above rows that were
+/// legitimately still there in the DOM and permanently zero pixels tall.
+/// That is not a bug in how this screen used the engine; it is a hole in
+/// the engine itself, on the layout side rather than the paint side of the
+/// two `../rinch-fixes` (`8526ce6`) already fixed there — see
+/// [`crate::ui`]'s remaining comment on this, in the spot `group_rows_style`
+/// used to be, for that other half.
 ///
-/// Card J1's collapse animation. `group_heights` (declared in [`Library`],
-/// alongside `scrub_targets`, for the same fresh-per-mount reason) remembers
-/// each group's last measured open height in pixels, keyed by label — and a
-/// group that has never been in that map yet renders exactly as it did
-/// before this card: mounted only while `!collapsed`, nothing measured,
-/// nothing animated. See [`crate::ui::group_rows_style`] for why a
-/// *measured* group stays mounted even while collapsed, and its doc comment
-/// plus `crate::ui`'s `SHEET_EASE` block for why `rinch`'s transition engine
-/// leaves exactly one gap in that plan: the very first close of any group,
-/// every session, snaps instead of animating, because there is no previous
-/// *pixel* height on record yet for the diff engine to interpolate away
-/// from — only that one transition; every open and close after it, for that
-/// same group, animates.
+/// So collapse is instant again, deliberately: mounting and unmounting a
+/// group's rows outright, the way this screen did before J1, rather than
+/// animating a height the framework cannot promise to bring back. Card J1's
+/// own closing line — "Nothing else animates — this app is read, not
+/// watched" — turns out to have been the answer to reopening a group all
+/// along, not just an aesthetic preference: the two sheets this app does
+/// animate (`crate::ui::sheet_panel_style`, `sheet_scrim_style`) never
+/// unmount the node they are sliding, which is exactly the property this
+/// list cannot have and still be a list that scrolls.
+///
+/// `collapsed` is still a plain `bool` here, read once by [`Library`]'s
+/// `for` loop before this function is even called, and that is fine for
+/// what it decides: the "Show N more" row's visibility, a decision already
+/// rebuilt from scratch on every render this group participates in. What
+/// must **not** go back to being a frozen read is whether the rows below
+/// are mounted *at all* — that is card K51's fix, and it lives in the `if`
+/// inside this function's own `rsx!` below, not in this parameter: the
+/// condition there calls `view.is_collapsed(&label)` itself, so the
+/// `move || { … }` the macro wraps every `if` condition in
+/// (`generate_if_block`) closes over a live signal read rather than a
+/// value copied out of one before this function returned — the same shape
+/// [`group_header`]'s `collapsed_fn` uses for the badge beside it.
 #[allow(clippy::too_many_arguments)]
 fn group_entry(
     scope: &mut RenderScope,
@@ -443,7 +460,6 @@ fn group_entry(
     grouped: Memo<Vec<Group>>,
     attachments: AttachmentsStore,
     nav: NavStore,
-    group_heights: Rc<RefCell<HashMap<String, f32>>>,
     scrub_targets: ScrubTargets,
     index: usize,
     label: String,
@@ -455,37 +471,9 @@ fn group_entry(
 ) -> NodeHandle {
     let __scope = scope;
 
-    let known_height = group_heights.borrow().get(&label).copied();
-    let mount_rows = !collapsed || known_height.is_some();
-
-    let rows_handle = if mount_rows {
-        let style = match known_height {
-            Some(h) => group_rows_style(collapsed, h),
-            None => String::new(),
-        };
-        Some(group_rows(__scope, view, grouped, attachments, nav, index, style))
-    } else {
-        None
-    };
-
     let onclick = {
         let label = label.clone();
-        let rows_handle = rows_handle.clone();
-        move || {
-            // Measured *before* the toggle flips, while the rows (if
-            // mounted) still reflect whatever this group's layout settled
-            // to last frame — `NodeHandle::scroll_height` is a live query
-            // against that resolved layout, not a snapshot taken when the
-            // handle was built, so this is accurate however long ago that
-            // frame was.
-            if let Some(handle) = &rows_handle {
-                let measured = handle.scroll_height() as f32;
-                if measured > 0.0 {
-                    group_heights.borrow_mut().insert(label.clone(), measured);
-                }
-            }
-            view.toggle_collapsed(label.clone());
-        }
+        move || view.toggle_collapsed(label.clone())
     };
 
     let header = insert_group_header(
@@ -495,41 +483,42 @@ fn group_entry(
         label.clone(),
         total,
         is_first,
-        collapsed,
+        {
+            let label = label.clone();
+            move || view.is_collapsed(&label)
+        },
         view.density.get().is_compact(),
         onclick,
     );
 
-    let container = rsx! { div { key: {label.clone()} } };
-    container.append_child(&header);
-    if let Some(rows) = &rows_handle {
-        container.append_child(rows);
-    }
-
-    // Per-group truncation, until the user asks for the rest.
-    if !collapsed && total > GROUP_PREVIEW && !expanded {
-        let more = rsx! {
-            div {
-                onclick: move || expand_group(view, grouped, index),
-                style: "color: var(--sla-accent); font-weight: 500; font-size: 13px; padding: 11px 0;",
-                {format!("Show {hidden} more")}
+    rsx! {
+        div { key: {label.clone()},
+            {header}
+            if !view.is_collapsed(&label) {
+                {group_rows(__scope, view, grouped, attachments, nav, index)}
             }
-        };
-        container.append_child(&more);
-    }
 
-    container
+            // Per-group truncation, until the user asks for the rest.
+            if !collapsed && total > GROUP_PREVIEW && !expanded {
+                div {
+                    onclick: move || expand_group(view, grouped, index),
+                    style: "color: var(--sla-accent); font-weight: 500; font-size: 13px; padding: 11px 0;",
+                    {format!("Show {hidden} more")}
+                }
+            }
+        }
+    }
 }
 
-/// One group's mounted song rows, wrapped in the container whose `height`
-/// card J1's collapse animation transitions.
-///
-/// A plain function rather than a `#[component]`, for the same reason
+/// One group's mounted song rows — a plain function for the same reason
 /// [`group_header`] is (see its doc comment, and [`insert_group_header`]
-/// above): the `for` loop in [`Library`] needs the real `NodeHandle` back so
-/// it can read `scroll_height()` off it when the group is toggled, and a
-/// `#[component]` call is spliced away by the macro's own codegen with no
-/// handle ever handed back to the caller.
+/// above): [`group_entry`] is itself a plain function rather than a
+/// `#[component]`, so a `rsx!` call nested inside it still needs an
+/// ordinary Rust expression to splice into the `if` block that decides
+/// whether these rows exist at all — a `#[component]` call is spliced away
+/// by the macro's own codegen with no handle ever handed back to the
+/// caller, and [`group_entry`] does not need one back from this: unlike
+/// card J1's version, nothing here reads `scroll_height()` off it any more.
 #[allow(clippy::too_many_arguments)]
 fn group_rows(
     scope: &mut RenderScope,
@@ -538,12 +527,10 @@ fn group_rows(
     attachments: AttachmentsStore,
     nav: NavStore,
     index: usize,
-    style: String,
 ) -> NodeHandle {
     let __scope = scope;
     rsx! {
         div {
-            style: {style.clone()},
             for song in songs_in_group(grouped, view, index) {
                 let id = song.id;
                 let kind = primary_kind(attachments, &song);
