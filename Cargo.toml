@@ -261,3 +261,20 @@ strip = "symbols"
 # direct line of sight, from the test binary, to one the desktop and Android
 # builds already compile in.
 skrifa = "0.44"
+
+# Card K26's test (`src/glyph_coverage.rs`) walks every string/char literal
+# this crate ships, looking for one no bundled face can draw — the phone-only
+# fault K13 and K21 each had to hit real hardware to find. It lexes the source
+# with `proc_macro2::TokenStream` rather than grepping line by line: lexing
+# drops ordinary comments and doc comments for free (this repo's comments are
+# full of the em dashes and mid-dots that would otherwise trip a naive scan),
+# and walking token trees reaches string literals sitting inside `rsx!` macro
+# bodies, which a line-based scan would not. Pinned the same way `skrifa` is
+# above: `cargo tree -i proc-macro2@1.0.107` shows it already resolved at
+# exactly this version, arriving through `zbus`'s async-macro dependencies and
+# through `swash`/`parley` themselves, so naming it here adds no new crate to
+# either build, only a direct line of sight from the test binary. `span-
+# locations` is on explicitly rather than assumed unified in from elsewhere —
+# without it every `Span::start()` in this build would come back `(0, 0)` and
+# every failure this test reports would point nowhere.
+proc-macro2 = { version = "1.0.107", features = ["span-locations"] }

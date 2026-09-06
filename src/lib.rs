@@ -34,6 +34,8 @@ mod derive;
 pub mod export;
 #[cfg(test)]
 mod gesture_reachability;
+#[cfg(test)]
+mod glyph_coverage;
 pub mod import;
 pub mod keep_awake;
 mod menu;

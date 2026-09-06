@@ -340,6 +340,79 @@ pub fn contrast_ratio(a: &str, b: &str) -> f64 {
     (lighter + 0.05) / (darker + 0.05)
 }
 
+/// Shared machinery for this crate's two font-coverage tests: card K34's, in
+/// `mod tests` below, and card K26's, in `src/glyph_coverage.rs`, which walks
+/// every literal the crate ships looking for one no bundled face can draw.
+/// Both need the same two steps — load the four bundled faces, and map every
+/// name each one answers to (lowercased, from its own `name` table) back to
+/// its own bytes — so it lives here once rather than being written twice at
+/// the two call sites, which is exactly the shape a future third check would
+/// otherwise copy a third time.
+///
+/// It reads the bundled font files' own `cmap` and `name` tables with
+/// `skrifa` (already in the tree via `parley`/`swash` — see this crate's
+/// `[dev-dependencies]`) rather than asking fontconfig, on purpose: the whole
+/// failure mode both cards are guarding against is a system font answering on
+/// the laptop and nothing answering on the phone, so a check that could be
+/// satisfied by a system font would pass on exactly the machine that cannot
+/// see the bug.
+#[cfg(test)]
+pub(crate) mod font_coverage {
+    use skrifa::{FontRef, MetadataProvider, string::StringId};
+    use std::collections::HashMap;
+
+    /// The four faces the binary actually carries — see `crate::FONTS`.
+    const FILES: &[&[u8]] = &[
+        include_bytes!("../assets/fonts/Newsreader[opsz,wght].ttf"),
+        include_bytes!("../assets/fonts/Newsreader-Italic[opsz,wght].ttf"),
+        include_bytes!("../assets/fonts/Karla[wght].ttf"),
+        include_bytes!("../assets/fonts/DejaVuSansMono.ttf"),
+    ];
+
+    /// The lowercased family name every stack in this file actually ends in
+    /// (`FONT_DISPLAY`/`FONT_UI`/`FONT_MONO`, card K34) — the one bundled
+    /// face whose coverage every one of them can rely on. A static string
+    /// doesn't know which stack will draw it, so this is the only guarantee
+    /// that holds regardless of which one does; card K26's scan checks every
+    /// literal the crate ships against exactly this face and no other, for
+    /// that reason.
+    pub(crate) const DEJAVU_SANS_MONO: &str = "dejavu sans mono";
+
+    /// Every name each bundled file's own `name` table answers to (family, id
+    /// 1, and typographic family, id 16 — Newsreader's variable-font instance
+    /// name is "Newsreader 16pt", but its typographic family, the one a CSS
+    /// stack actually says, is "Newsreader") mapped to that file's bytes, so
+    /// a stack entry is checked against real glyph coverage instead of an
+    /// assumption about which of the two ids is "the" name.
+    pub(crate) fn by_name() -> HashMap<String, &'static [u8]> {
+        let mut by_name = HashMap::new();
+        for bytes in FILES {
+            let font = FontRef::new(bytes).expect("a bundled font file failed to parse");
+            for id in [StringId::FAMILY_NAME, StringId::TYPOGRAPHIC_FAMILY_NAME] {
+                for entry in font.localized_strings(id) {
+                    by_name.entry(entry.to_string().to_lowercase()).or_insert(*bytes);
+                }
+            }
+        }
+        by_name
+    }
+
+    /// Does the bundled face named `name` (already lowercased — a generic
+    /// keyword like `sans-serif` or a system face like `Georgia`/`'Helvetica
+    /// Neue'` is simply absent from `by_name` and this returns `false`,
+    /// which is the point: a system font must never be the thing that saves
+    /// either of these tests) carry a glyph for `ch`?
+    pub(crate) fn covers(by_name: &HashMap<String, &'static [u8]>, name: &str, ch: char) -> bool {
+        by_name
+            .get(name)
+            .map(|bytes| {
+                let font = FontRef::new(bytes).expect("parsed in by_name above");
+                font.charmap().map(ch).is_some()
+            })
+            .unwrap_or(false)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -706,40 +779,16 @@ mod tests {
     /// there and the bundled files still cover ♭/♮/♯ — the same check a phone
     /// would otherwise have to make by displaying tofu.
     ///
-    /// It reads the bundled font files' own `cmap` and `name` tables with
-    /// `skrifa` (already in the tree via `parley`/`swash` — see this crate's
-    /// `[dev-dependencies]`) rather than asking fontconfig, on purpose: the
-    /// whole failure mode is a system font answering on the laptop and
-    /// nothing answering on the phone, so a check that can be satisfied by a
-    /// system font would pass on exactly the machine that cannot see the bug.
+    /// It reads the bundled font files' own `cmap` and `name` tables through
+    /// [`font_coverage`], the helper card K26 lifted out of this test so that
+    /// its own scan over every shipped literal could share it. Neither check
+    /// asks fontconfig, on purpose: the whole failure mode is a system font
+    /// answering on the laptop and nothing answering on the phone, so a check
+    /// that can be satisfied by a system font would pass on exactly the
+    /// machine that cannot see the bug.
     #[test]
     fn bundled_fonts_cover_the_music_accidentals_named_in_every_stack() {
-        use skrifa::{FontRef, MetadataProvider, string::StringId};
-        use std::collections::HashMap;
-
-        // The four faces the binary actually carries — see `crate::FONTS`.
-        // Every name each file's own `name` table answers to (family, id 1,
-        // and typographic family, id 16 — Newsreader's variable-font instance
-        // name is "Newsreader 16pt", but its typographic family, the one a
-        // CSS stack actually says, is "Newsreader") maps to that file's
-        // bytes, so a stack entry is checked against real glyph coverage
-        // instead of an assumption about which of the two ids is "the" name.
-        let files: &[&[u8]] = &[
-            include_bytes!("../assets/fonts/Newsreader[opsz,wght].ttf"),
-            include_bytes!("../assets/fonts/Newsreader-Italic[opsz,wght].ttf"),
-            include_bytes!("../assets/fonts/Karla[wght].ttf"),
-            include_bytes!("../assets/fonts/DejaVuSansMono.ttf"),
-        ];
-
-        let mut by_name: HashMap<String, &[u8]> = HashMap::new();
-        for bytes in files {
-            let font = FontRef::new(bytes).expect("a bundled font file failed to parse");
-            for id in [StringId::FAMILY_NAME, StringId::TYPOGRAPHIC_FAMILY_NAME] {
-                for entry in font.localized_strings(id) {
-                    by_name.entry(entry.to_string().to_lowercase()).or_insert(bytes);
-                }
-            }
-        }
+        let by_name = font_coverage::by_name();
 
         // U+266D FLAT, U+266E NATURAL, U+266F SHARP: the three signs a key
         // signature or a chord name actually uses. Covered by DejaVu Sans
@@ -762,15 +811,9 @@ mod tests {
             ("FONT_MONO", FONT_MONO),
         ] {
             for sign in signs {
-                let covered = stack_names(css).iter().any(|name| {
-                    by_name
-                        .get(name)
-                        .map(|bytes| {
-                            let font = FontRef::new(bytes).expect("parsed above");
-                            font.charmap().map(sign).is_some()
-                        })
-                        .unwrap_or(false)
-                });
+                let covered = stack_names(css)
+                    .iter()
+                    .any(|name| font_coverage::covers(&by_name, name, sign));
                 assert!(
                     covered,
                     "{stack_name} = \"{css}\" has no *bundled* family that draws U+{:04X} — on \
