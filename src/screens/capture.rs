@@ -1150,6 +1150,14 @@ pub fn CaptureScreen(song: Option<SongId>) -> NodeHandle {
     let mode = Signal::new(settings.capture_mode.get());
     let mode_open = Signal::new(false);
 
+    // Card K32: the soft keyboard opened to type a URL into `Page address`
+    // used to cover the footer below entirely, with no way back to it short
+    // of dismissing the keyboard first. Called here rather than once in
+    // `app()` the way `platform::safe_area` is — see `keyboard_inset`'s own
+    // doc comment — so the JNI poll behind it runs only while this screen is
+    // mounted, not for the life of the process.
+    let keyboard_inset = crate::platform::keyboard_inset();
+
     let leave = move || nav.go(Route::SongDetail(song));
 
     // One handler for both entries. It writes in three places and all three are
@@ -1256,7 +1264,23 @@ pub fn CaptureScreen(song: Option<SongId>) -> NodeHandle {
     };
 
     rsx! {
-        div { style: "flex: 1; display: flex; flex-direction: column; min-height: 0;",
+        // The keyboard's inset comes off this column as `padding-bottom`
+        // rather than as a margin on the footer further down (K32). Either
+        // would land on the same pixels — the middle panel below is the only
+        // flex-shrinkable child in this column, so whichever element grows a
+        // few extra pixels of bottom space, the middle is what gives it up,
+        // and the footer above `inset`'s worth of it either way. The reason
+        // to put it here and not there is what each style block *reads like*:
+        // the footer's own line (`padding: 12px {SCREEN_PAD} 24px`, below)
+        // stays exactly the fixed, non-reactive decoration it always was, and
+        // it is this outer div's style — the one wrapping the whole
+        // screen — that visibly says a keyboard is something the *screen*
+        // clears room for, not a quirk of one button row.
+        div { style: {move || format!(
+            "flex: 1; display: flex; flex-direction: column; min-height: 0; \
+             padding-bottom: {}px;",
+            keyboard_inset.get(),
+        )},
 
             // ← · heading. `1l` draws a back arrow rather than `1j`'s ✕,
             // because this screen is reached from the song and goes back to it.

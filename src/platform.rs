@@ -150,6 +150,73 @@ pub fn viewport_width() -> f32 {
     crate::WIDTH as f32
 }
 
+/// How much of the bottom edge the soft keyboard is covering right now, in
+/// CSS pixels. Zero when it is down.
+///
+/// Card K32: the capture screen's footer (Cancel · Attach,
+/// `screens/capture.rs`) is the last `flex-shrink: 0` child of a full-height
+/// column, so it sits at the very bottom of the window — which is exactly
+/// where the keyboard also lands once it opens to type a URL. Measured on the
+/// moto g stylus 5G (SDK 33, scale 2.50), the keyboard does not merely cover
+/// the footer, it puts it entirely off-screen: no part of either button
+/// stays reachable, and the only way back to it is dismissing the keyboard
+/// first, which nothing tells the user to do and no other app requires.
+///
+/// Unlike [`safe_area`] and [`viewport_width`] this cannot be read once at
+/// mount, because the number it reports changes *while the screen stays
+/// open* — the keyboard slides in and out from under the same field. So this
+/// hands back a `Signal<f32>` instead of a plain `f32`, driven by
+/// `rinch::reactive::poll_signal`, which the Android shell drains once per
+/// painted frame (`../rinch-fixes/crates/rinch/src/shell/android_frame.rs`).
+/// A screen that wants its layout to track the keyboard reads the signal from
+/// its own render closures exactly the way it would read any other one.
+///
+/// **`PollRate::Hz(30)`, not `EveryFrame`.** `EveryFrame` would mean a JNI
+/// call into `getImeInset` on every single frame this screen is mounted —
+/// not just while the keyboard is animating, but for as long as the user sits
+/// looking at a filled-in field — and card K45 already has this device's GPU
+/// running 1.4x over its frame budget with nothing extra asked of it. The
+/// inset only actually moves during the roughly 250ms the keyboard takes to
+/// open or close; at 30Hz that is at most seven or eight stale reads spread
+/// across an animation, which lands the footer a frame or two late in a way
+/// nobody watching a keyboard slide will ever notice, for a third of the JNI
+/// cost of asking every frame forever.
+///
+/// **Called from inside the screen that wants it, not from `app()`.**
+/// `poll_signal` ties the poll's lifetime to the signal it returns — the
+/// shell keeps sampling for exactly as long as something holds that signal,
+/// and drops the entry on the first drain after it is freed. `CaptureScreen`
+/// calls this itself (rather than `app()` reading it once up front the way it
+/// reads [`safe_area`]) so the JNI call exists only while that screen is
+/// mounted and costs nothing on the eleven other screens that never open a
+/// keyboard footer question in the first place.
+#[cfg(target_os = "android")]
+pub fn keyboard_inset() -> rinch::Signal<f32> {
+    rinch::reactive::poll_signal(
+        || {
+            // Same conversion `safe_area` and `viewport_width` both use: 360dpi
+            // (2.25x) is the Pixel-class fallback, and the guard is there
+            // because a density of zero would turn an inset into an infinity
+            // rather than into a wrong number.
+            let scale = rinch_android::display::density_dpi().unwrap_or(360) as f32 / BASELINE_DPI;
+            if scale <= 0.0 {
+                return 0.0;
+            }
+            rinch_android::display::ime_inset().unwrap_or(0) as f32 / scale
+        },
+        rinch::reactive::PollRate::Hz(30),
+    )
+}
+
+/// The desktop window has no soft keyboard to cover anything, so this is not
+/// a stand-in the way [`SafeArea::PHONE_STANDIN`] is one — a desktop build
+/// that ever produced a non-zero reading here would be reporting a keyboard
+/// that does not exist.
+#[cfg(not(target_os = "android"))]
+pub fn keyboard_inset() -> rinch::Signal<f32> {
+    rinch::Signal::new(0.0)
+}
+
 /// Tell the OS which way to draw the status and navigation bars' own contents.
 ///
 /// `true` means the app has painted something light under them, so the clock,
@@ -199,5 +266,13 @@ mod tests {
         assert_eq!(safe.top, 44.0, "the status-bar strip");
         assert_eq!(safe.bottom, 22.0, "the bottom nav's padding");
         assert_eq!((safe.left, safe.right), (0.0, 0.0));
+    }
+
+    /// A desktop window has no soft keyboard, so the honest answer is always
+    /// zero, not a phone-shaped guess the way [`SafeArea::PHONE_STANDIN`] is
+    /// one for the other two readings.
+    #[test]
+    fn the_desktop_has_no_keyboard_to_cover_anything() {
+        assert_eq!(keyboard_inset().get(), 0.0);
     }
 }
