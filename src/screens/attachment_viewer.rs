@@ -378,16 +378,21 @@ pub fn AttachmentViewer(song: Option<SongId>, attachment: Option<AttachmentId>) 
     let chrome = Signal::new(Chrome::opening());
     let menu_open = Signal::new(false);
 
-    // How wide the page column is. `crate::WIDTH` is the window the designs
-    // assume and what `song_detail` already sizes its card page against; the
-    // safe-area insets come off it because `crate::app` pads the root by them,
-    // so they are width this screen genuinely does not have. On Android the
-    // window is whatever the device gives, and 393 is what the moto g stylus
-    // 5G reports — the day a device disagrees, the fix is a viewport width from
-    // the framework rather than a second guess here.
+    // How wide the page column is: the window the app is really in, less the
+    // safe-area insets, because `crate::app` pads the root by them and so they
+    // are width this screen genuinely does not have, less this screen's own
+    // gutter down each side.
+    //
+    // This read `crate::WIDTH` until card K31, on the belief — written into the
+    // comment that used to be here — that the moto g stylus 5G also reported
+    // 393. It does not. It is 1080 physical pixels at density 400, so 432
+    // logical, and every page this screen drew came out 393 wide with a strip
+    // of backdrop down each side. The framework had no viewport width to ask
+    // for at the time; `platform::viewport_width` is now that ask.
     let safe = crate::platform::safe_area();
-    let column = (crate::WIDTH as f32 - safe.left - safe.right).max(1.0) as u32
-        - (2 * PAGE_GUTTER).min(crate::WIDTH - 1);
+    let viewport = crate::platform::viewport_width();
+    let column = (viewport - safe.left - safe.right).max(1.0) as u32
+        - (2 * PAGE_GUTTER).min(viewport.max(1.0) as u32 - 1);
 
     // Put the chrome away. The *only* path to `shown == false`, because of the
     // hoisted-target fault written up on the top bar below: an open menu

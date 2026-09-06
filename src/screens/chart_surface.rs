@@ -308,7 +308,9 @@ pub fn ChartSurface(
     let page = page.unwrap_or(1);
     let zoom = zoom.unwrap_or(100);
     let quarter = quarter.unwrap_or(0);
-    let column = column.unwrap_or(crate::WIDTH).max(1);
+    let column = column
+        .unwrap_or_else(|| crate::platform::viewport_width() as u32)
+        .max(1);
     let base_px = base_px.unwrap_or(CHART_BASE_PX);
     let span = span.unwrap_or(1);
 

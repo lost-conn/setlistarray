@@ -71,6 +71,14 @@ use ui::icon;
 
 /// A phone in the hand: 393×852 is the Pixel-class viewport the designs assume.
 /// Ignored on Android, where the window is whatever the device is.
+///
+/// So this is the window to *ask* for and not the window the app is in, and
+/// card K31 is what the difference cost: everything that rasterised a page to a
+/// pixel width read this constant, and on a 432-logical handset drew 393 wide
+/// with a strip of backdrop down each side. Anything asking how wide the screen
+/// actually is wants [`platform::viewport_width`], which is this number on the
+/// desktop — where the shell honours it — and the real surface on Android. The
+/// two entry points below are the only callers left that mean this one.
 pub const WIDTH: u32 = 393;
 pub const HEIGHT: u32 = 852;
 
@@ -133,6 +141,16 @@ pub fn app() -> NodeHandle {
     // Read once, at mount: on Android these are JNI calls, and the app is
     // portrait-locked, so the insets do not change under us.
     let safe: SafeArea = platform::safe_area();
+
+    // The window's own width, asked for here and thrown away, purely so that
+    // the first screen to want it finds it already answered. `platform::
+    // viewport_width` caches its Android reading, but the places that read it
+    // — `song_detail`'s two page widths above all — are render closures that
+    // run on every redraw, and the miss that fills the cache would otherwise
+    // land in the middle of the first frame of a screen rather than out here
+    // where mount already pays for two JNI calls. Same read, same instant, one
+    // fewer thing happening while a frame is being built.
+    let _ = platform::viewport_width();
 
     let storage = create_store(Storage::open(&dir));
     let mut loaded = storage.load();

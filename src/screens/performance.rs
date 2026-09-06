@@ -261,14 +261,18 @@ pub fn Performance(setlist: Option<SetlistId>) -> NodeHandle {
         nav.go(Route::SetlistDetail(id));
     };
 
-    // How wide the chart column is. `crate::WIDTH` is the window the designs
-    // assume; the safe-area insets come off it because `crate::app` pads the
-    // root by them, so they are width this screen genuinely does not have.
-    // Copied from the viewer deliberately rather than shared: the day Rinch
-    // hands out a real viewport width, both call sites want replacing with it
-    // and neither wants a helper standing in the way of that.
+    // How wide the chart column is. The window the app is really in, less the
+    // safe-area insets, because `crate::app` pads the root by them and so they
+    // are width this screen genuinely does not have.
+    //
+    // This used to read `crate::WIDTH` — the 393 of the design handoff — with a
+    // note saying that the day Rinch handed out a real viewport width, this and
+    // the viewer both wanted replacing with it. That is card K31, and this is
+    // the replacement. Still copied rather than shared with the viewer: the two
+    // screens subtract different things from the same width, and a helper that
+    // took a list of what to subtract would be longer than either.
     let safe = crate::platform::safe_area();
-    let column = (crate::WIDTH as f32 - safe.left - safe.right).max(1.0) as u32;
+    let column = (crate::platform::viewport_width() - safe.left - safe.right).max(1.0) as u32;
 
     // The page a PDF chart opens on, drawn before the frame that shows it
     // rather than after. Same self-healing job the viewer and `song_detail`

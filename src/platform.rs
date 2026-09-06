@@ -1,5 +1,6 @@
-//! The system bars: how much of the screen the app is not allowed to draw in,
-//! and which way round the OS should draw the bits it puts there.
+//! The window the app got: how big it is, how much of it the app is not
+//! allowed to draw in, and which way round the OS should draw the bits it puts
+//! there.
 //!
 //! Android hands back physical pixels — the status bar, the navigation or
 //! gesture bar, and the display cutout — which have to be divided by the
@@ -74,6 +75,81 @@ pub fn safe_area() -> SafeArea {
     SafeArea::PHONE_STANDIN
 }
 
+/// The width of the window the app is really drawing into, in CSS pixels.
+///
+/// Card K31 is the whole of why this exists. `crate::WIDTH` is 393 because 393
+/// is the canvas the design handoff was drawn on, and everything that
+/// rasterises a page to a pixel width — the chart column, the viewer, the two
+/// page widths in `song_detail`, the capture preview — worked that number out
+/// from it. On Android that is not the window. Android ignores the size an app
+/// asks for and lays out against whatever the surface turned out to be, and on
+/// the moto g stylus 5G the surface is 1080 physical pixels at density 400,
+/// which is 432 logical. So a page that should have been full-bleed was drawn
+/// 393 wide with about 20 px of backdrop down each side — nothing broken, just
+/// not the design, and wrong by a different amount on every handset.
+///
+/// It was left unfixed when it was found because there was no viewport width
+/// to ask for: `rinch_android::display` knew the insets, the density and the
+/// refresh rate, and not the size. There is now
+/// (`rinch_android::display::viewport_size`), and this is the shim over it.
+///
+/// **Cached, unlike [`safe_area`], and for the opposite reason.** The safe area
+/// is read once at mount by each screen that wants it, so a JNI call per read
+/// costs nothing. This one is read from `song_detail`'s render closures, which
+/// re-run on every redraw of the screen — two JNI calls per frame to re-learn a
+/// number that cannot change under a portrait-locked app is a cost with no
+/// buyer. A failed read is deliberately *not* cached: it falls back for that
+/// call and asks again next time, so a width asked for before the surface
+/// existed does not become the answer for the rest of the process.
+#[cfg(target_os = "android")]
+pub fn viewport_width() -> f32 {
+    use std::sync::OnceLock;
+    static WIDTH: OnceLock<f32> = OnceLock::new();
+
+    if let Some(width) = WIDTH.get() {
+        return *width;
+    }
+    let Some((physical, _)) = rinch_android::display::viewport_size() else {
+        return crate::WIDTH as f32;
+    };
+    // The same conversion `safe_area` above does, down to the fallback: 360dpi
+    // (2.25x) is the Pixel-class default, and the guard is there because a
+    // density of zero would turn a width into an infinity rather than into a
+    // wrong number.
+    let scale = rinch_android::display::density_dpi().unwrap_or(360) as f32 / BASELINE_DPI;
+    if scale <= 0.0 {
+        return crate::WIDTH as f32;
+    }
+    let width = physical as f32 / scale;
+    // Once, on the first successful read, because the failure K31 was written
+    // about was a width nobody could see. The app drew every rasterised page
+    // 393 wide on a 432-wide phone for weeks, and the only symptom was a strip
+    // of backdrop that looked like a margin somebody had chosen. A line in
+    // logcat is what turns "the pages look a bit narrow" into a number that
+    // can be checked against `wm size` and `wm density`. It costs one line per
+    // process because the value is cached below and this is inside the miss.
+    log::info!("viewport: {physical}px physical / {scale:.2} = {width} CSS px wide");
+    let _ = WIDTH.set(width);
+    width
+}
+
+/// On the desktop the answer is `crate::WIDTH`, and that is not a stand-in the
+/// way [`SafeArea::PHONE_STANDIN`] is one — it is the truth.
+///
+/// `run_desktop` hands that number to the shell as the window to create
+/// (src/lib.rs) and the desktop shell honours it, so the window really is 393
+/// CSS pixels wide. Reading it back here is a report, not a guess, which is
+/// also why it is not circular: the one place that must never ask this
+/// function is `run_desktop` itself, and it does not.
+///
+/// It matters that this stays exactly 393: `scripts/screenshot.sh` measures a
+/// desktop window against `scripts/screenshot-baseline.json`, and several of
+/// those checks count absolute pixels that were recorded at 393.
+#[cfg(not(target_os = "android"))]
+pub fn viewport_width() -> f32 {
+    crate::WIDTH as f32
+}
+
 /// Tell the OS which way to draw the status and navigation bars' own contents.
 ///
 /// `true` means the app has painted something light under them, so the clock,
@@ -100,6 +176,22 @@ pub fn set_light_system_bars(_light: bool) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The 393 the screenshot net is measured against.
+    ///
+    /// `scripts/screenshot.sh` captures a real desktop window and checks
+    /// regions from `scripts/screenshot-baseline.json` that count absolute
+    /// pixels, all of them recorded at a 393-wide window. K31 replaced the
+    /// constant every rasterised column was derived from with a function, and
+    /// the one thing that must not change on this platform is the number that
+    /// function returns. A red net for that reason would be a real failure
+    /// about a fake problem, and it would be found by a human squinting at a
+    /// screenshot rather than here.
+    #[test]
+    fn the_desktop_viewport_is_the_width_the_baseline_was_measured_at() {
+        assert_eq!(viewport_width(), 393.0);
+        assert_eq!(viewport_width(), crate::WIDTH as f32, "and it is the window we asked for");
+    }
 
     #[test]
     fn the_desktop_reserves_the_strip_the_hard_coded_one_used_to() {

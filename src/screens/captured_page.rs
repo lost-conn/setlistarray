@@ -222,7 +222,7 @@ pub fn CapturedPageView(
     let id = attachment.unwrap_or_default();
     let sizing = Sizing {
         base_px: base_px.unwrap_or(13.0),
-        column_px: column_px.unwrap_or(crate::WIDTH),
+        column_px: column_px.unwrap_or_else(|| crate::platform::viewport_width() as u32),
     };
     let budget = budget.unwrap_or(render::VIEWER_ELEMENTS);
 

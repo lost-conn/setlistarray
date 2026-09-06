@@ -1695,7 +1695,7 @@ fn shown_mode(state: &Flow, preference: CaptureMode) -> CaptureMode {
 fn preview_sizing() -> Sizing {
     Sizing {
         base_px: PREVIEW_BASE_PX,
-        column_px: crate::WIDTH.saturating_sub(2 * (22 + 15)),
+        column_px: (crate::platform::viewport_width() as u32).saturating_sub(2 * (22 + 15)),
     }
 }
 

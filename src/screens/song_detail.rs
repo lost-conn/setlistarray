@@ -250,7 +250,7 @@ pub fn SongDetail(id: Option<SongId>) -> NodeHandle {
                                                 key: {att_id},
                                                 attachment: {att_id},
                                                 base_px: {CARD_BASE_PX},
-                                                column_px: {CARD_PAGE_WIDTH},
+                                                column_px: {card_page_width()},
                                                 budget: {crate::capture::render::CARD_ELEMENTS},
                                                 style: {format!(
                                                     "max-height: {CARD_PREVIEW_HEIGHT}px; overflow: hidden;"
@@ -321,7 +321,7 @@ pub fn SongDetail(id: Option<SongId>) -> NodeHandle {
                                         key: {att_id},
                                         attachment: {att_id},
                                         base_px: {CARD_BASE_PX},
-                                        column_px: {ROW_PAGE_WIDTH},
+                                        column_px: {row_page_width()},
                                         budget: {crate::capture::render::CARD_ELEMENTS},
                                         style: {format!(
                                             "max-height: {CARD_PREVIEW_HEIGHT}px; overflow: hidden; \
@@ -704,7 +704,7 @@ fn preview(attachments: AttachmentsStore, id: AttachmentId) -> Vec<(usize, Strin
     // anyway, because a PDF has no extracted body to have more lines of, but
     // the whole call is skipped rather than half of it so that G2's text
     // extraction does not have to remember this when it gives one a body.
-    if page_image(attachments, id, CARD_PAGE_WIDTH).is_none() {
+    if page_image(attachments, id, card_page_width()).is_none() {
         if let Some(note) = note(&attachment, lines.len(), all.len()) {
             lines.push((lines.len(), note, true));
         }
@@ -716,15 +716,33 @@ fn preview(attachments: AttachmentsStore, id: AttachmentId) -> Vec<(usize, Strin
 /// places one appears.
 ///
 /// Arithmetic rather than taste, and spelled out because the numbers it is made
-/// of are elsewhere: the window is a fixed `crate::WIDTH` of 393 (src/lib.rs),
-/// the scrolling column insets it by `SCREEN_PAD` on each side (src/theme.rs),
-/// and the primary card adds 18 px of padding of its own — the literal in the
-/// card's own `style` a hundred lines above. A collapsed row has no card, so it
-/// gets the column width.
+/// of are elsewhere: the window is whatever the platform gave the app
+/// (`platform::viewport_width`), the scrolling column insets it by `SCREEN_PAD`
+/// on each side (src/theme.rs), and the primary card adds 18 px of padding of
+/// its own — the literal in the card's own `style` a hundred lines above. A
+/// collapsed row has no card, so it gets the column width.
 ///
-/// A constant, rather than `100%`, because of [`page_image`] — see there.
-const CARD_PAGE_WIDTH: u32 = crate::WIDTH - 2 * SCREEN_PAD_PX - 2 * 18;
-const ROW_PAGE_WIDTH: u32 = crate::WIDTH - 2 * SCREEN_PAD_PX;
+/// A number, rather than `100%`, because of [`page_image`] — see there.
+///
+/// **Functions rather than the two `const`s they were, and that is the whole of
+/// card K31's edit in this file.** They were `crate::WIDTH - …`, and
+/// `crate::WIDTH` is 393 because 393 is the design handoff's canvas, not
+/// because it is the window: on the moto g stylus 5G the window is 432 logical
+/// pixels, so a card page sat 313 wide where it had 352 to fill.
+/// A width that is only known once there is a surface cannot be a `const`, and
+/// the alternative — pushing the arithmetic out to the four call sites — would
+/// have put the same subtraction in four places so that it could stay spelled
+/// with an `=` instead of a `()`. Both are cheap to call: the platform shim
+/// caches the width after its first successful read, which matters because
+/// [`preview_of_primary`] and [`page_of_primary`] are called from render
+/// closures and so run on every redraw of this screen.
+fn card_page_width() -> u32 {
+    row_page_width().saturating_sub(2 * 18)
+}
+
+fn row_page_width() -> u32 {
+    (crate::platform::viewport_width() as u32).saturating_sub(2 * SCREEN_PAD_PX)
+}
 
 /// The type size a captured page is drawn at inside a card.
 ///
@@ -857,7 +875,7 @@ fn page_of_primary(
     songs
         .get(id)
         .and_then(|song| song.primary())
-        .and_then(|primary| page_image(attachments, primary, CARD_PAGE_WIDTH))
+        .and_then(|primary| page_image(attachments, primary, card_page_width()))
         .into_iter()
         .collect()
 }
@@ -881,7 +899,7 @@ fn page_of_row(
     if !expanded.get().contains(&attachment) {
         return Vec::new();
     }
-    page_image(attachments, attachment, ROW_PAGE_WIDTH)
+    page_image(attachments, attachment, row_page_width())
         .into_iter()
         .collect()
 }
@@ -1191,8 +1209,11 @@ verse two"))]);
         // cached at 1080 x 1398, so 313 px of card is 313 x 1398 / 1080 = 405.1,
         // rounded up. See `page_image` for why a percentage width will not do
         // and why the rounding goes up.
-        assert_eq!((width, height), (CARD_PAGE_WIDTH, 406));
-        assert_eq!(width, 313, "393 window, less 22 of column and 18 of card, twice");
+        assert_eq!((width, height), (card_page_width(), 406));
+        assert_eq!(
+            width, 313,
+            "the 393 window this test platform really has, less 22 of column and 18 of card, twice"
+        );
 
         assert!(
             preview_of_primary(songs, attachments, id).is_empty(),
