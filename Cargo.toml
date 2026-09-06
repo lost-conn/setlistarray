@@ -249,3 +249,15 @@ opt-level = 3
 # src/lib.rs keeps them from wandering back.
 [profile.release]
 strip = "symbols"
+
+[dev-dependencies]
+# Card K34's test reads the bundled font files' own `cmap` and `name` tables
+# directly, rather than trusting fontconfig to paper over a gap the way it
+# does on a laptop (see `theme::FONT_DISPLAY`/`FONT_UI`'s doc comment). Pure
+# Rust, and already resolved in this exact version by the main dependency
+# graph — `cargo tree -i skrifa@0.44.0` shows it arriving through
+# `swash`/`parley`, which `rinch`'s `theme` feature always pulls in — so
+# pinning the same version here adds no new crate to either build, only a
+# direct line of sight, from the test binary, to one the desktop and Android
+# builds already compile in.
+skrifa = "0.44"

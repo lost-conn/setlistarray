@@ -89,8 +89,36 @@ pub const PLUM: Accent = Accent {
 
 pub const ACCENTS: [Accent; 4] = [RUST, PINE, INDIGO, PLUM];
 
-pub const FONT_DISPLAY: &str = "Newsreader, Georgia, serif";
-pub const FONT_UI: &str = "Karla, 'Helvetica Neue', sans-serif";
+/// Card K34: a live capture of hymnal.net rendered `A♭ Major` as `A□ Major` on
+/// the moto g stylus 5G. The flat sign is U+266D, and it is not text a hymn
+/// site controls the font for — a captured page's headings and paragraphs go
+/// through `--sla-font-ui`/`--sla-font-display` (`src/capture/render.rs`'s
+/// `ELEMENT_STYLES` gives only `pre`/`code`/`kbd`/`samp` the mono stack), so
+/// whatever family answers those two custom properties is what a chord
+/// annotation sitting in body prose gets drawn in. Neither Newsreader nor
+/// Karla has a glyph for it — checked with `fc-query --format '%{charset}'` —
+/// and on the laptop that was invisible: fontconfig sits behind every stack
+/// here and hands Parley a system face with the glyph the moment the bundled
+/// families run out. On Android there is no fontconfig, so the same cluster
+/// falls off the end of the stack onto nothing and comes back .notdef —
+/// tofu, on the phone only, for a character the app never had to draw before.
+///
+/// `'DejaVu Sans Mono'` is appended to both stacks as the fix, and it is
+/// deliberately *last* and deliberately not a `script_fallback` registration
+/// (`../rinch-fixes/crates/rinch/src/font.rs` — that flag replaces the
+/// platform fallback for every script, which would take CJK and emoji down
+/// with it). Parley's `FontSelector::select_font` walks a stack one cluster at
+/// a time and only moves on when the current family's coverage is incomplete
+/// (`parley/src/shape/mod.rs` around line 520, in the pinned checkout), so a
+/// name at the tail is never in competition with Newsreader or Karla for a
+/// letter either of them can draw — it is asked only about the clusters nothing
+/// before it could answer. That is a coverage tail, not a fallback chain: the
+/// font it names is already in the binary for `FONT_MONO`'s own reasons, and
+/// this is the same fourth file being read a second time for the three glyphs
+/// (♭ ♮ ♯) nothing else here carries, rather than a fifth font bundled just for
+/// them.
+pub const FONT_DISPLAY: &str = "Newsreader, Georgia, serif, 'DejaVu Sans Mono'";
+pub const FONT_UI: &str = "Karla, 'Helvetica Neue', sans-serif, 'DejaVu Sans Mono'";
 /// Charts only. A chord chart is written with the chord names sitting over the
 /// syllable they land on, and that alignment is the notation — in a
 /// proportional face it is noise. The handoff never names a family for it (it
@@ -665,6 +693,92 @@ mod tests {
                 accent.name,
                 4.5 - dark
             );
+        }
+    }
+
+    /// The phone fault this stands in for: a live capture of hymnal.net drew
+    /// `A♭ Major` as `A□ Major` on the moto g stylus 5G (card K34), because
+    /// the flat sign U+266D has no glyph in Newsreader or Karla and Android
+    /// carries no fontconfig behind the stack to hand Parley a substitute —
+    /// the laptop never sees this because it does. `FONT_DISPLAY`/`FONT_UI`
+    /// each carry `'DejaVu Sans Mono'` as a coverage tail for exactly this, so
+    /// the assertion below is the laptop-side proof that the tail is still
+    /// there and the bundled files still cover ♭/♮/♯ — the same check a phone
+    /// would otherwise have to make by displaying tofu.
+    ///
+    /// It reads the bundled font files' own `cmap` and `name` tables with
+    /// `skrifa` (already in the tree via `parley`/`swash` — see this crate's
+    /// `[dev-dependencies]`) rather than asking fontconfig, on purpose: the
+    /// whole failure mode is a system font answering on the laptop and
+    /// nothing answering on the phone, so a check that can be satisfied by a
+    /// system font would pass on exactly the machine that cannot see the bug.
+    #[test]
+    fn bundled_fonts_cover_the_music_accidentals_named_in_every_stack() {
+        use skrifa::{FontRef, MetadataProvider, string::StringId};
+        use std::collections::HashMap;
+
+        // The four faces the binary actually carries — see `crate::FONTS`.
+        // Every name each file's own `name` table answers to (family, id 1,
+        // and typographic family, id 16 — Newsreader's variable-font instance
+        // name is "Newsreader 16pt", but its typographic family, the one a
+        // CSS stack actually says, is "Newsreader") maps to that file's
+        // bytes, so a stack entry is checked against real glyph coverage
+        // instead of an assumption about which of the two ids is "the" name.
+        let files: &[&[u8]] = &[
+            include_bytes!("../assets/fonts/Newsreader[opsz,wght].ttf"),
+            include_bytes!("../assets/fonts/Newsreader-Italic[opsz,wght].ttf"),
+            include_bytes!("../assets/fonts/Karla[wght].ttf"),
+            include_bytes!("../assets/fonts/DejaVuSansMono.ttf"),
+        ];
+
+        let mut by_name: HashMap<String, &[u8]> = HashMap::new();
+        for bytes in files {
+            let font = FontRef::new(bytes).expect("a bundled font file failed to parse");
+            for id in [StringId::FAMILY_NAME, StringId::TYPOGRAPHIC_FAMILY_NAME] {
+                for entry in font.localized_strings(id) {
+                    by_name.entry(entry.to_string().to_lowercase()).or_insert(bytes);
+                }
+            }
+        }
+
+        // U+266D FLAT, U+266E NATURAL, U+266F SHARP: the three signs a key
+        // signature or a chord name actually uses. Covered by DejaVu Sans
+        // Mono; not by Newsreader or Karla (checked with `fc-query
+        // --format '%{charset}'` against the files in `assets/fonts/`).
+        let signs = ['\u{266D}', '\u{266E}', '\u{266F}'];
+
+        // Parsed the same way the constant declares the list: comma
+        // separated, optionally single-quoted. A generic keyword or a system
+        // face name (`Georgia`, `'Helvetica Neue'`) is simply absent from
+        // `by_name` and is silently skipped — which is the point: a system
+        // font must never be the thing that saves this assertion.
+        fn stack_names(css: &str) -> Vec<String> {
+            css.split(',').map(|s| s.trim().trim_matches('\'').to_lowercase()).collect()
+        }
+
+        for (stack_name, css) in [
+            ("FONT_DISPLAY", FONT_DISPLAY),
+            ("FONT_UI", FONT_UI),
+            ("FONT_MONO", FONT_MONO),
+        ] {
+            for sign in signs {
+                let covered = stack_names(css).iter().any(|name| {
+                    by_name
+                        .get(name)
+                        .map(|bytes| {
+                            let font = FontRef::new(bytes).expect("parsed above");
+                            font.charmap().map(sign).is_some()
+                        })
+                        .unwrap_or(false)
+                });
+                assert!(
+                    covered,
+                    "{stack_name} = \"{css}\" has no *bundled* family that draws U+{:04X} — on \
+                     a phone with no fontconfig behind it, that cluster is tofu, the way `A♭ \
+                     Major` was on hymnal.net with no DejaVu Sans Mono tail (card K34)",
+                    sign as u32
+                );
+            }
         }
     }
 }
