@@ -376,6 +376,86 @@ mod tests {
         }
     }
 
+    /// **Card K54 — this passes, and that is the point of it.**
+    ///
+    /// On the moto g stylus 5G, tapping `Set confidence › Rusty` in a song's ⋮
+    /// menu ran the handler (logged), wrote the row (it survived a relaunch)
+    /// and left the header on screen still reading `Solid` — through a forced
+    /// repaint, and until the screen was navigated away from and back.
+    ///
+    /// The obvious suspicion was this layer: that a mutation reached the
+    /// database and left the signal, or its subscribers, behind. It did not.
+    /// A reader that was already watching when the write happened sees the new
+    /// value and re-runs exactly once, which is what this test and its
+    /// `duplicate` twin below pin. **The store is not where K54 lives**, and
+    /// these exist so that the next person to read that card does not spend an
+    /// afternoon here.
+    ///
+    /// Where it does live is `screens::song_detail`: `SongDetail` binds
+    /// `songs.get(id)` in the component body, which runs once per mount, so
+    /// the header renders from a snapshot no later write can move. Asserting
+    /// *that* needs a mounted component, which the screen tests have no
+    /// harness for.
+    ///
+    /// The assertion is on the value the watcher last *saw*, not on what the
+    /// store returns when asked afterwards — the second is what already passed
+    /// while the app was visibly wrong.
+    #[test]
+    fn a_confidence_change_reaches_a_reader_that_was_already_watching() {
+        use rinch::reactive::Effect;
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        let songs = store();
+        let seen: Rc<Cell<Option<Confidence>>> = Rc::new(Cell::new(None));
+        let runs = Rc::new(Cell::new(0usize));
+
+        let (s, r) = (seen.clone(), runs.clone());
+        let _watcher = Effect::new(move || {
+            r.set(r.get() + 1);
+            s.set(songs.get(1).and_then(|song| song.confidence));
+        });
+
+        assert_eq!(runs.get(), 1, "an effect runs once when it is created");
+        assert_eq!(seen.get(), None, "and the seeded song is unrated");
+
+        songs.set_confidence(1, Some(Confidence::Rusty));
+
+        assert_eq!(
+            seen.get(),
+            Some(Confidence::Rusty),
+            "a reader watching the library must see a confidence change without \
+             being re-created — this is the header the phone left reading Solid"
+        );
+        assert_eq!(runs.get(), 2, "and it must re-run exactly once for one write");
+    }
+
+    /// The same question for a mutation that adds a row rather than editing
+    /// one, because they take different paths into the signal — `duplicate`
+    /// pushes, `set_confidence` goes through `try_edit` — and the library
+    /// header ("3 in your book") is a reader of the count.
+    #[test]
+    fn a_duplicate_reaches_a_reader_that_was_already_watching() {
+        use rinch::reactive::Effect;
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        let songs = store();
+        let seen = Rc::new(Cell::new(0usize));
+
+        let s = seen.clone();
+        let _watcher = Effect::new(move || s.set(songs.count()));
+
+        assert_eq!(seen.get(), 1, "one seeded song");
+        songs.duplicate(1).expect("song 1 exists");
+        assert_eq!(
+            seen.get(),
+            2,
+            "the library header counts through this read, and a duplicate has \
+             to reach it without the screen being rebuilt"
+        );
+    }
+
     #[test]
     fn duplicate_gets_a_fresh_id_and_a_copy_suffix() {
         let songs = store();
