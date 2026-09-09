@@ -18,7 +18,7 @@ mod storage;
 
 pub use attachments::AttachmentsStore;
 pub use library_view::{Density, Filters, Group, GroupBy, LibraryViewStore, SortDir, SortField};
-pub use nav::{NavStore, Route, Tab};
+pub use nav::{BackPress, NavStore, Route, Sheet, Tab};
 pub use playback::PlaybackStore;
 pub use settings::{AccentChoice, DefaultTuning, PerformanceTheme, SettingsStore};
 pub use setlists::SetlistsStore;

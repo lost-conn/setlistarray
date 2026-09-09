@@ -343,6 +343,17 @@ pub fn AttachmentViewer(song: Option<SongId>, attachment: Option<AttachmentId>) 
     let song_id = song.unwrap_or_default();
     let id = attachment.unwrap_or_default();
 
+    // The phone's Back key is the ← in the top bar: back to the song this chart
+    // belongs to, not `nav.back()`'s tab root. The viewer is only ever reached
+    // from a song's own detail screen, and dropping somebody in the library
+    // after they closed a chart would lose their place in the book.
+    //
+    // Above the gone-chart guard, and that matters here more than on the other
+    // screens that do it: [`gone`] draws the same ← with the same destination,
+    // so this is the one registration that covers both halves of this component
+    // rather than only the one that draws pages.
+    nav.register_back(move || nav.go(Route::SongDetail(song_id)));
+
     // Read once, at mount. The row cannot change under this screen except by
     // being deleted, which is a real thing to do from the ⋮ in this screen's own
     // top bar — and [`gone`] is where that lands.

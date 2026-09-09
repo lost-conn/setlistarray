@@ -231,6 +231,19 @@ pub fn ChartEditor(song: Option<SongId>, chart: Option<AttachmentId>) -> NodeHan
         }
     };
 
+    // The phone's Back key is this screen's ✕ — the confirm and all — and this
+    // is the screen the whole registered-back-action mechanism was chosen for.
+    // What is on this screen is a verse somebody typed out by hand and there is
+    // no undo anywhere in this app, which is why ✕ asks; a Back key wired
+    // straight to `nav.back()` would answer that question on the user's behalf,
+    // in the direction that loses the words, with a key pressed by reflex.
+    //
+    // It is `close` and not `leave`, and it is the closure rather than a copy
+    // of what the closure does, so that the two can never come apart: whatever
+    // ✕ decides about unsaved text on some later card, Back decides the same
+    // thing on the same line.
+    nav.register_back(close);
+
     // The only place on this screen that writes anything.
     let save = move || {
         let body = text.get();

@@ -19,6 +19,12 @@ use crate::ui::IconButton;
 pub fn Stub(title: String, wireframe: String) -> NodeHandle {
     let nav = use_store::<NavStore>();
 
+    // The phone's Back key does what the ← below does. Nothing routes here
+    // today (see the header), so this registration is unreachable — it is
+    // written anyway because the day something does route here, a screen that
+    // had not registered would be a dead end that only a device could show.
+    nav.register_back(move || nav.back());
+
     rsx! {
         div { style: "flex: 1; display: flex; flex-direction: column; min-height: 0;",
             div { style: "padding: 2px 18px 8px; display: flex; align-items: center;",

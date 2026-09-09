@@ -69,6 +69,12 @@ pub fn SetlistDetail(id: Option<SetlistId>) -> NodeHandle {
 
     let id = id.unwrap_or_default();
 
+    // The phone's Back key does what the ← below does. See
+    // `NavStore::register_back` for why this is handed the screen's own exit
+    // rather than restated in the interceptor, and `song_detail` for why this
+    // sits above the gone-setlist guard rather than below it.
+    nav.register_back(move || nav.back());
+
     // Reorder mode: the arrows and the Remove button only exist while it is
     // on. A screen-transient bool, so it lives here rather than in `NavStore` —
     // leaving the setlist ends it, which is what unmounting this component

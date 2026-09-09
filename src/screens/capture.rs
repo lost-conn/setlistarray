@@ -1228,6 +1228,14 @@ pub fn CaptureScreen(song: Option<SongId>) -> NodeHandle {
     // worker at its next checkpoint.
     let back = move || leave();
 
+    // The phone's Back key is the header's ←, which is `back` and deliberately
+    // not the footer's `cancel`. The two mean different things on this screen —
+    // "I am done with this screen" against "stop this download" — and the note
+    // above is the long version of why. Back is a way *out*, so it takes the
+    // out; a running capture stops on its own, because leaving disposes the
+    // scope, which drops the state, which sets the flag the worker checks.
+    nav.register_back(back);
+
     let attach = move || {
         trouble.set(None);
 

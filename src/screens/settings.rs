@@ -246,6 +246,14 @@ pub fn Settings() -> NodeHandle {
     let confirming_import = Signal::new(false);
     let import_status = Signal::new(Option::<ImportStatus>::None);
 
+    // The phone's Back key does what the ← below does. Note what it does *not*
+    // do: the import warning strip and the tuning sheet are both dismissable
+    // things this screen can have open, and neither is closed here. The sheet
+    // is `NavStore::tuning_sheet_open` and `press_back` takes it first, ahead
+    // of this; the warning strip is an inline row on the page rather than a
+    // layer over it, so Back leaves the whole screen the way ← does.
+    nav.register_back(move || nav.back());
+
     rsx! {
         div { style: "flex: 1; display: flex; flex-direction: column; min-height: 0;",
 

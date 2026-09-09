@@ -243,6 +243,13 @@ pub fn SongForm(editing: Option<SongId>) -> NodeHandle {
         None => nav.back(),
     };
 
+    // The phone's Back key is this screen's ✕, handed the closure itself rather
+    // than a second copy of the two-door rule above it. `nav.back()` alone
+    // would be wrong on the edit door: it lands on the tab root, so backing out
+    // of an edit would drop you in the library instead of on the song you were
+    // editing, and the two would drift apart the first time either was changed.
+    nav.register_back(cancel);
+
     // The only place on this screen that writes anything.
     let save = move || {
         if draft.title.get().trim().is_empty() {

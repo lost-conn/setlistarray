@@ -202,6 +202,13 @@ pub fn Search() -> NodeHandle {
     let attachments = use_store::<AttachmentsStore>();
     let view = use_store::<LibraryViewStore>();
 
+    // The phone's Back key does what the ← below does — leave the screen, not
+    // empty the field. The ✕ inside the field is a different control with a
+    // different job (clear the query, stay here), and running that one from
+    // Back would strand somebody on an empty search screen with the key that
+    // should have got them out of it.
+    nav.register_back(move || nav.back());
+
     rsx! {
         div { style: "flex: 1; display: flex; flex-direction: column; min-height: 0;",
 

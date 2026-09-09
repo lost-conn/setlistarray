@@ -236,7 +236,7 @@ fn is_ident_char(c: char) -> bool {
 /// comments, escaped string/char literals, and raw strings/byte-strings of
 /// any `#` depth (`r"…"`, `r#"…"#`, `br##"…"##`, …) — everything this crate
 /// actually uses (checked by hand before writing this).
-fn mask(src: &str) -> String {
+pub(crate) fn mask(src: &str) -> String {
     let chars: Vec<char> = src.chars().collect();
     let n = chars.len();
     let mut out = chars.clone();

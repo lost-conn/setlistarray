@@ -46,6 +46,18 @@ pub fn SongDetail(id: Option<SongId>) -> NodeHandle {
 
     let id = id.unwrap_or_default();
 
+    // The phone's Back key does what this screen's ← does, and finds out by
+    // being told rather than by a `match` on the route kept somewhere else.
+    // Mount-time work, so it belongs in the body next to the D4 call below and
+    // not in a render closure — the same line card K54 drew, and the note
+    // further down says the rest of it.
+    //
+    // Above the gone-song guard on purpose: that guard returns a screen with no
+    // ← on it at all, and a Back that did nothing on the one frame between a
+    // delete committing and J7's effect firing would be a small dead end for no
+    // reason.
+    nav.register_back(move || nav.back());
+
     // A net, not the only answer, since card J7: `crate::app` carries an
     // effect that leaves this route the moment `songs.get(id)` starts coming
     // back `None`, so in the ordinary case nobody sees this sentence at all —

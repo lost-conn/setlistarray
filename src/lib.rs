@@ -28,6 +28,10 @@
 
 #[cfg(target_os = "android")]
 mod android;
+/// The guard that keeps a new screen from becoming a Back-key dead end. Tests
+/// only — it reads this crate's own source rather than running any of it.
+#[cfg(test)]
+mod back_coverage;
 pub mod capture;
 pub mod db;
 mod derive;
@@ -51,6 +55,7 @@ mod ui;
 
 use std::sync::OnceLock;
 
+use rinch::core::{KeyEventData, set_keyboard_interceptor};
 use rinch::prelude::*;
 use rinch::reactive::Effect;
 use rinch_tabler_icons::TablerIcon;
@@ -63,7 +68,7 @@ use screens::{
     Setlists, SongDetail, SongForm, SortGroupSheet, TuningSheet,
 };
 use store::{
-    AttachmentsStore, LibraryViewStore, NavStore, PlaybackStore, Route, SettingsStore,
+    AttachmentsStore, BackPress, LibraryViewStore, NavStore, PlaybackStore, Route, SettingsStore,
     SetlistsStore, SongsStore, Storage, Tab,
 };
 use theme::{DARK_NEUTRALS, T_META, T_NAV_LABEL, tokens};
@@ -318,6 +323,56 @@ pub fn app() -> NodeHandle {
                 playback.stop();
             }
             nav.back();
+        }
+    });
+
+    // The phone's Back key and Back gesture, which until this card did nothing
+    // at all.
+    //
+    // Rinch's Android shell maps `AK::Back` to `KeyCode::Escape` and returns
+    // `InputStatus::Handled` for every key it sees, so the OS never got its own
+    // default handling of Back and this app never acted on it either: Back on
+    // song detail left you on song detail, and Back on the library left you in
+    // the library. The key was arriving and falling on the floor.
+    //
+    // `set_keyboard_interceptor` is rinch-core's one document-level keyboard
+    // hook — one per thread, consulted before the focus arbiter routes the key
+    // anywhere (`rinch/src/app/event_dispatch.rs`), returning `true` to say the
+    // key is handled and must not propagate. Installed here rather than in a
+    // screen for the reason there is only one of it: a hook a screen installed
+    // on mount would be silently overwritten by the next screen to mount and
+    // never reinstated when that one left. What varies per screen is *what Back
+    // does*, and that lives in `NavStore` (`register_back`), read by
+    // `press_back` below — a signal, which is a thing the app already knows how
+    // to have one of.
+    //
+    // Escape rather than a name of Android's own, because Escape is what
+    // reaches this hook: the shell has already translated the keycode by the
+    // time anything app-side can see it. That makes the desktop's Escape key
+    // Back as well, which is not a compromise — it is the same key on the same
+    // seam, and it is what lets the whole of this behaviour be driven on a
+    // laptop instead of only on a phone.
+    //
+    // `press_back` decides and acts; the one thing it will not do is end the
+    // app, because a function that can end the process cannot be unit-tested.
+    // So that last step is here, and it is the only line of this card that a
+    // `cargo test` cannot reach.
+    set_keyboard_interceptor(move |key: &KeyEventData| {
+        if key.key != "Escape" {
+            return false;
+        }
+        match nav.press_back() {
+            BackPress::ClosedASheet(_) | BackPress::RanTheScreensBackAction => true,
+            // A tab root with nothing in front of it. Android's own default
+            // Back at the root of a task is `finish()`, so leaving is what a
+            // phone already teaches; on Android this call is
+            // `std::process::exit(0)` (rinch's `windows_stub`), and on the
+            // desktop it closes the only window there is. Still `true`: the key
+            // was ours, whatever the platform does with the request.
+            BackPress::NothingLeftToDoButExit => {
+                close_current_window();
+                true
+            }
         }
     });
 

@@ -261,6 +261,13 @@ pub fn Performance(setlist: Option<SetlistId>) -> NodeHandle {
         nav.go(Route::SetlistDetail(id));
     };
 
+    // The phone's Back key is this screen's ✕, handed `close` itself so that it
+    // keeps both halves in the right order. A Back wired to `nav.back()` would
+    // skip `playback.stop()` — leaving a gig that nothing on screen says is
+    // still on — and land on the Setlists tab rather than on the set that was
+    // being played, which is where you came from and where the rest of it is.
+    nav.register_back(close);
+
     // How wide the chart column is. The window the app is really in, less the
     // safe-area insets, because `crate::app` pads the root by them and so they
     // are width this screen genuinely does not have.
