@@ -111,9 +111,51 @@
           theme ever stops following the system while every test still passes,
           look here first.
         -->
+        <!--
+          `android:launchMode="singleTask"` is the share filter below's other
+          half, and it is the half that decides whether this app survives a
+          second share.
+
+          The app is one activity. Left at the default (`standard`), Android
+          creates a *new instance* of it for every launch, and it creates that
+          instance inside whichever task the launch came from — so a share out
+          of Chrome builds a second SetListArray activity in Chrome's task.
+          `singleTop` is not enough either: it reuses the instance only when
+          the instance is already at the top of the *same* task, which the one
+          this app is running in never is when the sender is another app.
+
+          A second instance is the failure the `uiMode` note further down
+          already describes in detail, arrived at from a different direction. It
+          is a second activity in the *same process*, so `android_main` is
+          entered a second time, and `rinch_android::init` is a `OnceLock` that
+          panics when it is called twice:
+
+            android_activity: Creating: Activity = 0x…, saved state size = 0
+            RustPanic: rinch-android already initialized
+
+          The pid does not change, nothing looks like a crash from outside, and
+          what is left is a live process with a dead main loop. Sharing to the
+          app twice in one session would do it every time.
+
+          `singleTask` says there is at most one instance of this activity on
+          the device and it is the root of its own task. A second share is
+          therefore routed to `onNewIntent` on the instance already running —
+          which is precisely the door `rinch-android`'s intent plumbing was
+          built around, and the launch mode its own documentation names — rather
+          than to a second `onCreate`. It also means the share sheet brings the
+          app the user already had, with the book they were looking at, instead
+          of a copy of it filed under somebody else's task in Recents.
+
+          The cost of `singleTask` is the one it is famous for: it will not
+          stack a second copy of itself, and Back at its root leaves. Neither
+          costs this app anything. There is nothing here that wants two of
+          itself, and `NavStore::press_back` already treats a tab root as
+          "nothing left to do but exit" for exactly the reason Android does.
+        -->
         <activity
             android:name="com.rinch.RinchActivity"
             android:exported="true"
+            android:launchMode="singleTask"
             android:screenOrientation="portrait"
             android:configChanges="orientation|keyboardHidden|screenSize|screenLayout|smallestScreenSize|uiMode">
 
@@ -124,6 +166,60 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!--
+              The share filter: this app in the system's share sheet, for two
+              MIME types and no others.
+
+              An `<intent-filter>` here is a claim made to the whole phone, and
+              the phone has no way to check it — Android puts an app in a
+              chooser because its manifest said so, and the user finds out
+              whether that was true by picking it. So the two types listed are
+              exactly the two `AttachmentKind` (`src/model.rs`) can store as
+              itself: `application/pdf` becomes a `Pdf` attachment through
+              `crate::pdf::import`, and `text/plain` becomes either a capture
+              (when the text is a URL) or a `Text` attachment (when it is not) —
+              see `crate::share::classify` for that fork and why the second
+              branch is not a fallback for the first.
+
+              **`image/*` is deliberately absent.** It is the obvious third
+              entry — a photograph of a chart on a music stand is a real thing a
+              musician has — and this app cannot store one. `AttachmentKind` is
+              `Pdf | CapturedPage | Text`; there is no image kind, nothing
+              renders one, and `pdf::import` would refuse the bytes as `NotAPdf`
+              having already copied them through Java. Declaring `image/*` would
+              put SetListArray in the share sheet of every photo on the device
+              and then fail in front of the person who picked it, which is worse
+              than not being offered.
+
+              **`ACTION_VIEW` is absent for a different reason**, and it is the
+              owner's call rather than a technical limit: a `VIEW` filter over
+              `http`/`https` would put this app in the "Open with" chooser for
+              every link tapped anywhere on the phone. Being a *share* target is
+              something the user opts into per share; being a link handler is
+              something they then have to opt out of. `ACTION_SEND_MULTIPLE` is
+              out of scope for the same kind of reason — one shared thing has
+              one answer to "which song is this?", and several would need a
+              screen that asks the question several times.
+
+              `CATEGORY_DEFAULT` is not decoration: an implicit intent is only
+              ever matched against filters that carry it, so without this line
+              the filter is invisible to the chooser and the app simply never
+              appears. The failure is a share sheet with nothing new in it,
+              which looks exactly like a build that did not install.
+
+              `the_android_manifest_offers_itself_as_a_share_target` in
+              `src/lib.rs` holds all of the above: that the filter is here at
+              all, that it carries the default category, and that the list of
+              MIME types is those two and nothing else. A later edit that adds
+              `image/*` fails the build rather than the user.
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+                <data android:mimeType="application/pdf" />
             </intent-filter>
         </activity>
     </application>

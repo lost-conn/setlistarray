@@ -79,6 +79,25 @@ pub enum Route {
     /// leaving it, and a route carrying the song would make every step a
     /// navigation and every step a remount of the chart being read off.
     Performance(SetlistId),
+    /// "Save this to…" — the screen a share lands on, and the reason
+    /// `crate::share` exists. Android hands the app something out of another
+    /// app's share sheet; this is where the user says which song it belongs to.
+    ///
+    /// **It carries nothing, and the shared thing lives in
+    /// [`NavStore::pending_share`].** That is the same decision `Search` above
+    /// makes and it is made for the same reason, only harder: a query is a
+    /// `String` on a `Copy` enum that is read in half a dozen reactive closures
+    /// a frame, and a share is a `String` *or up to 32 MB of PDF*. `Route`
+    /// stays ids-only and this variant carries the same nothing `Search` does.
+    ///
+    /// It carries no song either, unlike every other route that leads to an
+    /// attachment, and that is the point of the screen rather than an omission:
+    /// which song this belongs to is the question being asked. It is the one
+    /// route in this enum that can be reached without the user having navigated
+    /// anywhere — the app can be *launched* onto it, cold, by a share made in
+    /// another app — which is why the handler that sets it is registered in
+    /// `crate::app` and not from any screen (see `crate::share::listen`).
+    SaveShared,
 }
 
 impl Route {
@@ -233,6 +252,38 @@ pub struct NavStore {
     /// not worth a store of its own for one small pair of signals.
     pub renaming_setlist: Signal<Option<SetlistId>>,
     pub rename_draft: Signal<String>,
+    /// The thing another app shared into this one, waiting to be filed —
+    /// what [`Route::SaveShared`] is a screen for. `None` at every other
+    /// moment in the app's life.
+    ///
+    /// Here rather than on the route because `Route` is `Copy` and this is a
+    /// `String` or a `Vec<u8>`; `Route::Search`'s own doc comment is the long
+    /// version of that argument and `Route::SaveShared`'s is the short one.
+    /// Here rather than in a store of its own because it is exactly the shape
+    /// of the four fields above it — screen-transient state naming what the
+    /// thing currently in front of the user is about, written by one place and
+    /// read by one screen, and cleared the moment that screen is done.
+    ///
+    /// It is written from `crate::share::listen`'s intent handler, which runs
+    /// on the main thread once a frame, and it survives nothing: an app killed
+    /// while the chooser is open comes back with an empty slot and no share,
+    /// which is the deliberate half of `rinch-android`'s own re-delivery guard
+    /// (a share dropped once in a blue moon is recoverable by sharing again; a
+    /// share imported twice on every rotation is not).
+    pub pending_share: Signal<Option<crate::share::SharedItem>>,
+    /// A shared link on its way to `Route::CaptureWebpage`, and the name of
+    /// the song minted to hold it.
+    ///
+    /// A second slot rather than a second reading of `pending_share`, because
+    /// the two are read by different screens at different moments and mean
+    /// different things by then. `pending_share` is a question — *which song is
+    /// this?* — and is cleared the instant it is answered. This is the answer
+    /// travelling on: the capture screen reads it once at mount, to start its
+    /// address field on the shared URL instead of empty, and to know whether
+    /// the song it is capturing into is one this share minted a moment ago and
+    /// may still rename. See [`crate::share::SharedCapture`] and
+    /// [`crate::share::rename_to_captured_title`].
+    pub capture_handoff: Signal<Option<crate::share::SharedCapture>>,
     /// What the screen currently on show does when its own ← or ✕ is tapped,
     /// so that the Android Back key can do the same thing rather than a second
     /// thing that drifts from it. Written by [`NavStore::register_back`] from a
@@ -254,6 +305,8 @@ impl NavStore {
             running_order_for: Signal::new(None),
             renaming_setlist: Signal::new(None),
             rename_draft: Signal::new(String::new()),
+            pending_share: Signal::new(None),
+            capture_handoff: Signal::new(None),
             back_action: Signal::new(None),
         }
     }
@@ -263,6 +316,17 @@ impl NavStore {
     }
 
     pub fn select_tab(self, tab: Tab) {
+        // A tab is the way out of every screen that is not a tab root, and one
+        // of those screens is holding something. `Route::SaveShared` draws over
+        // the bottom nav rather than hiding it, so tapping Songs while a share
+        // is on offer is a real way to leave that screen — and unlike ← it does
+        // not run the screen's own exit, so the share would stay in the store
+        // after the screen that was asking about it had gone. Nothing would
+        // ever show it again, and on a shared PDF it is up to 32 MB of a
+        // phone's memory held for the life of the process. Abandoning it here
+        // is the same thing the screen's ← already does, said in the one other
+        // place a person can leave from.
+        self.pending_share.set(None);
         self.tab.set(tab);
         self.route.set(match tab {
             Tab::Songs => Route::Library,

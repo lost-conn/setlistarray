@@ -270,7 +270,13 @@ fn platform_picker() -> impl FilePicker {
 /// different moments — the desktop from the file's metadata, Android only once
 /// the bytes are already in hand — but they refuse with the same words, because
 /// what the user did wrong is the same either way.
-fn too_large(bytes: u64, max_bytes: u64) -> String {
+///
+/// `pub(crate)` since the share target (`crate::share`), which is a third
+/// moment again: a shared `EXTRA_STREAM` is read the instant it arrives, before
+/// any screen exists to complain to, and refusing it there with a *fourth*
+/// wording for the same ceiling would mean the same 32 MB file explaining
+/// itself differently depending on which door it came in by.
+pub(crate) fn too_large(bytes: u64, max_bytes: u64) -> String {
     format!(
         "That file is {}. This app will not open one over {}.",
         crate::model::fmt_bytes(bytes),

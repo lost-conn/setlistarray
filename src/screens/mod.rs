@@ -31,6 +31,12 @@ mod performance;
 // A sheet and not a screen, and mounted in `crate::app` beside the other three
 // rather than inside `performance.rs` — its header says why both ways round.
 mod running_order;
+// "Save this to…" (`crate::share`): the screen a share out of another app's
+// share sheet lands on. No wireframe drew it — the handoff never imagined the
+// app being launched by somebody else — and it is the one screen in this app
+// that can be the very first thing a user sees, because a cold start is what a
+// share does to an app that was not running. See its own header.
+mod save_shared;
 // Search & filter (`1p`, card G1): the screen behind the library's search
 // field, which since that card types nothing itself.
 mod search;
@@ -56,6 +62,7 @@ pub use first_run::FirstRun;
 pub use library::Library;
 pub use performance::Performance;
 pub use running_order::RunningOrderSheet;
+pub use save_shared::SaveShared;
 pub use search::Search;
 pub use setlist_detail::SetlistDetail;
 pub use setlist_picker::SetlistPicker;

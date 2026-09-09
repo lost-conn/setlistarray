@@ -1131,9 +1131,35 @@ pub fn CaptureScreen(song: Option<SongId>) -> NodeHandle {
         };
     }
 
+    // A link shared into this app from another one (`crate::share`), if that is
+    // how this screen was reached. Taken out of the store rather than copied,
+    // and taken *once*, in the component body, which is the only place it can
+    // be taken: the body runs at mount and never again, so a handoff read in a
+    // render closure would be read after it had been cleared and the field
+    // would empty itself on the first redraw.
+    //
+    // Reading it untracked matters for the same reason `register_back` reads
+    // the route untracked — this is not a render closure, but clearing the slot
+    // two statements later would otherwise be a write to a signal this scope
+    // had just subscribed to.
+    let handoff = untracked(|| nav.capture_handoff.get());
+    nav.capture_handoff.set(None);
+    // The name the shared link's song was minted with, or `None` — which
+    // covers both "this screen was opened from song detail" and "the user
+    // filed the share under a song that already existed". `attach` below is the
+    // only reader; see `crate::share::rename_to_captured_title` for the rule
+    // and for the two cases where it declines. A signal rather than a `String`
+    // because the handler that reads it is a `'static` closure and can only
+    // capture `Copy` values.
+    let minted_as: Signal<Option<String>> =
+        Signal::new(handoff.as_ref().and_then(|h| h.placeholder.clone()));
+
     // What is in the field, which is not the same thing as what is being
-    // captured — see `Flow::Running::url`.
-    let draft = Signal::new(String::new());
+    // captured — see `Flow::Running::url`. It starts on the shared URL when a
+    // share is what opened this screen, which is the whole of "prefilled": a
+    // capture is still a thing the user presses Capture to begin, because the
+    // fetch is a network round trip they may not want to make on this train.
+    let draft = Signal::new(handoff.map(|h| h.url).unwrap_or_default());
     let flow = Signal::new(Flow::Waiting);
     // The run counter. A signal rather than a static so that two screens in one
     // process could never share it; there is only ever one today, and a
@@ -1258,9 +1284,35 @@ pub fn CaptureScreen(song: Option<SongId>) -> NodeHandle {
             return;
         }
 
+        // Read before the attach, because `attach_captured` borrows the page
+        // out of the outcome and the rename below needs the title whether or
+        // not the write lands.
+        let captured_title = outcome.page().map(|page| page.title.clone()).unwrap_or_default();
         let written = attach_captured(songs, song, outcome.page().expect("just checked"));
         match written {
             Ok(attachment) => {
+                // A song minted a moment ago by the share chooser was named
+                // from the URL's last path segment — `free fallin chords` —
+                // because that was the only name anything knew at the time. The
+                // page's own `<title>` is the name it should have had, and this
+                // is the first moment in the app's life that it exists. See
+                // `share::rename_to_captured_title` for the three cases it
+                // refuses, of which the important one is that the user may have
+                // edited the name while the fetch was running, and then it is
+                // theirs.
+                //
+                // After the attach and not before: a rename over a capture that
+                // then failed to write would leave a song renamed for a chart it
+                // does not have.
+                let current = songs.get(song).map(|s| s.title).unwrap_or_default();
+                if let Some(better) = crate::share::rename_to_captured_title(
+                    &current,
+                    minted_as.get().as_deref(),
+                    &captured_title,
+                ) {
+                    songs.edit(song, |s| s.title = better);
+                }
+                minted_as.set(None);
                 flow.update(move |state| *state = Flow::Attached { attachment });
                 leave();
             }

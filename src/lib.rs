@@ -49,6 +49,11 @@ pub mod picker;
 pub mod platform;
 mod screens;
 mod seed;
+/// The app as an Android share target — what another app's share sheet hands
+/// over, and what this app makes of it. Compiled on both platforms on purpose:
+/// only the registration and the `content://` read are Android's, and every
+/// decision above them is testable on a laptop.
+pub mod share;
 mod store;
 mod theme;
 mod ui;
@@ -63,8 +68,8 @@ use rinch_tabler_icons::TablerIcon;
 use db::DataDir;
 use screens::{
     AddToSetlistSheet, AttachmentViewer, CaptureScreen, ChartEditor, FilterSheet, FirstRun,
-    Library, Performance, RunningOrderSheet, Search, SetlistDetail, SetlistPicker, Settings,
-    Setlists, SongDetail, SongForm, SortGroupSheet, TuningSheet,
+    Library, Performance, RunningOrderSheet, SaveShared, Search, SetlistDetail, SetlistPicker,
+    Settings, Setlists, SongDetail, SongForm, SortGroupSheet, TuningSheet,
 };
 use store::{
     AttachmentsStore, BackPress, LibraryViewStore, NavStore, PlaybackStore, Route, SettingsStore,
@@ -232,6 +237,24 @@ pub fn app() -> NodeHandle {
     create_store(LibraryViewStore::restored(storage));
     let playback = create_store(PlaybackStore::new());
     let nav = create_store(NavStore::new());
+
+    // Being shared *to* (`crate::share`). Here, at the top, and not from the
+    // screen that answers a share — because the share that matters most is the
+    // one that *started the app*, and by the rules `rinch_android::intent` sets
+    // out, that intent is queued before a line of app code runs and is held
+    // rather than discarded until something registers for it. A handler
+    // installed from `SaveShared`'s component body would therefore be installed
+    // by the screen the share was supposed to open, which is the wrong way
+    // round: nothing would ever open it.
+    //
+    // Registering once here also means there is exactly one of these for the
+    // life of the process, which is what the `set_keyboard_interceptor` and
+    // `set_configuration_change_handler` notes below both argue for on their
+    // own slots — except that this registry *appends* rather than replacing, so
+    // a second registration would not overwrite this one, it would deliver
+    // every share twice.
+    #[cfg(target_os = "android")]
+    share::listen(nav);
 
     // The status bar and the gesture bar are the OS's to draw, but what they
     // are drawn *over* is `--sla-paper`, and Android has no way to see it: its
@@ -542,6 +565,16 @@ pub fn app() -> NodeHandle {
                 // else: where in it we are is `PlaybackStore::index`, which
                 // the two entry points set with `start` before they navigate.
                 Route::Performance(setlist_id) => Performance { setlist: {setlist_id} },
+                // "Save this to…" — the screen a share lands on. It takes
+                // nothing, because what was shared is `NavStore::pending_share`
+                // and the song it will be filed under is the question the
+                // screen is there to ask. On the desktop nothing ever navigates
+                // here: there is no share sheet to be launched from, and
+                // `crate::share::listen` — the one thing that sets this route —
+                // is Android-only. The arm is not `#[cfg]`-ed all the same, so
+                // that `Route` stays one enum with one set of match arms
+                // everywhere it is read.
+                Route::SaveShared => SaveShared {},
             }
 
             {bottom_nav(__scope)}
@@ -742,6 +775,86 @@ mod tests {
         assert!(
             asked[0].contains("android.permission.INTERNET"),
             "the one permission this app asks for is INTERNET, and this is not it: {asked:?}"
+        );
+    }
+
+    /// The share filter, and the promise it makes to every chooser on the
+    /// phone.
+    ///
+    /// An `<intent-filter>` is a claim Android has no way to check. It puts an
+    /// app in a share sheet because the manifest said so, and the person who
+    /// picks it finds out whether that was true afterwards — which makes the
+    /// MIME list in that file a user-facing promise sitting in XML, exactly the
+    /// shape of thing `the_android_manifest_asks_only_for_internet` above
+    /// already watches, and exactly the shape of thing that gets edited by
+    /// somebody adding "just one more type".
+    ///
+    /// So this asserts the whole of the claim rather than its presence:
+    ///
+    /// 1. The filter exists at all. Delete it and the app is simply not in the
+    ///    share sheet — no error, no crash, nothing in `logcat`, just an app
+    ///    that stopped being offered.
+    /// 2. It carries `CATEGORY_DEFAULT`. An implicit intent is only ever
+    ///    matched against filters that have it, so the same silent absence
+    ///    follows from leaving out one line that looks like boilerplate.
+    /// 3. The MIME types are `text/plain` and `application/pdf`, those two and
+    ///    no others. `image/*` is the one that will be proposed — a photo of a
+    ///    chart is a real thing a musician has — and this app has nowhere to
+    ///    put an image: `AttachmentKind` is `Pdf | CapturedPage | Text`, and
+    ///    `pdf::import` would refuse the bytes as `NotAPdf` after copying them
+    ///    through Java. Advertising it would put SetListArray in the share
+    ///    sheet of every photograph on the device and then fail in front of
+    ///    whoever picked it.
+    /// 4. The activity is `singleTask`. This is the half that fails *loudly*
+    ///    and a long way from the edit: with the default launch mode, a share
+    ///    from another app builds a second activity in that app's task, in the
+    ///    same process, so `android_main` runs twice and `rinch_android::init`
+    ///    panics `already initialized` — the identical failure the `uiMode`
+    ///    note in that file describes, reached from a different direction.
+    #[test]
+    fn the_android_manifest_offers_itself_as_a_share_target() {
+        let manifest = strip_xml_comments(include_str!("../android/AndroidManifest.xml"));
+
+        assert!(
+            manifest.contains(r#"android:launchMode="singleTask""#),
+            "the share activity is no longer singleTask; a second share would build a second \
+             activity in the sending app's task, in this process, and `rinch_android::init` \
+             panics `already initialized` when android_main is entered twice"
+        );
+
+        // The `<intent-filter>` holding the SEND action, as text, so the three
+        // assertions below are about *that* filter and not about the LAUNCHER
+        // one above it.
+        let filter = manifest
+            .split("<intent-filter>")
+            .find(|block| block.contains("android.intent.action.SEND"))
+            .map(|block| block.split("</intent-filter>").next().unwrap_or(block))
+            .expect(
+                "AndroidManifest.xml no longer declares an ACTION_SEND filter, so this app is \
+                 not in the share sheet at all — and nothing about that failure is visible \
+                 anywhere except an app that stopped being offered",
+            );
+
+        assert!(
+            filter.contains("android.intent.category.DEFAULT"),
+            "the share filter has lost CATEGORY_DEFAULT; an implicit intent is only matched \
+             against filters that carry it, so the app silently vanishes from the chooser"
+        );
+
+        let types: Vec<&str> = filter
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with("<data"))
+            .collect();
+        assert_eq!(
+            types,
+            vec![
+                r#"<data android:mimeType="text/plain" />"#,
+                r#"<data android:mimeType="application/pdf" />"#,
+            ],
+            "the share filter advertises {} MIME types; this app can store exactly two kinds \
+             of thing and promises exactly two: {types:?}",
+            types.len()
         );
     }
 

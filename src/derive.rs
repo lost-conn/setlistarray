@@ -1926,9 +1926,16 @@ pub fn route_orphaned(
         | Route::CaptureWebpage { song }
         | Route::ViewAttachment { song, .. } => !song_exists(song),
         Route::SetlistDetail(id) | Route::Performance(id) => !setlist_exists(id),
-        Route::Library | Route::Setlists | Route::Settings | Route::AddSong | Route::Search => {
-            false
-        }
+        // `SaveShared` is subject-less in the same way `AddSong` is, and for
+        // a sharper version of the same reason: the song it will end up
+        // attached to is the question the screen exists to ask, so there is
+        // nothing on this route for a deleted record to orphan.
+        Route::Library
+        | Route::Setlists
+        | Route::Settings
+        | Route::AddSong
+        | Route::Search
+        | Route::SaveShared => false,
     }
 }
 
@@ -4153,6 +4160,7 @@ mod tests {
             Route::Settings,
             Route::AddSong,
             Route::Search,
+            Route::SaveShared,
         ] {
             assert!(!route_orphaned(route, always_gone_song, always_gone_setlist));
         }
