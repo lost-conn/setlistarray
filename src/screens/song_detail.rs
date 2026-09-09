@@ -5,7 +5,7 @@ use rinch_tabler_icons::TablerIcon;
 
 use crate::menu::{AttachmentMenuItems, FULL_WIDTH_TARGET, MENU_SURFACE, SongMenuItems};
 use crate::model::{
-    Attachment, AttachmentId, AttachmentKind, Song, SongId, fmt_bytes, fmt_duration,
+    Attachment, AttachmentId, AttachmentKind, Confidence, Song, SongId, fmt_bytes, fmt_duration,
 };
 use crate::picker::Picked;
 use crate::store::{AttachmentsStore, NavStore, Route, SetlistsStore, SongsStore};
@@ -83,24 +83,31 @@ pub fn SongDetail(id: Option<SongId>) -> NodeHandle {
         crate::pdf::pages::ensure_page(&directory, 1);
     }
 
-    let chips = metadata_chips(&song);
-    let set_count = setlists.containing(id).len();
-
-    // Facts that follow the confidence word, each only when it exists.
-    let status_tail = {
-        let mut parts = Vec::new();
-        if let Some(d) = song.last_played {
-            parts.push(format!("Played {}", d.short()));
-        }
-        if set_count > 0 {
-            parts.push(format!("{set_count} setlists"));
-        }
-        if parts.is_empty() {
-            String::new()
-        } else {
-            format!("· {}", parts.join(" · "))
-        }
-    };
+    // Nothing the header draws is computed here, and that is card K54.
+    //
+    // It used to be: `chips`, `set_count` and `status_tail` were bound in this
+    // body next to the D4 call above, and the title, the artist and the
+    // confidence word were read straight off the `song` the guard destructured.
+    // The body runs once, when the screen mounts, so all six were a photograph
+    // of the library taken at the moment the route changed. On the device that
+    // showed up as `Set confidence › Rusty` in the ⋮ menu running its handler,
+    // writing a row that survived a relaunch, and leaving the header saying
+    // `Solid` until the screen was left and come back to. The write was never
+    // lost; there was simply no reader watching for it. `src/store/songs.rs`
+    // carries two tests that pass on the broken build and say so.
+    //
+    // So every displayed field below is read inside a `{move || …}` closure or
+    // an `rsx!` `for`, which is the same thing the primary-attachment block
+    // further down has always done ("derived on read rather than at mount") and
+    // what the whole of `setlist_detail` does, for the same reason — the song
+    // picker slides over that screen and edits the set it is showing.
+    //
+    // What stays in the body is the work that must happen once and only once:
+    // the gone-song net, and the D4 `ensure_page` call above it, which is
+    // commented at length about why it is not allowed to run per redraw. That
+    // is the whole distinction — mount-time *work* here, displayed *values* in
+    // a closure — and the reason this could not be a mechanical move of the
+    // block.
 
     rsx! {
         div { style: "flex: 1; display: flex; flex-direction: column; min-height: 0;",
@@ -133,12 +140,12 @@ pub fn SongDetail(id: Option<SongId>) -> NodeHandle {
 
             div { style: {format!("flex: 1; min-height: 0; overflow-y: auto; padding: 0 {SCREEN_PAD};")},
 
-                div { style: {format!("{T_DETAIL_TITLE}")}, {song.title.clone()} }
-                div { style: {format!("{T_BODY} color: var(--sla-muted); margin-top: 5px;")}, {song.artist.clone()} }
+                div { style: {format!("{T_DETAIL_TITLE}")}, {move || title_of(songs, id)} }
+                div { style: {format!("{T_BODY} color: var(--sla-muted); margin-top: 5px;")}, {move || artist_of(songs, id)} }
 
                 // Filled fields only — never an empty slot or a placeholder dash.
                 div { style: "display: flex; flex-wrap: wrap; gap: 7px; margin-top: 13px;",
-                    for chip in chips.clone() {
+                    for chip in chips_of(songs, id) {
                         MetaChip { key: {chip.0.clone()}, label: {chip.0.clone()}, is_key: {chip.1} }
                     }
                 }
@@ -149,10 +156,10 @@ pub fn SongDetail(id: Option<SongId>) -> NodeHandle {
                             padding-top: 13px; border-top: 1px solid var(--sla-hairline);",
                     span {
                         style: "font-weight: 600; font-size: 13px; color: var(--sla-ink-2);",
-                        {song.confidence.map(|c| c.label()).unwrap_or("Unrated")}
+                        {move || confidence_of(songs, id).map(|c| c.label()).unwrap_or("Unrated")}
                     }
-                    ConfidenceDots { confidence: {song.confidence} }
-                    span { style: {format!("{T_META}")}, {status_tail.clone()} }
+                    ConfidenceDots { confidence: {move || confidence_of(songs, id)} }
+                    span { style: {format!("{T_META}")}, {move || status_tail_of(songs, setlists, id)} }
                 }
 
                 // Primary attachment card, and the collapsed rows under it.
@@ -502,6 +509,64 @@ fn metadata_chips(song: &Song) -> Vec<(String, bool)> {
         chips.push((tag.clone(), false));
     }
     chips
+}
+
+/// The header's five derived values, each as a plain `fn` over `Copy` store
+/// handles so it can be called from inside a reactive closure — the shape
+/// `primary_of` below and `songs_in_group` in `library.rs` already use, and
+/// the shape card K54 needed the top of this screen to use as well.
+///
+/// A song that is gone reads as empty rather than as its last known value.
+/// Nobody should see that: `crate::app`'s J7 effect leaves this route the
+/// moment `songs.get(id)` starts coming back `None`, and the guard in the
+/// component body catches the frame before it fires. Empty is still the right
+/// answer for the frame that does not exist, because the alternative — holding
+/// the last value — is the bug this card is about.
+fn title_of(songs: SongsStore, id: SongId) -> String {
+    songs.get(id).map(|song| song.title).unwrap_or_default()
+}
+
+fn artist_of(songs: SongsStore, id: SongId) -> String {
+    songs.get(id).map(|song| song.artist).unwrap_or_default()
+}
+
+fn confidence_of(songs: SongsStore, id: SongId) -> Option<Confidence> {
+    songs.get(id).and_then(|song| song.confidence)
+}
+
+/// The chips, read now rather than at mount. `MetaChip`'s `key` is the label
+/// itself, so a chip whose text changes is a different key and is drawn again
+/// — which matters, because a `for` reuses the DOM of an item whose key is
+/// unchanged and would otherwise leave an edited key or tempo reading the old
+/// number.
+fn chips_of(songs: SongsStore, id: SongId) -> Vec<(String, bool)> {
+    songs.get(id).map(|song| metadata_chips(&song)).unwrap_or_default()
+}
+
+/// Facts that follow the confidence word, each only when it exists.
+///
+/// Reads both stores, and has to: `Mark as played` writes the day through
+/// `SongsStore`, while adding this song to a set writes through
+/// `SetlistsStore` from a sheet that opens over this very screen. Either one
+/// alone would have left half this line frozen.
+fn status_tail_of(songs: SongsStore, setlists: SetlistsStore, id: SongId) -> String {
+    let Some(song) = songs.get(id) else {
+        return String::new();
+    };
+    let set_count = setlists.containing(id).len();
+
+    let mut parts = Vec::new();
+    if let Some(d) = song.last_played {
+        parts.push(format!("Played {}", d.short()));
+    }
+    if set_count > 0 {
+        parts.push(format!("{set_count} setlists"));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!("· {}", parts.join(" · "))
+    }
 }
 
 /// How many lines of a chart the card shows before it stops. The card is a
@@ -1160,6 +1225,142 @@ verse two"))]);
         let card = primary_of(songs, attachments, id);
         assert_eq!(card[0].title, "lyrics.txt");
         assert!(other_rows(songs, attachments, id, Signal::new(Vec::new())).is_empty());
+    }
+
+    // ── K54: the header is a reader, not a photograph ───────────────────────
+
+    /// A song and the sets it can be in, sharing one `Storage` the way the app
+    /// does. `library` above cannot serve here: `SongsStore::new` builds its
+    /// own `SetlistsStore` internally and hands out no way to reach it, and
+    /// `status_tail_of` takes the one the screen pulls out of the context.
+    fn library_and_sets() -> (SongsStore, SetlistsStore, SongId) {
+        let storage = crate::store::Storage::in_memory();
+        let attachments = AttachmentsStore::restored(storage, Vec::new());
+        let setlists = SetlistsStore::restored(storage, Vec::new());
+        let songs = SongsStore::restored(
+            storage,
+            attachments,
+            setlists,
+            vec![Song::new(1, "Carolina", "M. Ward")],
+        );
+        (songs, setlists, 1)
+    }
+
+    /// **The regression card K54 is.**
+    ///
+    /// Tapping `Set confidence › Rusty` in the ⋮ menu wrote the row and left
+    /// the header reading `Solid`, because `SongDetail` had bound the song in
+    /// its component body — which runs once, at mount — and the header drew
+    /// from that. The write was never lost; nothing was watching for it.
+    ///
+    /// So the assertion is on what a reader *already watching* sees, exactly
+    /// as `store::songs`' twin tests put it: asking `confidence_of` again
+    /// afterwards passed on the broken build too, because the store was never
+    /// the problem. What could not happen on the broken build is this — a
+    /// reader established before the write, re-running because of it.
+    #[test]
+    fn a_confidence_change_reaches_a_header_that_is_already_watching() {
+        use rinch::reactive::Effect;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let (songs, _setlists, id) = library_and_sets();
+        let seen = Rc::new(RefCell::new(None));
+
+        let s = seen.clone();
+        let _header = Effect::new(move || *s.borrow_mut() = confidence_of(songs, id));
+
+        assert_eq!(*seen.borrow(), None, "the song starts unrated");
+        songs.set_confidence(id, Some(Confidence::Rusty));
+        assert_eq!(
+            *seen.borrow(),
+            Some(Confidence::Rusty),
+            "the word and the dots are drawn from this, and the phone's said \
+             Solid until the screen was left and come back to"
+        );
+    }
+
+    /// The rest of the header, which broke the same way and would have gone on
+    /// breaking quietly: `Edit song…` navigates, so a title that only updated
+    /// on remount looked correct, and would keep looking correct right up
+    /// until something edited a song without changing the route.
+    #[test]
+    fn an_edit_reaches_the_title_the_artist_and_the_chips() {
+        use rinch::reactive::Effect;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let (songs, _setlists, id) = library_and_sets();
+        let seen = Rc::new(RefCell::new((String::new(), String::new(), Vec::new())));
+
+        let s = seen.clone();
+        let _header = Effect::new(move || {
+            *s.borrow_mut() = (title_of(songs, id), artist_of(songs, id), chips_of(songs, id));
+        });
+
+        assert_eq!(seen.borrow().0, "Carolina");
+        assert!(seen.borrow().2.is_empty(), "and it carries no metadata yet");
+
+        songs.edit(id, |song| {
+            song.title = "Chinese Translation".into();
+            song.key = Some("G".into());
+        });
+
+        let header = seen.borrow();
+        assert_eq!(header.0, "Chinese Translation");
+        assert_eq!(header.1, "M. Ward", "the artist is untouched and stays");
+        assert_eq!(
+            header.2,
+            vec![("G".to_string(), true)],
+            "the key chip is the tinted one, and it arrived without a remount"
+        );
+    }
+
+    /// The status line reads through both stores, and has to. `Mark as played`
+    /// writes the day through `SongsStore`; `Add to setlist…` writes through
+    /// `SetlistsStore`, from a sheet that opens *over* this screen and leaves
+    /// it mounted. A version of this line derived from either store alone
+    /// would freeze on the other one's writes.
+    #[test]
+    fn the_status_tail_follows_a_play_and_a_setlist() {
+        use rinch::reactive::Effect;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let (songs, setlists, id) = library_and_sets();
+        let seen = Rc::new(RefCell::new(String::new()));
+
+        let s = seen.clone();
+        let _tail = Effect::new(move || *s.borrow_mut() = status_tail_of(songs, setlists, id));
+
+        assert_eq!(*seen.borrow(), "", "an unplayed song in no sets says nothing");
+
+        songs.mark_played(id, crate::model::Day::new(2026, 9, 9));
+        assert_eq!(*seen.borrow(), "· Played Sep 9");
+
+        let friday = setlists.add("Friday");
+        setlists.add_song(friday, id);
+        assert_eq!(
+            *seen.borrow(),
+            "· Played Sep 9 · 1 setlists",
+            "and the membership arrives from the other store, without a remount"
+        );
+    }
+
+    /// A song that is gone reads as empty rather than as its last known value.
+    /// The component body still returns "This song is gone." for the frame it
+    /// catches; these are what the header would draw in the frame it does not.
+    #[test]
+    fn a_deleted_song_leaves_the_header_empty_rather_than_stale() {
+        let (songs, setlists, id) = library_and_sets();
+        songs.set_confidence(id, Some(Confidence::Solid));
+        songs.delete(id);
+
+        assert_eq!(title_of(songs, id), "");
+        assert_eq!(artist_of(songs, id), "");
+        assert_eq!(confidence_of(songs, id), None);
+        assert!(chips_of(songs, id).is_empty());
+        assert_eq!(status_tail_of(songs, setlists, id), "");
     }
 
     // ── D4: the page in the card ────────────────────────────────────────────
