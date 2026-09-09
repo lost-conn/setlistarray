@@ -1808,14 +1808,28 @@ pub fn last_export_note(last_export_at: Option<i64>, now: Day) -> String {
 /// The name of the accent the app is *painted in*, which is not always the name
 /// of the accent that was *chosen*.
 ///
-/// [`AccentChoice::FromSystem`] resolves to Rust today, because the wallpaper
-/// extraction it names is a platform call Rinch does not expose (see the TODO
-/// on `AccentChoice::resolve`). Reporting the resolved name rather than
-/// "System" is the honest half of that: the row says Rust because the screen is
-/// rust-coloured. Card H2 owns the picker where the difference between "I chose
-/// Rust" and "the system gave me Rust" becomes visible and worth stating.
-pub fn accent_note(accent: AccentChoice, wallpaper: Option<Rgb>) -> &'static str {
-    accent.resolve(wallpaper).name()
+/// The row says "Rust" when [`AccentChoice::FromSystem`] fell all the way
+/// through to Rust, because the screen is rust-coloured and the note's whole
+/// contract is to name the colour the pixels actually are rather than the
+/// control that was tapped. The chip two lines to the left goes on saying
+/// "System", because the *control* is still doing what it says — that split is
+/// argued in `AccentChoice::label`.
+///
+/// **This doc comment used to say that `FromSystem` resolves to Rust
+/// *because* wallpaper extraction was a platform call Rinch did not expose.**
+/// Card K8 made that false and did not come back here for it, which is how the
+/// house style earns its keep: a comment describing an absent call while the
+/// tests below assert the present one. There are two device colours now, they
+/// are asked in a fixed order, and the word this returns says which one
+/// answered — see `AccentChoice::resolve` for the order and
+/// [`theme::AccentSource`](crate::theme::AccentSource) for why the difference
+/// is visible to the user at all.
+pub fn accent_note(
+    accent: AccentChoice,
+    palette: Option<Rgb>,
+    wallpaper: Option<Rgb>,
+) -> &'static str {
+    accent.resolve(palette, wallpaper).name()
 }
 
 /// Whether the app paints itself dark, given what the user chose and what the
@@ -3980,25 +3994,34 @@ mod tests {
 
     #[test]
     fn the_accent_row_names_the_colour_actually_on_screen() {
-        assert_eq!(accent_note(AccentChoice::Named(1), None), "Pine");
-        // `FromSystem` on a device whose wallpaper publishes no colours — the
-        // ordinary case, and the one the development phone is in — resolves to
-        // Rust, so that is what the row says. It says it for the same reason
-        // it always did: the screen is rust-coloured.
-        assert_eq!(accent_note(AccentChoice::FromSystem, None), "Rust");
-        // And when there *is* a wallpaper colour, the row stops saying the
-        // name of an accent nobody picked and says where the colour came
-        // from. This is the assertion card K8 changed.
+        let palette = Some(Rgb::new(0x6D, 0x5E, 0x8C));
+        let wallpaper = Some(Rgb::new(0x3F, 0x51, 0xB5));
+
+        assert_eq!(accent_note(AccentChoice::Named(1), None, None), "Pine");
+        // `FromSystem` on a device that offers neither colour — every desktop
+        // build, and any handset below API 31 whose wallpaper publishes
+        // nothing — resolves to Rust, so that is what the row says. It says it
+        // for the same reason it always did: the screen is rust-coloured.
+        assert_eq!(accent_note(AccentChoice::FromSystem, None, None), "Rust");
+        // And when there *is* a device colour, the row stops saying the name
+        // of an accent nobody picked and says where the colour came from. This
+        // is the assertion card K8 changed.
+        assert_eq!(accent_note(AccentChoice::FromSystem, None, wallpaper), "Wallpaper");
+        // **And this is the one K57 changed.** The row is the only place the
+        // difference between the two device colours is ever visible, so a note
+        // that went on saying "Wallpaper" for a colour that came out of the
+        // system palette would be the row lying about the one thing it is for
+        // — on a device themed from a *preset*, about a wallpaper colour the
+        // user had explicitly overridden.
+        assert_eq!(accent_note(AccentChoice::FromSystem, palette, wallpaper), "System");
         assert_eq!(
-            accent_note(AccentChoice::FromSystem, Some(Rgb::new(0x3F, 0x51, 0xB5))),
-            "Wallpaper"
+            accent_note(AccentChoice::FromSystem, palette, None),
+            "System",
+            "with no wallpaper to fall back to, the palette still names itself"
         );
-        // A named pick ignores the wallpaper, so the note does too.
-        assert_eq!(
-            accent_note(AccentChoice::Named(1), Some(Rgb::new(0x3F, 0x51, 0xB5))),
-            "Pine"
-        );
-        assert_eq!(accent_note(AccentChoice::Named(99), None), "Plum");
+        // A named pick ignores both, so the note does too.
+        assert_eq!(accent_note(AccentChoice::Named(1), palette, wallpaper), "Pine");
+        assert_eq!(accent_note(AccentChoice::Named(99), None, None), "Plum");
     }
 
     /// Card K8's resolution table, in full: three choices crossed with the

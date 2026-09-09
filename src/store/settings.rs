@@ -2,11 +2,12 @@ use rinch::prelude::*;
 
 use crate::capture::CaptureMode;
 use crate::store::{Storage, SystemStore};
-use crate::theme::{ACCENTS, RUST, ResolvedAccent, Rgb, WallpaperAccent};
+use crate::theme::{ACCENTS, AccentSource, DerivedAccent, RUST, ResolvedAccent, Rgb};
 
-/// Resolution order for the accent: a user pick wins; otherwise the Material
-/// You primary extracted from the wallpaper, darkened until it clears 4.5:1
-/// against paper; otherwise Rust.
+/// Resolution order for the accent: a user pick wins; otherwise the system's
+/// own Material You palette; otherwise the primary colour extracted from the
+/// wallpaper; otherwise Rust. Whichever seed is found is darkened (or
+/// lightened) until it clears 4.5:1 against paper.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AccentChoice {
     FromSystem,
@@ -27,23 +28,62 @@ impl AccentChoice {
     /// `Named(_)` forever with no control anywhere that put them back on
     /// `FromSystem`. All three of those are settled now: the call exists
     /// (`platform::wallpaper_primary`), the derivation exists
-    /// (`theme::WallpaperAccent`, which is where the 4.5:1 arithmetic lives),
+    /// (`theme::DerivedAccent`, which is where the 4.5:1 arithmetic lives),
     /// and the fifth chip H2 withheld is on the picker — see
     /// `screens::settings`'s `accent_row`, which also had to stop deciding
     /// which chip is selected by comparing *resolved* accents, because on a
     /// device with no wallpaper colour `FromSystem` and `Named(0)` resolve to
     /// the same Rust and would both have lit up.
     ///
-    /// **Rust is still the answer when there is no wallpaper colour**, and
-    /// that is the ordinary path rather than the error path: `None` is what
-    /// most live wallpapers, most OEM wallpaper stacks and every desktop build
-    /// report, and it is what the phone this card was verified on reports.
-    /// `platform::wallpaper_primary`'s own doc comment has the list.
-    pub fn resolve(self, wallpaper: Option<Rgb>) -> ResolvedAccent {
+    /// **Rust is still the answer when the device offers no colour at all**,
+    /// and that is the ordinary path rather than the error path: `None` is
+    /// what most live wallpapers, most OEM wallpaper stacks and every desktop
+    /// build report. `platform::wallpaper_primary`'s own doc comment has the
+    /// list.
+    ///
+    /// ## The order, and why the palette goes first — card K57
+    ///
+    /// K8 had one device colour to resolve through and so had no order to
+    /// argue about. K57 added a second and better one: Android 12 (API 31)
+    /// publishes the palette **the system itself is themed with** as framework
+    /// colour resources, and `platform::system_accent` reads tone 500 of the
+    /// first accent ramp out of it.
+    ///
+    /// The temptation is to read that as "the same colour, more directly", and
+    /// it is not. `settings get secure theme_customization_overlay_packages`
+    /// carries an `"android.theme.customization.color_source"` key. On the
+    /// development phone it reads `"home_wallpaper"` — the case where the two
+    /// agree, and the case that made K8 look complete. Pick one of the basic
+    /// colours in Wallpaper & style instead and it reads `"preset"`: the
+    /// system repaints itself in the chosen colour, the wallpaper keeps its
+    /// own quite different primary, and `getWallpaperColors` goes on returning
+    /// that primary with complete confidence. So the wallpaper's answer is not
+    /// merely staler than the palette's — on that configuration it is
+    /// **confidently wrong**, and it is wrong in the specific direction of
+    /// ignoring a choice the user made deliberately, in the settings app, about
+    /// exactly this. A missing answer sends us to a sensible fallback; a wrong
+    /// one paints the screen a colour somebody has already rejected.
+    ///
+    /// **The wallpaper arm is a fallback, not dead code.** This app's `minSdk`
+    /// is 28, and API 28-30 have a wallpaper to read and no palette to read it
+    /// from — three whole releases where the second arm is the only arm that
+    /// can answer.
+    ///
+    /// Both arms build the same [`DerivedAccent`] through the same
+    /// `from_seed`, differing only in the [`AccentSource`] they stamp on it,
+    /// because the contrast walk does not care where a colour came from and
+    /// the Settings row cares about nothing else. See
+    /// [`ResolvedAccent::name`].
+    pub fn resolve(self, palette: Option<Rgb>, wallpaper: Option<Rgb>) -> ResolvedAccent {
         match self {
-            AccentChoice::FromSystem => match wallpaper {
-                Some(seed) => ResolvedAccent::Wallpaper(WallpaperAccent::from_seed(seed)),
-                None => ResolvedAccent::Authored(RUST),
+            AccentChoice::FromSystem => match (palette, wallpaper) {
+                (Some(seed), _) => {
+                    ResolvedAccent::Derived(DerivedAccent::from_seed(AccentSource::System, seed))
+                }
+                (None, Some(seed)) => {
+                    ResolvedAccent::Derived(DerivedAccent::from_seed(AccentSource::Wallpaper, seed))
+                }
+                (None, None) => ResolvedAccent::Authored(RUST),
             },
             AccentChoice::Named(i) => {
                 ResolvedAccent::Authored(ACCENTS[i.min(ACCENTS.len() - 1)])
@@ -205,63 +245,135 @@ mod theme_choice_tests {
 #[cfg(test)]
 mod accent_choice_tests {
     use super::*;
-    use crate::theme::{MIN_CONTRAST, contrast};
+    use crate::theme::{AWKWARD_SEEDS, MIN_CONTRAST, contrast};
 
-    /// The device this card was verified on, and every desktop build: no
-    /// wallpaper colour to be had, so `FromSystem` lands on Rust. This test
+    /// A palette colour and a wallpaper colour that are plainly not each
+    /// other. Every resolution-order assertion below hands over both, because
+    /// a pair that happened to match would let a `resolve` reading the wrong
+    /// field pass the lot of them.
+    const PALETTE: Rgb = Rgb::new(0x6D, 0x5E, 0x8C);
+    const WALLPAPER: Rgb = Rgb::new(0x3F, 0x51, 0xB5);
+
+    /// Every desktop build, and any handset old enough or plain enough to
+    /// report neither colour: nothing to be had, so `FromSystem` lands on
+    /// Rust. This test
     /// replaces the one H2 left behind
     /// (`accent_choice_from_system_resolves_to_rust_until_wallpaper_extraction_lands`),
     /// which pinned the same answer for the opposite reason — that there was
     /// no wallpaper *call*. There is one now; it just says `None` here.
     #[test]
-    fn from_system_with_no_wallpaper_colour_falls_back_to_rust() {
+    fn from_system_with_nothing_to_read_falls_back_to_rust() {
         assert_eq!(
-            AccentChoice::FromSystem.resolve(None),
+            AccentChoice::FromSystem.resolve(None, None),
             ResolvedAccent::Authored(RUST)
         );
     }
 
-    /// And when there *is* one, it is used — which is the whole of what K8
-    /// changed, and the thing that cannot be seen on the development phone.
+    /// And when there *is* a colour, it is used — which is the whole of what
+    /// K8 changed, and the thing that cannot be seen on a laptop.
     #[test]
     fn from_system_with_a_wallpaper_colour_uses_it_rather_than_rust() {
-        let seed = Rgb::new(0x3F, 0x51, 0xB5);
-        let resolved = AccentChoice::FromSystem.resolve(Some(seed));
+        let resolved = AccentChoice::FromSystem.resolve(None, Some(WALLPAPER));
         assert_ne!(resolved, ResolvedAccent::Authored(RUST));
         assert_eq!(resolved.name(), "Wallpaper");
     }
 
-    /// The handoff's rule, measured rather than pinned to a hex: whatever the
-    /// wallpaper turns out to be, what the app paints with clears 4.5:1
-    /// against the paper it is painted on, in both modes.
+    /// **The order card K57 exists to establish.** A device that publishes a
+    /// Material You palette is themed in *that*, and the wallpaper's own
+    /// primary is not a second opinion to be averaged with it — on a device
+    /// whose `color_source` is `"preset"` it is the colour the user went into
+    /// Wallpaper & style specifically to override. So the palette wins, and it
+    /// wins even though the wallpaper had a perfectly good answer ready, which
+    /// is exactly the case a fallback chain gets wrong if it is written as
+    /// "wallpaper, or else the palette".
     #[test]
-    fn a_wallpaper_accent_is_legible_on_paper_whatever_the_wallpaper_was() {
-        for seed in [
-            Rgb::new(0, 0, 0),
-            Rgb::new(255, 255, 255),
-            Rgb::new(255, 214, 0),
-            Rgb::new(0x3F, 0x51, 0xB5),
-        ] {
-            let resolved = AccentChoice::FromSystem.resolve(Some(seed));
-            for dark in [false, true] {
-                let colours = resolved.colours(dark);
-                let paper = Rgb::from_hex(crate::theme::paper(dark));
-                let ratio = contrast(colours.base, paper);
-                assert!(
-                    ratio >= MIN_CONTRAST,
-                    "{seed} in {} mode is only {ratio:.2}:1 on paper",
-                    if dark { "dark" } else { "light" }
-                );
+    fn a_palette_colour_beats_a_wallpaper_colour_that_is_also_there() {
+        let resolved = AccentChoice::FromSystem.resolve(Some(PALETTE), Some(WALLPAPER));
+        assert_eq!(resolved.name(), "System");
+
+        // Not merely named differently — painted differently. The two seeds
+        // are different colours and the accent is built from the palette's.
+        let from_wallpaper_alone = AccentChoice::FromSystem.resolve(None, Some(WALLPAPER));
+        assert_ne!(resolved.colours(false).base, from_wallpaper_alone.colours(false).base);
+        assert_eq!(
+            resolved,
+            AccentChoice::FromSystem.resolve(Some(PALETTE), None),
+            "the wallpaper changed the answer even though the palette had one"
+        );
+    }
+
+    /// The other half of the order, and the reason the wallpaper arm is not
+    /// dead code: `minSdk` is 28 and the palette resources arrived in API 31,
+    /// so on three whole Android releases this is the only arm that answers.
+    #[test]
+    fn a_wallpaper_colour_is_used_when_the_device_publishes_no_palette() {
+        let resolved = AccentChoice::FromSystem.resolve(None, Some(WALLPAPER));
+        assert_eq!(resolved.name(), "Wallpaper");
+        assert_eq!(
+            resolved,
+            ResolvedAccent::Derived(crate::theme::DerivedAccent::from_seed(
+                AccentSource::Wallpaper,
+                WALLPAPER
+            ))
+        );
+    }
+
+    /// All three rungs of the ladder in one place, so that the *shape* of the
+    /// fallback is pinned and not only its individual steps.
+    #[test]
+    fn the_resolution_order_is_palette_then_wallpaper_then_rust() {
+        let names = [
+            (Some(PALETTE), Some(WALLPAPER), "System"),
+            (Some(PALETTE), None, "System"),
+            (None, Some(WALLPAPER), "Wallpaper"),
+            (None, None, "Rust"),
+        ];
+        for (palette, wallpaper, expected) in names {
+            assert_eq!(
+                AccentChoice::FromSystem.resolve(palette, wallpaper).name(),
+                expected,
+                "palette {palette:?} + wallpaper {wallpaper:?}"
+            );
+        }
+    }
+
+    /// The handoff's rule, measured rather than pinned to a hex: whatever the
+    /// device turns out to report, what the app paints with clears 4.5:1
+    /// against the paper it is painted on, in both modes.
+    ///
+    /// Both provenances, over `theme::AWKWARD_SEEDS` — the table `src/theme.rs`
+    /// audits `DerivedAccent` with directly, which K57 moved to file scope
+    /// rather than let this test keep the shorter private copy it had. The
+    /// palette arm is new and the guarantee is the same guarantee; a second
+    /// table here would be a second thing to remember to widen.
+    #[test]
+    fn a_derived_accent_is_legible_on_paper_whatever_the_device_reported() {
+        for (what, seed) in AWKWARD_SEEDS {
+            for (source, resolved) in [
+                ("palette", AccentChoice::FromSystem.resolve(Some(*seed), None)),
+                ("wallpaper", AccentChoice::FromSystem.resolve(None, Some(*seed))),
+            ] {
+                for dark in [false, true] {
+                    let colours = resolved.colours(dark);
+                    let paper = Rgb::from_hex(crate::theme::paper(dark));
+                    let ratio = contrast(colours.base, paper);
+                    assert!(
+                        ratio >= MIN_CONTRAST,
+                        "{what} ({seed}) from the {source} in {} mode is only {ratio:.2}:1 on \
+                         paper",
+                        if dark { "dark" } else { "light" }
+                    );
+                }
             }
         }
     }
 
-    /// A user pick is a user pick: the wallpaper is read, and then ignored.
+    /// A user pick is a user pick: both device colours are read, and then
+    /// ignored.
     #[test]
-    fn a_named_accent_ignores_the_wallpaper_entirely() {
-        let seed = Some(Rgb::new(0x3F, 0x51, 0xB5));
+    fn a_named_accent_ignores_the_devices_colours_entirely() {
         assert_eq!(
-            AccentChoice::Named(1).resolve(seed),
+            AccentChoice::Named(1).resolve(Some(PALETTE), Some(WALLPAPER)),
             ResolvedAccent::Authored(ACCENTS[1])
         );
     }
@@ -272,7 +384,7 @@ mod accent_choice_tests {
     #[test]
     fn an_index_past_the_end_of_the_table_clamps_to_the_last_accent() {
         assert_eq!(
-            AccentChoice::Named(99).resolve(None),
+            AccentChoice::Named(99).resolve(None, None),
             ResolvedAccent::Authored(ACCENTS[ACCENTS.len() - 1])
         );
     }
@@ -476,7 +588,8 @@ pub struct SettingsStore {
     pub capture_mode: Signal<CaptureMode>,
     storage: Storage,
     /// What the platform last said about itself — the night mode two of this
-    /// store's answers depend on, and the wallpaper colour a third does.
+    /// store's answers depend on, and the palette and wallpaper colours a
+    /// third does.
     ///
     /// Held as a handle rather than passed to `dark_active`/`accent_resolved`
     /// at each of their call sites, on the same reasoning `SongsStore` is
@@ -527,15 +640,19 @@ impl SettingsStore {
     }
 
     /// The accent the app is painted in right now: the choice, resolved
-    /// through the wallpaper colour the platform last reported.
+    /// through the two device colours the platform last reported.
     ///
-    /// A signal read on both halves, so every style closure that calls this
-    /// repaints both when the user taps a chip *and* when the wallpaper
-    /// changes under a running app — which is the K53 half of this card and
+    /// A signal read on all three, so every style closure that calls this
+    /// repaints both when the user taps a chip *and* when the system's colours
+    /// change under a running app — which is the K53 half of that card and
     /// costs nothing extra here, because the reactivity was already how the
-    /// first half worked.
+    /// first half worked. Since K57 that covers a change of *preset* as well
+    /// as a change of wallpaper: both regenerate the palette resources and
+    /// both arrive as an ordinary configuration change.
     pub fn accent_resolved(self) -> ResolvedAccent {
-        self.accent.get().resolve(self.system.wallpaper.get())
+        self.accent
+            .get()
+            .resolve(self.system.palette.get(), self.system.wallpaper.get())
     }
 
     /// Whether the app is dark **right now**, which is the question every

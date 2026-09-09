@@ -142,9 +142,10 @@ pub fn app() -> NodeHandle {
     let dir = DataDir::current();
     create_context(dir.clone());
 
-    // What the platform says about itself: the night mode, the wallpaper
-    // colour, the insets and the window's own width, all four taken here and
-    // then held in signals rather than in `let` bindings.
+    // What the platform says about itself: the night mode, the system's own
+    // Material You palette, the wallpaper colour, the insets and the window's
+    // own width, all five taken here and then held in signals rather than in
+    // `let` bindings.
     //
     // **They used to be `let` bindings, and card K53 is why they are not.**
     // The safe area was read once at mount with a comment saying the app is
@@ -370,8 +371,8 @@ pub fn app() -> NodeHandle {
     // there is exactly one slot, last write wins, and a handler installed from
     // inside a screen would be silently replaced by the next screen to mount
     // and never reinstated. What varies is not *who* listens, it is what has to
-    // be re-read, and that is `SystemStore::reread` — one function, four
-    // readings, no `#[cfg]`.
+    // be re-read, and that is `SystemStore::reread` — one function, five
+    // readings (K57 added the system palette), no `#[cfg]`.
     //
     // No `#[cfg]` at this call site either, and that is deliberate on rinch's
     // part rather than luck: the slot lives in `rinch-core`, which is compiled

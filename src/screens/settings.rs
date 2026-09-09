@@ -137,17 +137,27 @@
 //! **Which chip is lit had to change with it, and the reason is not
 //! cosmetic.** It used to be `settings.accent_resolved() == accent`, comparing
 //! the *painted* colour against each swatch, which worked while every choice
-//! resolved to a different accent. It does not work now: on a device whose
-//! wallpaper publishes no colours — which is most of them, including the phone
-//! this was verified on — `FromSystem` resolves to Rust, so comparing resolved
-//! accents would light the Rust chip *and* the System chip and offer no way to
-//! tell which one you were actually on. The comparison is on the choice.
+//! resolved to a different accent. It does not work now: on a device that
+//! offers no colour at all — every desktop build, and any handset whose
+//! wallpaper publishes nothing and whose API level predates the system palette
+//! — `FromSystem` resolves to Rust, so comparing resolved accents would light
+//! the Rust chip *and* the System chip and offer no way to tell which one you
+//! were actually on. The comparison is on the choice.
 //!
 //! The row's note on the right (`derive::accent_note`) still names the colour
 //! actually on screen rather than the chip that was tapped, which is the same
-//! contract it has always had: "System" on a device with no wallpaper colour
-//! reads "Rust", because the screen is rust-coloured and saying anything else
-//! would be lying about the pixels.
+//! contract it has always had: "System" with nothing to read reads "Rust",
+//! because the screen is rust-coloured and saying anything else would be lying
+//! about the pixels.
+//!
+//! **Card K57 is where that note earned its keep.** K8 had one device colour
+//! and so the note had one word for it, "Wallpaper". K57 put the system's own
+//! Material You palette in front of the wallpaper, and on a device themed from
+//! a *preset* the wallpaper's colour is the one the user went into Wallpaper &
+//! style to override — so a note still saying "Wallpaper" would have been this
+//! row lying about the one thing it exists to say. It says "System" now when
+//! the palette answered, and the provenance is carried on the value rather
+//! than guessed at here: `theme::AccentSource`.
 //!
 //! ## Export, and its three failure states
 //!
@@ -769,7 +779,8 @@ fn accent_row(scope: &mut RenderScope, settings: SettingsStore, system: SystemSt
             div { style: "display: flex; align-items: center; gap: 12px;",
                 span { style: {format!("{T_BODY} flex: 1;")}, "Accent" }
                 span { style: {format!("{T_META_SMALL}")}, {move || {
-                    accent_note(settings.accent.get(), system.wallpaper.get()).to_string()
+                    accent_note(settings.accent.get(), system.palette.get(), system.wallpaper.get())
+                        .to_string()
                 }} }
             }
             div { style: "display: flex; flex-wrap: wrap; gap: 7px;",
@@ -779,13 +790,16 @@ fn accent_row(scope: &mut RenderScope, settings: SettingsStore, system: SystemSt
                     // rule prevents on a phone with no wallpaper colours.
                     let chosen = move || settings.accent.get() == choice;
                     // …and painted by the colour it resolved to, which for the
-                    // System chip is whatever the wallpaper turned out to be
-                    // (or Rust, on a device that publishes none). Both signals
-                    // are read inside the closures, so the System chip
-                    // repaints on a wallpaper change without anything here
-                    // having to hear about it.
+                    // System chip is the system's own palette, or the
+                    // wallpaper's colour below API 31, or Rust on a device that
+                    // publishes neither. Every signal is read inside the
+                    // closures, so the System chip repaints when the device's
+                    // theme moves without anything here having to hear about
+                    // it.
                     let colours = move || {
-                        choice.resolve(system.wallpaper.get()).colours(settings.dark_active())
+                        choice
+                            .resolve(system.palette.get(), system.wallpaper.get())
+                            .colours(settings.dark_active())
                     };
                     div {
                         key: {choice.label()},

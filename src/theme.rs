@@ -134,18 +134,83 @@ impl Accent {
     }
 }
 
-/// An accent built from the wallpaper's primary colour — card K8, and the
-/// thing `AccentChoice::FromSystem` was waiting for.
+/// Where a derived accent's seed came from — card K57.
 ///
-/// The seed is [`rinch_android::display::wallpaper_primary`], which is
-/// `WallpaperColors.getPrimaryColor()` and therefore can be *anything a
-/// photograph can be*: near-black, near-white, or a saturated yellow that
-/// vanishes on cream. That framework call deliberately hands back the raw
-/// triple and no more — a contrast ratio is a fact about a **pair** of
-/// colours and it only knows one of them — so every question about legibility
-/// is answered here, against this app's own paper, with the same
-/// [`contrast_ratio`] arithmetic the four authored accents are already
-/// audited by.
+/// It exists because the name is the *only* thing a user ever sees of this
+/// distinction, and until this card the name was wrong. K8 built one derived
+/// accent, from the wallpaper, and called the variant `Wallpaper`; K57 put a
+/// better source in front of it (`android.R.color.system_accent1_500`, the
+/// palette the system is itself themed with) and the old name immediately
+/// became a lie on the most common configuration there is — a device whose
+/// palette came from a *preset* the user picked in Wallpaper & style, where
+/// the wallpaper's own colour is the thing they explicitly overrode.
+///
+/// This app's comments call out controls that lie about what they do in
+/// several places, `screens::settings`'s accent row most loudly of all, and
+/// the row's whole contract (`derive::accent_note`) is to name the colour the
+/// pixels actually are. So the provenance is carried on the value rather than
+/// inferred by whoever prints it, and there is exactly one place — [`name`] —
+/// that turns it into a word.
+///
+/// [`name`]: AccentSource::name
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AccentSource {
+    /// `system_accent1_500`, off the Material You palette Android 12+ publishes
+    /// as framework colour resources. What the device is themed in, whatever
+    /// the user's theme was *derived* from.
+    System,
+    /// `WallpaperColors.getPrimaryColor()`. The fallback, for API 28-30, which
+    /// have a wallpaper to read and no published palette to read it from.
+    Wallpaper,
+}
+
+impl AccentSource {
+    /// The word the Settings row prints. Short, because it is set in
+    /// `T_META_SMALL` next to the word "Accent" and shares its line with
+    /// nothing else.
+    pub fn name(self) -> &'static str {
+        match self {
+            AccentSource::System => "System",
+            AccentSource::Wallpaper => "Wallpaper",
+        }
+    }
+}
+
+/// An accent built from a colour the device reported rather than one anybody
+/// authored — card K8, and the thing `AccentChoice::FromSystem` was waiting
+/// for. Card K57 gave it a second, better [`source`](Self::source) and took
+/// the word "wallpaper" out of its name.
+///
+/// The seed is whatever `AccentChoice::resolve` found first — the system
+/// palette's tone 500, or, on a device too old to publish one, the wallpaper's
+/// primary colour. Either way it can be *anything a photograph can be*:
+/// near-black, near-white, or a saturated yellow that vanishes on cream. Both
+/// framework calls deliberately hand back the raw triple and no more — a
+/// contrast ratio is a fact about a **pair** of colours and they only know one
+/// of them — so every question about legibility is answered here, against this
+/// app's own paper, with the same [`contrast_ratio`] arithmetic the four
+/// authored accents are already audited by.
+///
+/// ## Why one seed, and not the thirteen tones the palette actually publishes
+///
+/// `system_accent1_*` is a full ramp — `0, 10, 50, 100, 200 … 900, 1000` —
+/// and the obvious thing to do with a ramp is to take a light tone for light
+/// mode and a dark one for dark mode, the way Material's own components do.
+/// K57 deliberately does not, and this is the note for whoever wonders why a
+/// thirteen-tone gift went unused.
+///
+/// Those tones are tuned against **Material's** surfaces. This app's papers
+/// are `#FBF7F0`, a warm cream, and `#181512`, a near-black with a brown cast
+/// — neither is `md.sys.color.surface`, and a tone chosen to sit at a
+/// particular contrast against a colour we do not paint on is a number with
+/// no relationship to the one thing that has to be true here. Worse, it would
+/// *look* principled: a table mapping tone to mode, sourced from a real
+/// specification, quietly missing 4.5:1 on the surface it is actually drawn
+/// on. Whereas [`derive_family`] already takes any seed at all and walks it
+/// until it clears 4.5:1 against the papers we really have, and is tested on
+/// seeds far nastier than tone 500 will ever be. One tone as a seed is less
+/// code and more correct, and if the ramp ever becomes useful it is one call
+/// away.
 ///
 /// ## What is derived, and from what
 ///
@@ -178,10 +243,17 @@ impl Accent {
 ///   not text (J3's audit says exactly this, at more length).
 ///
 /// Every one of those claims is asserted in this file's tests, for a table of
-/// seeds chosen to be nastier than a real wallpaper: pure black, pure white,
-/// the paper colour itself, and a saturated yellow.
+/// seeds chosen to be nastier than a real wallpaper or palette: pure black,
+/// pure white, the paper colour itself, and a saturated yellow. Note that the
+/// [`source`](Self::source) plays no part in any of the arithmetic — it is
+/// carried for the name and nothing else, which is why the same
+/// [`AWKWARD_SEEDS`] table is asserted for both of them from
+/// `src/store/settings.rs` rather than only for the one K8 happened to build.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct WallpaperAccent {
+pub struct DerivedAccent {
+    /// Which of the two device readings this was built from. Used by
+    /// [`ResolvedAccent::name`] and by nothing else in this file.
+    pub source: AccentSource,
     /// The colour the platform actually reported, before any of the maths.
     /// Kept so that a future card can show it, and so the tests can say what
     /// went in beside what came out.
@@ -190,9 +262,10 @@ pub struct WallpaperAccent {
     dark: AccentColours,
 }
 
-impl WallpaperAccent {
-    pub fn from_seed(seed: Rgb) -> Self {
+impl DerivedAccent {
+    pub fn from_seed(source: AccentSource, seed: Rgb) -> Self {
         Self {
+            source,
             seed,
             light: derive_family(seed, Rgb::from_hex(LIGHT_PAPER), Rgb::from_hex(LIGHT_FILL)),
             dark: derive_family(seed, Rgb::from_hex(DARK_PAPER), Rgb::from_hex(DARK_FILL)),
@@ -211,36 +284,43 @@ impl WallpaperAccent {
 /// Two variants rather than one type with runtime colours throughout, because
 /// the four authored accents really are different in kind from the derived
 /// one: theirs are published values with a name a person recognises, and the
-/// wallpaper's is a number off a device with no name at all. Flattening the
+/// device's is a number off a platform reading with no name at all — only a
+/// [`source`](DerivedAccent::source) to say where it was found. Flattening the
 /// two would mean either giving Rust a computed palette it does not need or
-/// giving the wallpaper a name it does not have.
+/// giving the derived one a name it does not have.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResolvedAccent {
     Authored(Accent),
-    Wallpaper(WallpaperAccent),
+    Derived(DerivedAccent),
 }
 
 impl ResolvedAccent {
-    /// What to call the colour on screen. `"Wallpaper"` for the derived one:
-    /// it is the honest answer, and it is what `derive::accent_note` prints
-    /// on the Settings row, whose whole contract is to name the colour the
-    /// pixels actually are rather than the control that was tapped.
+    /// What to call the colour on screen. For the derived one that is its
+    /// source — `"System"` or `"Wallpaper"` — which is the honest answer, and
+    /// it is what `derive::accent_note` prints on the Settings row, whose
+    /// whole contract is to name the colour the pixels actually are rather
+    /// than the control that was tapped.
+    ///
+    /// Until K57 this returned `"Wallpaper"` for every derived accent, which
+    /// was true while the wallpaper was the only reading there was. It is
+    /// [`AccentSource`]'s doc comment that explains why keeping it would have
+    /// been a control lying about what it does.
     pub fn name(self) -> &'static str {
         match self {
             ResolvedAccent::Authored(accent) => accent.name,
-            ResolvedAccent::Wallpaper(_) => "Wallpaper",
+            ResolvedAccent::Derived(derived) => derived.source.name(),
         }
     }
 
     pub fn colours(self, dark: bool) -> AccentColours {
         match self {
             ResolvedAccent::Authored(accent) => accent.colours(dark),
-            ResolvedAccent::Wallpaper(wallpaper) => wallpaper.colours(dark),
+            ResolvedAccent::Derived(derived) => derived.colours(dark),
         }
     }
 }
 
-/// One mode's worth of [`WallpaperAccent`] — see that type for what each of
+/// One mode's worth of [`DerivedAccent`] — see that type for what each of
 /// the five is and why. `paper` is the mode's background and `fill` is the
 /// neutral the `on_tint` value has to survive as text on as well.
 fn derive_family(seed: Rgb, paper: Rgb, fill: Rgb) -> AccentColours {
@@ -740,6 +820,40 @@ pub(crate) mod font_coverage {
     }
 }
 
+/// The seeds every derived-accent assertion in this crate is measured on —
+/// here at file scope, rather than inside `mod tests` where K8 wrote it,
+/// because `src/store/settings.rs` asserts the same promise from the other
+/// side of the seam and card K57 was not willing to let it keep its own
+/// shorter copy of the table. Two tables would be two things to remember to
+/// widen, and the one that got forgotten would be the one guarding the arm
+/// nobody was thinking about.
+///
+/// The four authored accents are checked as a table of literals somebody
+/// chose; a derived one has to be checked as a *rule*, because its input is
+/// whatever the device reports — a photograph's dominant colour, or a palette
+/// tone generated from one. So these are deliberately worse than anything
+/// Material You would hand over: the two ends of the range, the app's own
+/// paper (a seed that is exactly the colour we are about to draw it on), and a
+/// saturated yellow, which is the classic accent that looks fine in a swatch
+/// and disappears the moment it is used as text.
+///
+/// Nothing measured against this table asserts a hex. A hex would pin the
+/// arithmetic rather than the promise, and the promise is the handoff's: *the
+/// accent clears 4.5:1 against paper*. Every assertion is on a measured ratio.
+///
+/// `pub(crate)` and `#[cfg(test)]` together, following [`font_coverage`] just
+/// above — a fixture the whole crate's tests may read and no shipped code can.
+#[cfg(test)]
+pub(crate) const AWKWARD_SEEDS: &[(&str, Rgb)] = &[
+    ("black", Rgb::new(0, 0, 0)),
+    ("white", Rgb::new(255, 255, 255)),
+    ("mid grey", Rgb::new(128, 128, 128)),
+    ("the app's own light paper", Rgb::new(0xFB, 0xF7, 0xF0)),
+    ("the app's own dark paper", Rgb::new(0x18, 0x15, 0x12)),
+    ("saturated yellow", Rgb::new(255, 214, 0)),
+    ("a plausible Material You blue", Rgb::new(0x3F, 0x51, 0xB5)),
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1153,35 +1267,18 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // K8 — the wallpaper accent. The one accent nobody authored.
+    // K8 — the derived accent. The one accent nobody authored.
     // -----------------------------------------------------------------------
     //
-    // The four above are checked as a table of literals somebody chose; this
-    // one has to be checked as a *rule*, because its input is whatever
-    // photograph the user has set as their wallpaper. So the seeds below are
-    // deliberately worse than anything Material You would hand over: the two
-    // ends of the range, the app's own paper (a wallpaper that is exactly the
-    // colour we are about to draw it on), and a saturated yellow, which is the
-    // classic accent that looks fine in a swatch and disappears the moment it
-    // is used as text.
-    //
-    // Nothing here asserts a hex. A hex would pin the arithmetic rather than
-    // the promise, and the promise is the handoff's: *the accent clears 4.5:1
-    // against paper*. Every assertion below is on a measured ratio.
-    const AWKWARD_SEEDS: &[(&str, Rgb)] = &[
-        ("black", Rgb::new(0, 0, 0)),
-        ("white", Rgb::new(255, 255, 255)),
-        ("mid grey", Rgb::new(128, 128, 128)),
-        ("the app's own light paper", Rgb::new(0xFB, 0xF7, 0xF0)),
-        ("the app's own dark paper", Rgb::new(0x18, 0x15, 0x12)),
-        ("saturated yellow", Rgb::new(255, 214, 0)),
-        ("a plausible Material You blue", Rgb::new(0x3F, 0x51, 0xB5)),
-    ];
+    // The table these walk is [`AWKWARD_SEEDS`], which moved out to file scope
+    // in K57 so that `src/store/settings.rs` could measure the same promise on
+    // the same seeds; its doc comment is where the reasoning for the table now
+    // lives.
 
     #[test]
-    fn a_wallpaper_accent_clears_4_5_to_1_as_text_on_paper_in_both_modes() {
+    fn a_derived_accent_clears_4_5_to_1_as_text_on_paper_in_both_modes() {
         for (what, seed) in AWKWARD_SEEDS {
-            let accent = WallpaperAccent::from_seed(*seed);
+            let accent = DerivedAccent::from_seed(AccentSource::Wallpaper, *seed);
 
             let light = contrast(accent.colours(false).base, Rgb::from_hex(LIGHT_PAPER));
             assert!(
@@ -1202,9 +1299,9 @@ mod tests {
     /// because that is J3's thirteenth pairing and it is the one the authored
     /// table actually failed.
     #[test]
-    fn a_wallpaper_accents_text_pairs_clear_4_5_to_1_in_both_modes() {
+    fn a_derived_accents_text_pairs_clear_4_5_to_1_in_both_modes() {
         for (what, seed) in AWKWARD_SEEDS {
-            let accent = WallpaperAccent::from_seed(*seed);
+            let accent = DerivedAccent::from_seed(AccentSource::Wallpaper, *seed);
             for (mode, paper, fill) in [
                 ("light", LIGHT_PAPER, LIGHT_FILL),
                 ("dark", DARK_PAPER, DARK_FILL),
@@ -1252,7 +1349,7 @@ mod tests {
         let measured = contrast(seed, Rgb::from_hex(LIGHT_PAPER));
         assert!(measured >= MIN_CONTRAST, "the fixture itself drifted: {measured:.2}:1");
 
-        let base = WallpaperAccent::from_seed(seed).colours(false).base;
+        let base = DerivedAccent::from_seed(AccentSource::Wallpaper, seed).colours(false).base;
         assert_eq!(base, seed, "a seed that was already legible was darkened anyway");
     }
 
@@ -1266,7 +1363,7 @@ mod tests {
         let before = contrast(seed, Rgb::from_hex(LIGHT_PAPER));
         assert!(before < MIN_CONTRAST, "the fixture itself drifted: {before:.2}:1");
 
-        let base = WallpaperAccent::from_seed(seed).colours(false).base;
+        let base = DerivedAccent::from_seed(AccentSource::Wallpaper, seed).colours(false).base;
         let after = contrast(base, Rgb::from_hex(LIGHT_PAPER));
         assert!(after >= MIN_CONTRAST, "still only {after:.2}:1 after darkening");
         assert!(
@@ -1286,7 +1383,7 @@ mod tests {
     #[test]
     fn the_dark_mode_variant_is_lighter_than_the_seed_when_the_seed_is_too_dark() {
         let seed = Rgb::new(0x1B, 0x3A, 0x6B);
-        let base_dark = WallpaperAccent::from_seed(seed).colours(true).base;
+        let base_dark = DerivedAccent::from_seed(AccentSource::Wallpaper, seed).colours(true).base;
         assert!(
             relative_luminance(base_dark) > relative_luminance(seed),
             "a dark navy stayed dark on the dark theme's near-black paper"
@@ -1342,9 +1439,9 @@ mod tests {
     /// to show the user their wallpaper colour, or a bug report that needs to
     /// say what went in, has somewhere to read it.
     #[test]
-    fn a_wallpaper_accent_remembers_the_colour_it_was_built_from() {
+    fn a_derived_accent_remembers_the_colour_it_was_built_from() {
         let seed = Rgb::new(255, 214, 0);
-        let accent = WallpaperAccent::from_seed(seed);
+        let accent = DerivedAccent::from_seed(AccentSource::Wallpaper, seed);
         assert_eq!(accent.seed, seed);
         assert_ne!(
             accent.colours(false).base,
@@ -1356,11 +1453,31 @@ mod tests {
     /// The derived accent has no name of its own, and the one it is given says
     /// where it came from rather than what colour it is — `derive::accent_note`
     /// prints this on the Settings row.
+    ///
+    /// Both provenances, and asserted to *differ*, because until K57 there was
+    /// only one word here and the whole of that card's naming half is that the
+    /// one word was wrong for the seed it had just started preferring. A
+    /// `name()` that had been rewritten to return `"System"` unconditionally
+    /// would pass an assertion on either line alone.
     #[test]
-    fn the_wallpaper_accent_is_named_after_where_it_came_from() {
-        let derived = ResolvedAccent::Wallpaper(WallpaperAccent::from_seed(Rgb::new(9, 9, 9)));
-        assert_eq!(derived.name(), "Wallpaper");
+    fn a_derived_accent_is_named_after_where_it_came_from() {
+        let seed = Rgb::new(9, 9, 9);
+        let from_palette =
+            ResolvedAccent::Derived(DerivedAccent::from_seed(AccentSource::System, seed));
+        let from_wallpaper =
+            ResolvedAccent::Derived(DerivedAccent::from_seed(AccentSource::Wallpaper, seed));
+
+        assert_eq!(from_palette.name(), "System");
+        assert_eq!(from_wallpaper.name(), "Wallpaper");
+        assert_ne!(from_palette.name(), from_wallpaper.name());
         assert_eq!(ResolvedAccent::Authored(RUST).name(), "Rust");
+
+        // Same seed, so the colours are identical and only the name is not —
+        // which is the statement that the source is carried for the label and
+        // takes no part in the arithmetic.
+        for dark in [false, true] {
+            assert_eq!(from_palette.colours(dark), from_wallpaper.colours(dark));
+        }
     }
 
     /// `contrast_ratio` is now a wrapper over `contrast`, and the two have to

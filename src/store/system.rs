@@ -1,11 +1,12 @@
 //! What the platform said, the last time anything asked it.
 //!
 //! Every other store in this directory holds something the *user* decided.
-//! This one holds nothing the user decided at all: it is four readings taken
+//! This one holds nothing the user decided at all: it is five readings taken
 //! off the device — whether the system is in night mode, what colour the
-//! wallpaper is, how much of the window the app is not allowed to draw in, and
-//! how wide that window is — parked in signals so that a screen can read them
-//! the way it reads any other reactive value.
+//! system's own Material You palette is, what colour the wallpaper is, how much
+//! of the window the app is not allowed to draw in, and how wide that window is
+//! — parked in signals so that a screen can read them the way it reads any
+//! other reactive value.
 //!
 //! ## Why they are signals now, when they were plain function calls before
 //!
@@ -22,9 +23,13 @@
 //! Card K8 arrived at the same time and added the other two readings, which
 //! have exactly the same shelf life for exactly the same reason: a person
 //! flips their phone to dark at sunset, or changes their wallpaper, with this
-//! app in the foreground.
+//! app in the foreground. Card K57 added the fifth — the system palette — and
+//! it has the shortest shelf life of the lot: Android regenerates those colour
+//! resources the instant somebody changes their wallpaper *or* picks a
+//! different preset in Wallpaper & style, and either way the app is told about
+//! it as a configuration change like any other.
 //!
-//! ## Four readings, one store, one re-read
+//! ## Five readings, one store, one re-read
 //!
 //! They are together rather than each in the store that consumes it because
 //! the *event* is one event. Android does not report "the night mode changed";
@@ -32,14 +37,14 @@
 //! payload for precisely that reason (see
 //! `rinch_core::events::ConfigurationChangeHandler`: *"the fields an app cares
 //! about are rarely the fields the platform bothered to change"*). One event
-//! that means "ask again" wants one place that asks again, and four listeners
-//! that each re-read one thing would be four chances to forget one.
+//! that means "ask again" wants one place that asks again, and five listeners
+//! that each re-read one thing would be five chances to forget one.
 //!
 //! ## What a re-read reaches, and the one thing it does not
 //!
-//! Three of the four are signals, so a change repaints whatever reads them,
+//! Four of the five are signals, so a change repaints whatever reads them,
 //! which is the ordinary reactive path and needs nothing else said about it.
-//! The fourth — the viewport width — is different in kind, because its readers
+//! The fifth — the viewport width — is different in kind, because its readers
 //! are not components: `song_detail`'s two page widths, `chart_surface`'s
 //! column and `captured_page`'s image sizing all call
 //! `platform::viewport_width()` from plain functions. So it is held here as a
@@ -76,10 +81,10 @@ use rinch::prelude::*;
 use crate::platform::{self, SafeArea};
 use crate::theme::Rgb;
 
-/// One complete look at the platform — all four readings, taken together.
+/// One complete look at the platform — all five readings, taken together.
 ///
-/// A struct rather than four arguments so that [`SystemStore::apply`] cannot
-/// be called with three of them, and so that a test can hand over a whole
+/// A struct rather than five arguments so that [`SystemStore::apply`] cannot
+/// be called with four of them, and so that a test can hand over a whole
 /// pretend device without a window to read one from.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Reading {
@@ -87,8 +92,21 @@ pub struct Reading {
     /// declined to say — see [`platform::night_mode`], where that third state
     /// is argued at length.
     pub night: Option<bool>,
+    /// Tone 500 off `system_accent1_*` — the middle of the accent ramp Android
+    /// 12+ themes itself with, raw. `None` below API 31, which has no such
+    /// resource to publish, and on every desktop build.
+    ///
+    /// **First in the resolution order, ahead of [`wallpaper`](Self::wallpaper),
+    /// and card K57's reason is not that it is newer.** A device whose theme
+    /// came from a *preset* rather than from its wallpaper still has a
+    /// wallpaper, still has a primary colour, and that colour is the one the
+    /// user went into Wallpaper & style to override. See
+    /// [`platform::system_accent`] and `AccentChoice::resolve`.
+    pub palette: Option<Rgb>,
     /// The wallpaper's primary colour, raw. `None` on any device with no
     /// wallpaper colours to publish, which is the common case and not a fault.
+    /// Since K57 this is the *fallback* seed rather than the only one — alive
+    /// for API 28-30, which this app still supports and which have no palette.
     pub wallpaper: Option<Rgb>,
     pub safe_area: SafeArea,
     pub viewport_width: f32,
@@ -99,6 +117,7 @@ impl Reading {
     pub fn take() -> Self {
         Self {
             night: platform::night_mode(),
+            palette: platform::system_accent(platform::PALETTE_TONE),
             wallpaper: platform::wallpaper_primary(),
             safe_area: platform::safe_area(),
             viewport_width: platform::viewport_width(),
@@ -109,6 +128,7 @@ impl Reading {
 #[derive(Clone, Copy)]
 pub struct SystemStore {
     pub night: Signal<Option<bool>>,
+    pub palette: Signal<Option<Rgb>>,
     pub wallpaper: Signal<Option<Rgb>>,
     pub safe_area: Signal<SafeArea>,
     pub viewport_width: Signal<f32>,
@@ -126,6 +146,7 @@ impl SystemStore {
     pub fn holding(reading: Reading) -> Self {
         Self {
             night: Signal::new(reading.night),
+            palette: Signal::new(reading.palette),
             wallpaper: Signal::new(reading.wallpaper),
             safe_area: Signal::new(reading.safe_area),
             viewport_width: Signal::new(reading.viewport_width),
@@ -143,6 +164,7 @@ impl SystemStore {
     /// way anything in this file is pinned at all.
     pub fn apply(self, reading: Reading) {
         self.night.set(reading.night);
+        self.palette.set(reading.palette);
         self.wallpaper.set(reading.wallpaper);
         self.safe_area.set(reading.safe_area);
         self.viewport_width.set(reading.viewport_width);
@@ -188,6 +210,7 @@ mod tests {
     fn day() -> Reading {
         Reading {
             night: Some(false),
+            palette: None,
             wallpaper: None,
             safe_area: SafeArea::PHONE_STANDIN,
             viewport_width: 393.0,
@@ -197,6 +220,11 @@ mod tests {
     fn night_on_a_wider_phone() -> Reading {
         Reading {
             night: Some(true),
+            // A palette and a wallpaper that are *different colours*, because
+            // K57's whole claim is that the two can disagree and that one of
+            // them is the right one. A fixture where they matched would let a
+            // resolution that read the wrong field pass every assertion here.
+            palette: Some(Rgb::new(0x6D, 0x5E, 0x8C)),
             wallpaper: Some(Rgb::new(0x3F, 0x51, 0xB5)),
             safe_area: SafeArea {
                 top: 30.0,
@@ -208,15 +236,18 @@ mod tests {
         }
     }
 
-    /// All four, in one call, because the event that causes it is one event.
-    /// A version of `apply` that updated three of them would look right on the
-    /// phone for as long as nobody rotated it.
+    /// All five, in one call, because the event that causes it is one event.
+    /// A version of `apply` that updated four of them would look right on the
+    /// phone for as long as nobody rotated it — and the one K57 added is the
+    /// likeliest to be the one left out, being both the newest and the one
+    /// whose absence degrades quietly onto the previous card's behaviour.
     #[test]
-    fn a_fresh_reading_replaces_every_one_of_the_four() {
+    fn a_fresh_reading_replaces_every_one_of_the_five() {
         let system = SystemStore::holding(day());
         system.apply(night_on_a_wider_phone());
 
         assert_eq!(system.night.get(), Some(true));
+        assert_eq!(system.palette.get(), Some(Rgb::new(0x6D, 0x5E, 0x8C)));
         assert_eq!(system.wallpaper.get(), Some(Rgb::new(0x3F, 0x51, 0xB5)));
         assert_eq!(system.safe_area.get().top, 30.0);
         assert_eq!(system.viewport_width.get(), 432.0);
@@ -260,19 +291,22 @@ mod tests {
     }
 
     /// A device that declines to say — an undefined `uiMode`, a live wallpaper
-    /// with no colours, a JNI call that failed — is a reading like any other
-    /// and must not be mistaken for "no change". Both fields go back to `None`
-    /// rather than keeping the last thing that was true.
+    /// with no colours, an API level with no palette to publish, a JNI call
+    /// that failed — is a reading like any other and must not be mistaken for
+    /// "no change". All three fields go back to `None` rather than keeping the
+    /// last thing that was true.
     #[test]
     fn a_platform_that_stops_answering_clears_the_readings_rather_than_keeping_them() {
         let system = SystemStore::holding(night_on_a_wider_phone());
         system.apply(Reading {
             night: None,
+            palette: None,
             wallpaper: None,
             ..night_on_a_wider_phone()
         });
 
         assert_eq!(system.night.get(), None);
+        assert_eq!(system.palette.get(), None);
         assert_eq!(system.wallpaper.get(), None);
     }
 
@@ -284,6 +318,7 @@ mod tests {
     fn the_desktop_reads_as_a_phone_shaped_window_with_no_system_theme() {
         let reading = Reading::take();
         assert_eq!(reading.night, None);
+        assert_eq!(reading.palette, None, "a laptop has no Material You palette");
         assert_eq!(reading.wallpaper, None);
         assert_eq!(reading.safe_area, SafeArea::PHONE_STANDIN);
         assert_eq!(reading.viewport_width, crate::WIDTH as f32);

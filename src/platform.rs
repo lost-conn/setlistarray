@@ -15,7 +15,10 @@
 //!
 //! Since card K8 it is also how the app learns what the *system* looks like —
 //! [`night_mode`] and [`wallpaper_primary`] — rather than only what shape the
-//! window is.
+//! window is. Card K57 added the reading that supersedes the second of those,
+//! [`system_accent`]: the palette Android 12+ themes *itself* with, which is a
+//! better answer than the wallpaper's colour rather than merely a newer one.
+//! That function's own comment has the argument.
 //!
 //! ## Every reading in here has a shelf life, and K53 is why that matters
 //!
@@ -406,6 +409,77 @@ pub fn wallpaper_primary() -> Option<crate::theme::Rgb> {
     None
 }
 
+/// The tones `system_accent1_*` is published at, and the only values
+/// [`system_accent`] will ask the platform about.
+///
+/// Verified rather than read off a document: `adb pull
+/// /system/framework/framework-res.apk` from the development handset (a moto g
+/// stylus 5G, SDK 33) and `aapt2 dump resources` lists exactly sixty-five
+/// colour entries in this family — thirteen tones each for `system_accent1`,
+/// `system_accent2`, `system_accent3` and the two neutral ramps — and nothing
+/// between them. There is no `system_accent1_550`.
+///
+/// **This is a mirror of the list in `rinch_android::display::system_accent`,
+/// and the duplication is the point.** The framework's copy is the one that
+/// gates the JNI call; this one exists so that the app's *choice* of tone is a
+/// fact a laptop can check. Card K15's rule is that anything found on hardware
+/// should become a `cargo test` that fails without a device, and "we asked for
+/// a resource that has never existed" is exactly the kind of thing that would
+/// otherwise be discovered as a silent `None` on a phone, indistinguishable
+/// from an honest API-30 device with no palette at all.
+pub const PALETTE_TONES: [u16; 13] =
+    [0, 10, 50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000];
+
+/// The one tone this app reads — `system_accent1_500`.
+///
+/// The middle of the ramp, and the seed rather than a finished colour. Which
+/// tone to take is only a question if you are picking one *per mode*, and
+/// `theme::DerivedAccent` explains at length why this app does not: the ramp's
+/// tones are tuned against Material's surfaces, and this app paints on a warm
+/// cream and a brown-cast near-black. 500 is the tone Material itself treats
+/// as the reference chroma of the ramp, and `theme::derive_family` will walk it
+/// to wherever it has to go for each of our two papers.
+pub const PALETTE_TONE: u16 = 500;
+
+/// One tone off the Material You palette **the system is itself themed with** —
+/// `android.R.color.system_accent1_<tone>`, published as a framework colour
+/// resource since Android 12 (API 31).
+///
+/// **Why this is asked before [`wallpaper_primary`] and not instead of it.**
+/// The two answer different questions, and the difference only shows up on a
+/// configuration that is easy to have and impossible to detect from the
+/// wallpaper's side. `settings get secure theme_customization_overlay_packages`
+/// on the development phone reads
+/// `"android.theme.customization.color_source":"home_wallpaper"` today, which
+/// is the case where the two agree. Pick one of the basic colours in Wallpaper
+/// & style instead and that key reads `"preset"` — the system repaints itself
+/// in the chosen colour, the wallpaper keeps its own quite different primary,
+/// and `getWallpaperColors` goes on returning it with total confidence. That
+/// is not a missing answer, it is a **confidently wrong** one, and an app that
+/// only ever asked the wallpaper would follow the colour the user had gone
+/// into the settings app specifically to override.
+///
+/// So the palette is asked first because it is the better answer, not merely
+/// the newer one. The wallpaper stays as the fallback for API 28-30 — this
+/// app's `minSdk` is 28 — where there is a wallpaper to read and no palette to
+/// read it from. See `AccentChoice::resolve`, which is where the order is
+/// actually written down and tested.
+///
+/// `None` for a tone that was never published, for every device below API 31,
+/// and for a JNI failure. The first two are ordinary and permanent; the third
+/// logs a warning on the framework side. The desktop has no palette at all and
+/// says so, the same way [`night_mode`] and [`wallpaper_primary`] do.
+#[cfg(target_os = "android")]
+pub fn system_accent(tone: u16) -> Option<crate::theme::Rgb> {
+    let (r, g, b) = rinch_android::display::system_accent(tone)?;
+    Some(crate::theme::Rgb::new(r, g, b))
+}
+
+#[cfg(not(target_os = "android"))]
+pub fn system_accent(_tone: u16) -> Option<crate::theme::Rgb> {
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -502,16 +576,60 @@ mod tests {
         assert_eq!(viewport_width(), crate::WIDTH as f32);
     }
 
-    /// The desktop has no system theme to follow and no wallpaper to read, and
-    /// both say so rather than guessing. This is the reading that makes
-    /// `ThemeChoice::FollowSystem` fall back to light and `AccentChoice::
-    /// FromSystem` fall back to Rust on a laptop — which is also, as it
-    /// happens, what the development phone does, because its live wallpaper
-    /// publishes no colours.
+    /// The desktop has no system theme to follow, no wallpaper to read and no
+    /// Material You palette to be handed, and all three say so rather than
+    /// guessing. This is the reading that makes `ThemeChoice::FollowSystem`
+    /// fall back to light and `AccentChoice::FromSystem` fall back to Rust on
+    /// a laptop.
     #[test]
-    fn the_desktop_declines_to_answer_about_the_system_theme_and_the_wallpaper() {
+    fn the_desktop_declines_to_answer_about_the_system_theme_the_palette_and_the_wallpaper() {
         assert_eq!(night_mode(), None);
         assert_eq!(wallpaper_primary(), None);
+        assert_eq!(system_accent(PALETTE_TONE), None);
+    }
+
+    /// The tone this app actually asks for is a tone that exists.
+    ///
+    /// This is the whole of what K57's tone validation is worth on a laptop,
+    /// and it is worth having: [`system_accent`]'s framework half rejects an
+    /// unpublished tone by returning `None` before it makes a JNI call, which
+    /// is exactly the same `None` an honest API-30 device returns — so a typo
+    /// in [`PALETTE_TONE`] would not fail, it would silently move every
+    /// `FromSystem` user onto the wallpaper fallback, on every device, forever.
+    /// Nobody would see it; the app would just quietly be the old app.
+    #[test]
+    fn the_tone_the_app_reads_is_one_the_platform_publishes() {
+        assert!(
+            PALETTE_TONES.contains(&PALETTE_TONE),
+            "system_accent1_{PALETTE_TONE} is not a resource any device has"
+        );
+    }
+
+    /// And the mirror of the framework's list is the list the device really
+    /// has — thirteen tones, the ends of the ramp at 0 and 1000, the two extra
+    /// near-white steps Material puts at 10 and 50, and hundreds in between.
+    /// Pulled from `/system/framework/framework-res.apk` on the development
+    /// handset; see [`PALETTE_TONES`].
+    ///
+    /// The near-misses are named rather than left implied, because "550 looks
+    /// like a tone" is precisely the mistake this list exists to catch.
+    #[test]
+    fn the_published_tones_are_the_thirteen_the_framework_ships_and_no_others() {
+        assert_eq!(PALETTE_TONES.len(), 13);
+        assert_eq!(PALETTE_TONES.first(), Some(&0));
+        assert_eq!(PALETTE_TONES.last(), Some(&1000));
+        for plausible_but_absent in [5, 20, 150, 450, 550, 950, 1100] {
+            assert!(
+                !PALETTE_TONES.contains(&plausible_but_absent),
+                "system_accent1_{plausible_but_absent} does not exist and must not be asked for"
+            );
+        }
+        // Ascending, because the constant reads as a ramp and a reader is
+        // entitled to assume the order means something.
+        assert!(
+            PALETTE_TONES.windows(2).all(|pair| pair[0] < pair[1]),
+            "{PALETTE_TONES:?} is not in ramp order"
+        );
     }
 
 }
