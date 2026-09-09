@@ -13,6 +13,28 @@
 //! [`set_light_system_bars`] is how it is told. The desktop window has no such
 //! bars, so there it is nothing.
 //!
+//! Since card K8 it is also how the app learns what the *system* looks like —
+//! [`night_mode`] and [`wallpaper_primary`] — rather than only what shape the
+//! window is.
+//!
+//! ## Every reading in here has a shelf life, and K53 is why that matters
+//!
+//! Four things this module reports were, until card K53, read once and then
+//! believed forever: the insets, the viewport width, and (from K8) the night
+//! mode and the wallpaper colour. Each was correct for the same single reason
+//! — the app is portrait-locked and nothing was listening for a change — and
+//! K53's own note says the quiet part: *"Both are correct today for the same
+//! reason… Neither is correct the moment that stops being true. Why it was not
+//! fixed in K31: there is nothing to listen to."*
+//!
+//! There is now: `rinch::set_configuration_change_handler`. So none of the
+//! four is read at mount and kept any more. Three of them live in
+//! [`SystemStore`](crate::store::SystemStore) as signals, re-taken whenever
+//! the platform says something moved, and the fourth — the viewport width,
+//! which is read from render closures far too often to be a JNI call each
+//! time — keeps its cache but gains a way to be told the cache is wrong. That
+//! is [`forget_cached_readings`], and `SystemStore::reread` is its one caller.
+//!
 //! Nothing above this module knows which platform it is on.
 
 /// Space to keep clear on each edge, in CSS pixels.
@@ -50,9 +72,16 @@ const BASELINE_DPI: f32 = 160.0;
 
 /// The insets the OS reports, converted to CSS pixels.
 ///
-/// Read at mount. The app is portrait-locked, so these do not change under us;
-/// a rotation-aware version would have to re-read them on a configuration
-/// change, which the Rinch Android shell does not surface yet.
+/// **Not cached, and not read once at mount any more.** It used to say here
+/// that a rotation-aware version "would have to re-read them on a
+/// configuration change, which the Rinch Android shell does not surface yet".
+/// It does now, so this is read into
+/// [`SystemStore::safe_area`](crate::store::SystemStore) at startup and
+/// re-taken from there every time the platform says its configuration moved.
+/// Two JNI calls per re-read, a handful of times in a session, is not a cost
+/// worth caching against — which is exactly the argument
+/// [`viewport_width`] below makes in the opposite direction, and for the
+/// opposite reason.
 #[cfg(target_os = "android")]
 pub fn safe_area() -> SafeArea {
     let insets = rinch_android::display::safe_area_insets();
@@ -97,40 +126,47 @@ pub fn safe_area() -> SafeArea {
 /// is read once at mount by each screen that wants it, so a JNI call per read
 /// costs nothing. This one is read from `song_detail`'s render closures, which
 /// re-run on every redraw of the screen — two JNI calls per frame to re-learn a
-/// number that cannot change under a portrait-locked app is a cost with no
+/// number that does not change from one frame to the next is a cost with no
 /// buyer. A failed read is deliberately *not* cached: it falls back for that
 /// call and asks again next time, so a width asked for before the surface
 /// existed does not become the answer for the rest of the process.
+///
+/// **Cached is not the same as frozen, and it used to be — card K53.** This
+/// was an `OnceLock`, which is to say the first successful reading was the
+/// answer for the life of the *process*. That was defensible for exactly as
+/// long as the sentence "the app is portrait-locked, so the window size cannot
+/// change underneath it" was the end of the argument, and it stopped being the
+/// end of it the moment there was a configuration change to listen to. So the
+/// cache is now a [`CachedWidth`], which is an `OnceLock` that can be told to
+/// forget — see [`forget_cached_readings`], whose one caller is
+/// `SystemStore::reread`.
 #[cfg(target_os = "android")]
 pub fn viewport_width() -> f32 {
-    use std::sync::OnceLock;
-    static WIDTH: OnceLock<f32> = OnceLock::new();
-
-    if let Some(width) = WIDTH.get() {
-        return *width;
-    }
-    let Some((physical, _)) = rinch_android::display::viewport_size() else {
-        return crate::WIDTH as f32;
-    };
-    // The same conversion `safe_area` above does, down to the fallback: 360dpi
-    // (2.25x) is the Pixel-class default, and the guard is there because a
-    // density of zero would turn a width into an infinity rather than into a
-    // wrong number.
-    let scale = rinch_android::display::density_dpi().unwrap_or(360) as f32 / BASELINE_DPI;
-    if scale <= 0.0 {
-        return crate::WIDTH as f32;
-    }
-    let width = physical as f32 / scale;
-    // Once, on the first successful read, because the failure K31 was written
-    // about was a width nobody could see. The app drew every rasterised page
-    // 393 wide on a 432-wide phone for weeks, and the only symptom was a strip
-    // of backdrop that looked like a margin somebody had chosen. A line in
-    // logcat is what turns "the pages look a bit narrow" into a number that
-    // can be checked against `wm size` and `wm density`. It costs one line per
-    // process because the value is cached below and this is inside the miss.
-    log::info!("viewport: {physical}px physical / {scale:.2} = {width} CSS px wide");
-    let _ = WIDTH.set(width);
-    width
+    VIEWPORT_WIDTH
+        .get_or_read(|| {
+            let (physical, _) = rinch_android::display::viewport_size()?;
+            // The same conversion `safe_area` above does, down to the fallback:
+            // 360dpi (2.25x) is the Pixel-class default, and the guard is there
+            // because a density of zero would turn a width into an infinity
+            // rather than into a wrong number.
+            let scale = rinch_android::display::density_dpi().unwrap_or(360) as f32 / BASELINE_DPI;
+            if scale <= 0.0 {
+                return None;
+            }
+            let width = physical as f32 / scale;
+            // Once per fill of the cache, because the failure K31 was written
+            // about was a width nobody could see. The app drew every rasterised
+            // page 393 wide on a 432-wide phone for weeks, and the only symptom
+            // was a strip of backdrop that looked like a margin somebody had
+            // chosen. A line in logcat is what turns "the pages look a bit
+            // narrow" into a number that can be checked against `wm size` and
+            // `wm density`. It costs one line per process — or, since K53, one
+            // more per configuration change, which is exactly when you want to
+            // see it.
+            log::info!("viewport: {physical}px physical / {scale:.2} = {width} CSS px wide");
+            Some(width)
+        })
+        .unwrap_or(crate::WIDTH as f32)
 }
 
 /// On the desktop the answer is `crate::WIDTH`, and that is not a stand-in the
@@ -240,6 +276,136 @@ pub fn set_light_system_bars(light: bool) {
 #[cfg(not(target_os = "android"))]
 pub fn set_light_system_bars(_light: bool) {}
 
+/// A reading that is expensive enough to be worth keeping and short-lived
+/// enough that keeping it forever is a bug.
+///
+/// This is the shape card K53 asked for and the reason it is a named type
+/// rather than three lines inside [`viewport_width`]: *"structure the code so
+/// this is testable without a window"*. An `OnceLock<f32>` cannot be tested at
+/// all — there is one per process and no way to put it back — whereas this is
+/// an ordinary value with a `forget`, so the property that actually matters
+/// ("after a configuration change, the next read asks the platform again
+/// rather than handing back what it had") is a `cargo test` on a laptop rather
+/// than a thing somebody claims after flipping a switch on a phone.
+///
+/// An `AtomicU32` holding the f32's bits, rather than a `Mutex<Option<f32>>`,
+/// because this is read from render closures on every redraw and a lock there
+/// would be a lock in the frame path for a number. [`UNSET`] is the empty
+/// state: it is a NaN bit pattern, and a viewport width is never NaN, so the
+/// sentinel cannot collide with a real reading.
+///
+/// **A failed read is not cached.** `get_or_read` stores only a `Some`, which
+/// keeps K31's original rule — a width asked for before the surface existed
+/// must not become the answer for the rest of the process — intact through the
+/// rewrite.
+struct CachedWidth {
+    bits: std::sync::atomic::AtomicU32,
+}
+
+/// The "nothing cached" bit pattern — a quiet NaN, which no width ever is.
+const UNSET: u32 = u32::MAX;
+
+impl CachedWidth {
+    const fn new() -> Self {
+        Self { bits: std::sync::atomic::AtomicU32::new(UNSET) }
+    }
+
+    fn get_or_read(&self, read: impl FnOnce() -> Option<f32>) -> Option<f32> {
+        use std::sync::atomic::Ordering;
+        let held = self.bits.load(Ordering::Relaxed);
+        if held != UNSET {
+            return Some(f32::from_bits(held));
+        }
+        let fresh = read()?;
+        self.bits.store(fresh.to_bits(), Ordering::Relaxed);
+        Some(fresh)
+    }
+
+    fn forget(&self) {
+        self.bits.store(UNSET, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// The one cache in this module. Declared on both platforms even though only
+/// the Android [`viewport_width`] consults it, so that
+/// [`forget_cached_readings`] is a real function with a real effect on the
+/// laptop the tests run on — a `#[cfg]`-stubbed no-op would be a thing nobody
+/// could check until it was on a phone.
+static VIEWPORT_WIDTH: CachedWidth = CachedWidth::new();
+
+/// Throw away every reading this module is holding on to, so that the next
+/// caller gets a fresh one.
+///
+/// Called from `SystemStore::reread` and nowhere else — the platform has said
+/// its configuration moved, and this is the half of that news which cannot be
+/// delivered as a signal because its readers are plain functions called from
+/// render closures rather than components.
+///
+/// It does **not** repaint anything, and that is deliberate rather than
+/// missing. See `SystemStore::reread` for what a width change does and does
+/// not reach, and `crate::store::system`'s header for the argument about
+/// pages that were already rasterised.
+pub fn forget_cached_readings() {
+    VIEWPORT_WIDTH.forget();
+}
+
+/// Whether the system is in dark mode: `Some(true)` for night, `Some(false)`
+/// for day, `None` when the platform declines to say.
+///
+/// `Configuration.uiMode & UI_MODE_NIGHT_MASK`, read through the activity's
+/// own resources — the same answer `isSystemInDarkTheme()` is built on. The
+/// shim is one line; what is worth writing down is the third state, because
+/// the app has to have an answer for it.
+///
+/// **`None` is not "light".** `UI_MODE_NIGHT_UNDEFINED` is a real value that
+/// some OEM skins and every non-phone UI mode leave in place for the life of
+/// the process, and a JNI failure produces the same `None`. `ThemeChoice`'s
+/// `FollowSystem` therefore falls back to *light* when this is `None`, but it
+/// does so as a stated default of this app's own rather than by pretending
+/// the platform answered — see `crate::derive::dark_active`, which is the one
+/// place that decision is made.
+///
+/// The desktop has no such setting to read. It answers `None` for the same
+/// reason [`keyboard_inset`] answers zero: not a stand-in, a fact.
+#[cfg(target_os = "android")]
+pub fn night_mode() -> Option<bool> {
+    rinch_android::display::night_mode()
+}
+
+#[cfg(not(target_os = "android"))]
+pub fn night_mode() -> Option<bool> {
+    None
+}
+
+/// The dominant colour of the user's wallpaper — the seed Material You builds
+/// a device's palette from, and what `AccentChoice::FromSystem` resolves
+/// through since card K8.
+///
+/// `WallpaperManager.getWallpaperColors(FLAG_SYSTEM).getPrimaryColor()`,
+/// unmodified. Every question about whether that colour is *legible* is
+/// answered above this seam, in `theme::WallpaperAccent`, because a contrast
+/// ratio is a fact about a pair of colours and this end of the call knows only
+/// one of them.
+///
+/// **`None` is ordinary and is not a fault.** No wallpaper set, a live
+/// wallpaper whose service publishes no colours (most do not), a lock-screen-
+/// only image, or an OEM that replaced the wallpaper stack — all of them
+/// answer `None` and none of them will fix themselves. The development
+/// device this card was verified on is in exactly that state: the owner runs
+/// a live wallpaper, so `FromSystem` on it resolves down the fallback arm to
+/// Rust, every time, which is why that arm has as many tests as the arm that
+/// finds a colour.
+#[cfg(target_os = "android")]
+pub fn wallpaper_primary() -> Option<crate::theme::Rgb> {
+    let (r, g, b) = rinch_android::display::wallpaper_primary()?;
+    Some(crate::theme::Rgb::new(r, g, b))
+}
+
+#[cfg(not(target_os = "android"))]
+pub fn wallpaper_primary() -> Option<crate::theme::Rgb> {
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -275,4 +441,77 @@ mod tests {
     fn the_desktop_has_no_keyboard_to_cover_anything() {
         assert_eq!(keyboard_inset().get(), 0.0);
     }
+    /// Card K53's own requirement, in the only form a laptop can check it:
+    /// *"that the configuration-change handler actually re-reads rather than
+    /// returning a cached value"*. The closure counts, so this is a statement
+    /// about how many times the platform was asked, not about what came back.
+    #[test]
+    fn a_cached_reading_is_taken_once_and_taken_again_after_it_is_forgotten() {
+        let cache = CachedWidth::new();
+        let asks = std::cell::Cell::new(0);
+        let mut answer = 432.0_f32;
+        let read = |cache: &CachedWidth, answer: f32| {
+            cache.get_or_read(|| {
+                asks.set(asks.get() + 1);
+                Some(answer)
+            })
+        };
+
+        assert_eq!(read(&cache, answer), Some(432.0));
+        assert_eq!(read(&cache, answer), Some(432.0));
+        assert_eq!(asks.get(), 1, "the second read went to the cache, as it should");
+
+        // The window moved underneath the app, and something told us so.
+        cache.forget();
+        answer = 673.0;
+        assert_eq!(
+            read(&cache, answer),
+            Some(673.0),
+            "after a configuration change the cache handed back the old width"
+        );
+        assert_eq!(asks.get(), 2, "and it asked the platform exactly once more");
+    }
+
+    /// K31's rule, carried through K53's rewrite: a width asked for before
+    /// there was a surface to measure must not become the answer for the rest
+    /// of the process.
+    #[test]
+    fn a_failed_reading_is_not_cached_and_is_asked_for_again() {
+        let cache = CachedWidth::new();
+        assert_eq!(cache.get_or_read(|| None), None);
+        assert_eq!(cache.get_or_read(|| Some(432.0)), Some(432.0));
+        assert_eq!(cache.get_or_read(|| None), Some(432.0), "and now it is held");
+    }
+
+    /// The sentinel has to be a value no real reading can produce, or a
+    /// perfectly good width would read back as an empty cache forever.
+    #[test]
+    fn the_empty_marker_is_not_a_width_anything_could_report() {
+        assert!(f32::from_bits(UNSET).is_nan());
+        for width in [1.0_f32, 393.0, 432.0, 673.0, f32::MAX] {
+            assert_ne!(width.to_bits(), UNSET, "{width} would read back as an empty cache");
+        }
+    }
+
+    /// Calling it is the whole of the contract on the desktop: there is a
+    /// cache to clear, it is not consulted here, and clearing it changes
+    /// nothing about the number this platform reports.
+    #[test]
+    fn forgetting_the_cached_readings_leaves_the_desktop_width_where_it_was() {
+        forget_cached_readings();
+        assert_eq!(viewport_width(), crate::WIDTH as f32);
+    }
+
+    /// The desktop has no system theme to follow and no wallpaper to read, and
+    /// both say so rather than guessing. This is the reading that makes
+    /// `ThemeChoice::FollowSystem` fall back to light and `AccentChoice::
+    /// FromSystem` fall back to Rust on a laptop — which is also, as it
+    /// happens, what the development phone does, because its live wallpaper
+    /// publishes no colours.
+    #[test]
+    fn the_desktop_declines_to_answer_about_the_system_theme_and_the_wallpaper() {
+        assert_eq!(night_mode(), None);
+        assert_eq!(wallpaper_primary(), None);
+    }
+
 }

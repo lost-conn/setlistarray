@@ -15,7 +15,9 @@ use crate::model::{
 };
 use crate::store::{
     AccentChoice, Density, Filters, Group, GroupBy, PerformanceTheme, Route, SortDir, SortField,
+    ThemeChoice,
 };
+use crate::theme::Rgb;
 
 /// How many rows a group shows before "Show N more".
 pub const GROUP_PREVIEW: usize = 6;
@@ -1812,8 +1814,40 @@ pub fn last_export_note(last_export_at: Option<i64>, now: Day) -> String {
 /// "System" is the honest half of that: the row says Rust because the screen is
 /// rust-coloured. Card H2 owns the picker where the difference between "I chose
 /// Rust" and "the system gave me Rust" becomes visible and worth stating.
-pub fn accent_note(accent: AccentChoice) -> &'static str {
-    accent.resolve().name
+pub fn accent_note(accent: AccentChoice, wallpaper: Option<Rgb>) -> &'static str {
+    accent.resolve(wallpaper).name()
+}
+
+/// Whether the app paints itself dark, given what the user chose and what the
+/// system last said.
+///
+/// The whole of card K8's theme resolution, as a two-argument function with no
+/// store and no platform in it — which is the point. "Follow system" is a
+/// three-way choice crossed with a three-way reading (night, day, and a
+/// platform that declined to answer), and a table that small is either pinned
+/// by tests or discovered on a phone at sunset.
+///
+/// **`None` resolves to light**, and that is this app's default rather than a
+/// reading of the platform's. `platform::night_mode`'s own doc comment is
+/// emphatic that `UI_MODE_NIGHT_UNDEFINED` is a real third answer and not a
+/// failure code — some OEM skins and every non-phone UI mode sit in it for the
+/// life of the process, and so does every desktop build — so somebody has to
+/// decide what an app does when the system has no opinion. Light, because it
+/// is what this app did before this card for every user who had never touched
+/// the switch, and because the alternative (guessing dark) would flip an
+/// existing install's appearance on upgrade on exactly the devices that cannot
+/// tell us they meant it.
+///
+/// An explicit `Light` or `Dark` ignores the reading completely. That is worth
+/// stating because it is the half people assume and nothing enforced until
+/// this function existed: somebody who has said "Dark" has said it about this
+/// app, and a sunset must not move it.
+pub fn dark_active(choice: ThemeChoice, night: Option<bool>) -> bool {
+    match choice {
+        ThemeChoice::Light => false,
+        ThemeChoice::Dark => true,
+        ThemeChoice::FollowSystem => night.unwrap_or(false),
+    }
 }
 
 /// Whether the chrome around a route is dark **whatever the app's theme says**.
@@ -3946,14 +3980,57 @@ mod tests {
 
     #[test]
     fn the_accent_row_names_the_colour_actually_on_screen() {
-        assert_eq!(accent_note(AccentChoice::Named(1)), "Pine");
-        // `FromSystem` has no wallpaper to read yet, so what is on screen is
-        // Rust and that is what the row says.
-        assert_eq!(accent_note(AccentChoice::FromSystem), "Rust");
-        // Out of range resolves to the last accent rather than panicking, the
-        // same as `AccentChoice::resolve` — a preferences row that has been
-        // edited by hand must not take the app down.
-        assert_eq!(accent_note(AccentChoice::Named(99)), "Plum");
+        assert_eq!(accent_note(AccentChoice::Named(1), None), "Pine");
+        // `FromSystem` on a device whose wallpaper publishes no colours — the
+        // ordinary case, and the one the development phone is in — resolves to
+        // Rust, so that is what the row says. It says it for the same reason
+        // it always did: the screen is rust-coloured.
+        assert_eq!(accent_note(AccentChoice::FromSystem, None), "Rust");
+        // And when there *is* a wallpaper colour, the row stops saying the
+        // name of an accent nobody picked and says where the colour came
+        // from. This is the assertion card K8 changed.
+        assert_eq!(
+            accent_note(AccentChoice::FromSystem, Some(Rgb::new(0x3F, 0x51, 0xB5))),
+            "Wallpaper"
+        );
+        // A named pick ignores the wallpaper, so the note does too.
+        assert_eq!(
+            accent_note(AccentChoice::Named(1), Some(Rgb::new(0x3F, 0x51, 0xB5))),
+            "Pine"
+        );
+        assert_eq!(accent_note(AccentChoice::Named(99), None), "Plum");
+    }
+
+    /// Card K8's resolution table, in full: three choices crossed with the
+    /// three things the platform can say. The two rows that matter most are
+    /// the ones an explicit choice is on — somebody who has said "Dark" has
+    /// said it about this app, and a sunset must not move it.
+    #[test]
+    fn the_theme_resolution_table_is_exactly_these_nine_answers() {
+        for night in [Some(true), Some(false), None] {
+            assert!(
+                !dark_active(ThemeChoice::Light, night),
+                "explicit Light followed the system ({night:?})"
+            );
+            assert!(
+                dark_active(ThemeChoice::Dark, night),
+                "explicit Dark followed the system ({night:?})"
+            );
+        }
+
+        assert!(dark_active(ThemeChoice::FollowSystem, Some(true)), "system night");
+        assert!(!dark_active(ThemeChoice::FollowSystem, Some(false)), "system day");
+    }
+
+    /// The third state, on its own, because it is the one that has no obvious
+    /// answer and so is the one somebody will change without meaning to.
+    /// `None` is the platform saying it has no opinion — an undefined
+    /// `uiMode`, a JNI failure, or any desktop build — and this app's answer
+    /// is light, because light is what every untouched install looked like
+    /// before this card.
+    #[test]
+    fn a_platform_with_no_opinion_leaves_follow_system_on_the_light_theme() {
+        assert!(!dark_active(ThemeChoice::FollowSystem, None));
     }
 
     #[test]

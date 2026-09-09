@@ -89,6 +89,252 @@ pub const PLUM: Accent = Accent {
 
 pub const ACCENTS: [Accent; 4] = [RUST, PINE, INDIGO, PLUM];
 
+/// The five values [`tokens`] writes for **one** mode, as numbers rather than
+/// as the `#RRGGBB` strings the four authored accents are written in.
+///
+/// Numbers because of card K8. Until it, every colour in this file was a
+/// literal somebody typed, and `&'static str` was the honest type for one: a
+/// hex the handoff authored is a hex, for the life of the process. K8 adds a
+/// sixth accent that nobody types — the wallpaper's own primary, read off the
+/// device at runtime and then darkened until it clears the same 4.5:1 the
+/// other five already do — and a colour that is *computed* cannot be a
+/// `&'static str` without leaking one per computation. So the seam between
+/// "the accent" and "the CSS" moved down to a triple of channels, which is
+/// what the arithmetic in this file wanted anyway: [`contrast_ratio`] has
+/// always had to parse those strings straight back into channels before it
+/// could say anything about them.
+///
+/// [`Accent`] keeps its authored strings — they are the handoff's own
+/// published values and the file reads better with them written out — and
+/// converts on the way through [`Accent::colours`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AccentColours {
+    pub base: Rgb,
+    pub tint: Rgb,
+    pub on_tint: Rgb,
+    pub on_accent: Rgb,
+    pub dim: Rgb,
+}
+
+impl Accent {
+    /// This accent's five values for the mode asked for. The `if dark` that
+    /// used to sit inside [`tokens`] and pick between two halves of the
+    /// struct, moved here so that the wallpaper accent below can answer the
+    /// same question in its own way and `tokens` stops caring which kind it
+    /// was handed.
+    pub fn colours(self, dark: bool) -> AccentColours {
+        let hex = |light: &str, night: &str| Rgb::from_hex(if dark { night } else { light });
+        AccentColours {
+            base: hex(self.base, self.base_dark),
+            tint: hex(self.tint, self.tint_dark),
+            on_tint: hex(self.on_tint, self.on_tint_dark),
+            on_accent: hex(self.on_accent, self.on_accent_dark),
+            dim: hex(self.dim, self.dim_dark),
+        }
+    }
+}
+
+/// An accent built from the wallpaper's primary colour — card K8, and the
+/// thing `AccentChoice::FromSystem` was waiting for.
+///
+/// The seed is [`rinch_android::display::wallpaper_primary`], which is
+/// `WallpaperColors.getPrimaryColor()` and therefore can be *anything a
+/// photograph can be*: near-black, near-white, or a saturated yellow that
+/// vanishes on cream. That framework call deliberately hands back the raw
+/// triple and no more — a contrast ratio is a fact about a **pair** of
+/// colours and it only knows one of them — so every question about legibility
+/// is answered here, against this app's own paper, with the same
+/// [`contrast_ratio`] arithmetic the four authored accents are already
+/// audited by.
+///
+/// ## What is derived, and from what
+///
+/// The handoff states the rule for the base in one line — *"Material You
+/// primary … darkened until it clears 4.5:1 against paper"* — and says
+/// nothing about the other four values, because it was describing a colour it
+/// expected to hand-tune the rest of. There is nobody to hand-tune this one,
+/// so each of the remaining four is derived on the **same relationship the
+/// four authored accents already hold**, and then checked rather than assumed:
+///
+/// * `base` — the seed, darkened (light) or lightened (dark) in small steps
+///   until it clears 4.5:1 against that mode's paper. A seed that already
+///   clears it is kept exactly as it came, which matters: a user whose
+///   wallpaper is a deep blue should get *their* blue, not a version of it
+///   this app decided to darken for no reason.
+/// * `tint` — the base at 12% over paper, which is what `Accent`'s own doc
+///   comment says the authored tints are.
+/// * `on_tint` — the base pushed further from paper until it clears 4.5:1
+///   against **both** its own tint and the neutral `fill`. Both, because card
+///   J3 found the thirteenth pairing the hard way: `accent-on-tint` is also
+///   what `setlist_detail`'s "Undo" link is drawn in, on `fill` rather than
+///   on the tint, and Rust's base missed 4.5:1 there by two hundredths.
+/// * `on_accent` — paper, in either mode. It is a free result rather than a
+///   derivation: `base` has just been forced to clear 4.5:1 against that
+///   mode's paper, and contrast is symmetric, so paper on the accent is the
+///   identical ratio the base was measured at.
+/// * `dim` — the base mixed most of the way back to paper. The only value
+///   here with no contrast rule over it, because the only thing it colours is
+///   `ConfidenceDots`' rusty dots: WCAG's 4.5:1 is a text rule and a dot is
+///   not text (J3's audit says exactly this, at more length).
+///
+/// Every one of those claims is asserted in this file's tests, for a table of
+/// seeds chosen to be nastier than a real wallpaper: pure black, pure white,
+/// the paper colour itself, and a saturated yellow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WallpaperAccent {
+    /// The colour the platform actually reported, before any of the maths.
+    /// Kept so that a future card can show it, and so the tests can say what
+    /// went in beside what came out.
+    pub seed: Rgb,
+    light: AccentColours,
+    dark: AccentColours,
+}
+
+impl WallpaperAccent {
+    pub fn from_seed(seed: Rgb) -> Self {
+        Self {
+            seed,
+            light: derive_family(seed, Rgb::from_hex(LIGHT_PAPER), Rgb::from_hex(LIGHT_FILL)),
+            dark: derive_family(seed, Rgb::from_hex(DARK_PAPER), Rgb::from_hex(DARK_FILL)),
+        }
+    }
+
+    pub fn colours(self, dark: bool) -> AccentColours {
+        if dark { self.dark } else { self.light }
+    }
+}
+
+/// The accent the app is actually **painted in**, which is not the same thing
+/// as the accent that was **chosen** — see `AccentChoice::resolve`, which is
+/// the only thing that builds one of these.
+///
+/// Two variants rather than one type with runtime colours throughout, because
+/// the four authored accents really are different in kind from the derived
+/// one: theirs are published values with a name a person recognises, and the
+/// wallpaper's is a number off a device with no name at all. Flattening the
+/// two would mean either giving Rust a computed palette it does not need or
+/// giving the wallpaper a name it does not have.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResolvedAccent {
+    Authored(Accent),
+    Wallpaper(WallpaperAccent),
+}
+
+impl ResolvedAccent {
+    /// What to call the colour on screen. `"Wallpaper"` for the derived one:
+    /// it is the honest answer, and it is what `derive::accent_note` prints
+    /// on the Settings row, whose whole contract is to name the colour the
+    /// pixels actually are rather than the control that was tapped.
+    pub fn name(self) -> &'static str {
+        match self {
+            ResolvedAccent::Authored(accent) => accent.name,
+            ResolvedAccent::Wallpaper(_) => "Wallpaper",
+        }
+    }
+
+    pub fn colours(self, dark: bool) -> AccentColours {
+        match self {
+            ResolvedAccent::Authored(accent) => accent.colours(dark),
+            ResolvedAccent::Wallpaper(wallpaper) => wallpaper.colours(dark),
+        }
+    }
+}
+
+/// One mode's worth of [`WallpaperAccent`] — see that type for what each of
+/// the five is and why. `paper` is the mode's background and `fill` is the
+/// neutral the `on_tint` value has to survive as text on as well.
+fn derive_family(seed: Rgb, paper: Rgb, fill: Rgb) -> AccentColours {
+    // Which way "away from the background" points. In light mode the accent
+    // has to get darker to become readable and in dark mode lighter, and that
+    // is the only thing the two modes differ by in here.
+    let away = |from: Rgb, target: f64, backgrounds: [Rgb; 2]| {
+        pushed_until(from, backgrounds, target, paper.is_light())
+    };
+
+    let base = away(seed, MIN_CONTRAST, [paper, paper]);
+    let tint = base.mixed(paper, TINT_OVER_PAPER);
+    let on_tint = away(base, MIN_CONTRAST, [tint, fill]);
+    AccentColours {
+        base,
+        tint,
+        on_tint,
+        // Paper, and it is a free result rather than a choice — see the type's
+        // doc comment. `base` was just pushed until it cleared `MIN_CONTRAST`
+        // against exactly this colour, and `contrast_ratio` does not care
+        // which of its two arguments is the text.
+        on_accent: paper,
+        dim: base.mixed(paper, DIM_TOWARDS_PAPER),
+    }
+}
+
+/// The 4.5:1 the handoff commits to in writing, in one place rather than as a
+/// literal in each of the places this file now checks it.
+///
+/// `pub` because the accent resolution's own tests, over in
+/// `src/store/settings.rs`, assert the same bar on the same colours from the
+/// other side of the seam — and a second `4.5` written down over there would
+/// be a second place to forget if the handoff ever moved it.
+pub const MIN_CONTRAST: f64 = 4.5;
+
+/// The background a mode is painted on, by name, for the two places outside
+/// this file that have to measure something against it. Everything *inside*
+/// the file reads `LIGHT_PAPER`/`DARK_PAPER` directly; this exists so that
+/// nothing outside has to know there are two constants, or which is which.
+pub const fn paper(dark: bool) -> &'static str {
+    if dark { DARK_PAPER } else { LIGHT_PAPER }
+}
+
+/// "Accent at ~12% over paper", which is [`Accent`]'s own description of what
+/// the authored tints are.
+const TINT_OVER_PAPER: f64 = 0.88;
+
+/// How far the dim variant is mixed back towards paper. Measured off the
+/// authored pairs rather than picked: Rust's `#B54724` → `#D8B4A2` is a little
+/// over half the way, and the other three sit in the same place.
+const DIM_TOWARDS_PAPER: f64 = 0.55;
+
+/// Push `colour` away from `backgrounds` — darker if `darker` is true,
+/// lighter if not — in small steps, until it clears `target` against **both**
+/// of them, and hand back the first value that does.
+///
+/// **A colour that already clears is returned untouched**, which is the whole
+/// reason this is a loop with the test at the top rather than a fixed
+/// adjustment: a wallpaper that is already a readable deep blue must come out
+/// as that blue.
+///
+/// The step is multiplicative (8% of the remaining distance to black, or to
+/// white) so the walk is roughly perceptually even rather than crawling
+/// through the dark end and leaping through the light one. It is bounded at
+/// [`PUSH_STEPS`] and cannot fail to find an answer in practice: black clears
+/// 19:1 against this app's light paper and white clears 16:1 against its dark
+/// one, and both ends are reachable inside the bound. The bound is there so
+/// that a background this function was never designed for — a mid grey that
+/// nothing clears 4.5:1 against in either direction — terminates with the
+/// most-contrasting colour it managed rather than spinning.
+fn pushed_until(colour: Rgb, backgrounds: [Rgb; 2], target: f64, darker: bool) -> Rgb {
+    let clears = |c: Rgb| backgrounds.iter().all(|bg| contrast(c, *bg) >= target);
+    let mut c = colour;
+    for _ in 0..PUSH_STEPS {
+        if clears(c) {
+            return c;
+        }
+        let next = if darker { c.darker() } else { c.lighter() };
+        if next == c {
+            // Black cannot get darker and white cannot get lighter. Stop
+            // rather than spend the rest of the bound proving it again.
+            break;
+        }
+        c = next;
+    }
+    c
+}
+
+/// Enough steps for either end of the range at 8% a step — 0.92^96 and
+/// 1 - 0.92^96 both run out of `u8` long before this — with room to spare, so
+/// that the bound is a guard against a pathological background rather than a
+/// limit the ordinary case ever reaches.
+const PUSH_STEPS: usize = 96;
+
 /// Card K34: a live capture of hymnal.net rendered `A♭ Major` as `A□ Major` on
 /// the moto g stylus 5G. The flat sign is U+266D, and it is not text a hymn
 /// site controls the font for — a captured page's headings and paragraphs go
@@ -214,26 +460,16 @@ const DARK_DANGER: &str = "#FFB4AB";
 /// The full token block, as an inline `style` value for the app root.
 ///
 /// Everything downstream reads `var(--sla-*)`; nothing hard-codes a hex.
-pub fn tokens(dark: bool, accent: Accent) -> String {
+pub fn tokens(dark: bool, accent: ResolvedAccent) -> String {
     let neutrals = if dark { DARK_NEUTRALS } else { LIGHT_NEUTRALS };
 
-    let (base, tint, on_tint, on_accent, dim) = if dark {
-        (
-            accent.base_dark,
-            accent.tint_dark,
-            accent.on_tint_dark,
-            accent.on_accent_dark,
-            accent.dim_dark,
-        )
-    } else {
-        (
-            accent.base,
-            accent.tint,
-            accent.on_tint,
-            accent.on_accent,
-            accent.dim,
-        )
-    };
+    // The `if dark` that used to be spelled out here moved onto the accent
+    // itself (card K8), because there is now a second kind of accent that
+    // answers it differently: the four authored ones pick between two halves
+    // of a struct of literals, and the wallpaper's picks between two families
+    // it derived. Neither is this function's business — all it ever wanted was
+    // five colours for the mode it was told about.
+    let AccentColours { base, tint, on_tint, on_accent, dim } = accent.colours(dark);
 
     format!(
         "{neutrals}\
@@ -300,18 +536,93 @@ pub const T_NAV_LABEL: &str = "font-size: 11px; letter-spacing: 0.04em;";
 // below, after H2's, and its own comment there says where every pair in its
 // table was found.
 
-/// Parses a `#RRGGBB` string into its three channels. Every hex in this file
-/// is authored in that exact shape, so a value that is not is a typo in the
-/// token table worth a panic rather than a silently-wrong contrast number.
-fn hex_rgb(hex: &str) -> (u8, u8, u8) {
-    let digits = hex
-        .strip_prefix('#')
-        .unwrap_or_else(|| panic!("token hex must start with '#': {hex}"));
-    assert_eq!(digits.len(), 6, "token hex must be #RRGGBB: {hex}");
-    let channel = |range: std::ops::Range<usize>| {
-        u8::from_str_radix(&digits[range], 16).unwrap_or_else(|_| panic!("bad hex digit in {hex}"))
-    };
-    (channel(0..2), channel(2..4), channel(4..6))
+/// One sRGB colour, as the three channels it actually is.
+///
+/// Added by card K8, which needed a colour this file could *compute* — see
+/// [`AccentColours`] for why a computed one cannot be a `&'static str`. It is
+/// deliberately the same shape `rinch_android::display::wallpaper_primary`
+/// hands back, so the platform reading crosses into the app without being
+/// reinterpreted on the way.
+///
+/// `Display` writes it as `#RRGGBB`, which is the only form anything
+/// downstream of this file has ever seen, so a `format!` that used to
+/// interpolate an authored hex still interpolates the same six digits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Rgb {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+}
+
+impl Rgb {
+    pub const fn new(r: u8, g: u8, b: u8) -> Self {
+        Self { r, g, b }
+    }
+
+    /// Parses a `#RRGGBB` string into its three channels. Every hex in this
+    /// file is authored in that exact shape, so a value that is not is a typo
+    /// in the token table worth a panic rather than a silently-wrong contrast
+    /// number.
+    pub fn from_hex(hex: &str) -> Self {
+        let digits = hex
+            .strip_prefix('#')
+            .unwrap_or_else(|| panic!("token hex must start with '#': {hex}"));
+        assert_eq!(digits.len(), 6, "token hex must be #RRGGBB: {hex}");
+        let channel = |range: std::ops::Range<usize>| {
+            u8::from_str_radix(&digits[range], 16)
+                .unwrap_or_else(|_| panic!("bad hex digit in {hex}"))
+        };
+        Self::new(channel(0..2), channel(2..4), channel(4..6))
+    }
+
+    /// Whether this colour is nearer white than black, which is the whole of
+    /// what [`derive_family`] needs in order to know which way "away from the
+    /// background" points. Measured in WCAG luminance rather than by averaging
+    /// the channels, so a saturated yellow counts as light — which it is.
+    fn is_light(self) -> bool {
+        relative_luminance(self) > 0.18
+    }
+
+    /// This colour `amount` of the way towards `other`, per channel. `0.0` is
+    /// unchanged and `1.0` is `other`.
+    fn mixed(self, other: Rgb, amount: f64) -> Rgb {
+        let channel = |from: u8, to: u8| {
+            (f64::from(from) + (f64::from(to) - f64::from(from)) * amount).round() as u8
+        };
+        Rgb::new(
+            channel(self.r, other.r),
+            channel(self.g, other.g),
+            channel(self.b, other.b),
+        )
+    }
+
+    /// One step towards black, 8% of the distance. Floored rather than
+    /// rounded so that the walk in [`pushed_until`] cannot stall one step
+    /// above black on a channel that keeps rounding back to itself.
+    fn darker(self) -> Rgb {
+        let channel = |c: u8| (f64::from(c) * (1.0 - PUSH_STEP)).floor() as u8;
+        Rgb::new(channel(self.r), channel(self.g), channel(self.b))
+    }
+
+    /// One step towards white, the same 8% of the remaining distance, ceiled
+    /// for the mirror image of the reason [`darker`](Self::darker) floors.
+    fn lighter(self) -> Rgb {
+        let channel = |c: u8| {
+            (f64::from(c) + (255.0 - f64::from(c)) * PUSH_STEP).ceil().min(255.0) as u8
+        };
+        Rgb::new(channel(self.r), channel(self.g), channel(self.b))
+    }
+}
+
+/// How far one step of [`pushed_until`] moves. Small enough that a seed which
+/// only just misses 4.5:1 is not thrown well past it — the point of that walk
+/// is to change the user's own colour as little as it can get away with.
+const PUSH_STEP: f64 = 0.08;
+
+impl std::fmt::Display for Rgb {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "#{:02X}{:02X}{:02X}", self.r, self.g, self.b)
+    }
 }
 
 /// WCAG 2.x relative luminance of one sRGB channel (0..=255 in, 0.0..=1.0 out).
@@ -324,20 +635,36 @@ fn channel_luminance(c: u8) -> f64 {
     }
 }
 
-/// WCAG 2.x relative luminance of a `#RRGGBB` colour.
-fn relative_luminance(hex: &str) -> f64 {
-    let (r, g, b) = hex_rgb(hex);
-    0.2126 * channel_luminance(r) + 0.7152 * channel_luminance(g) + 0.0722 * channel_luminance(b)
+/// WCAG 2.x relative luminance of a colour.
+fn relative_luminance(colour: Rgb) -> f64 {
+    0.2126 * channel_luminance(colour.r)
+        + 0.7152 * channel_luminance(colour.g)
+        + 0.0722 * channel_luminance(colour.b)
 }
 
-/// WCAG 2.x contrast ratio between two `#RRGGBB` colours. Order of the two
-/// arguments does not matter — the lighter one is always the numerator — so a
-/// call site can read `contrast_ratio(text, background)` without having to
-/// know or care which of the two is lighter.
-pub fn contrast_ratio(a: &str, b: &str) -> f64 {
+/// WCAG 2.x contrast ratio between two colours. Order of the two arguments
+/// does not matter — the lighter one is always the numerator — so a call site
+/// can read `contrast(text, background)` without having to know or care which
+/// of the two is lighter.
+///
+/// This is the arithmetic; [`contrast_ratio`] below is the same thing spelled
+/// for the authored hexes. Card K8 split them rather than adding a second
+/// implementation, because the wallpaper accent has to ask this question of
+/// colours that were never written down as strings, and "there are already
+/// 4.5:1 checks in that file, reuse rather than duplicate" was the
+/// instruction.
+pub fn contrast(a: Rgb, b: Rgb) -> f64 {
     let (la, lb) = (relative_luminance(a), relative_luminance(b));
     let (lighter, darker) = if la >= lb { (la, lb) } else { (lb, la) };
     (lighter + 0.05) / (darker + 0.05)
+}
+
+/// [`contrast`], for the `#RRGGBB` strings the authored token table is written
+/// in. Every existing caller — H2's accent audit, J3's neutral audit — reads
+/// this one, because what those tests hold up against each other are the
+/// literals in this file.
+pub fn contrast_ratio(a: &str, b: &str) -> f64 {
+    contrast(Rgb::from_hex(a), Rgb::from_hex(b))
 }
 
 /// Shared machinery for this crate's two font-coverage tests: card K34's, in
@@ -824,4 +1151,227 @@ mod tests {
             }
         }
     }
+
+    // -----------------------------------------------------------------------
+    // K8 — the wallpaper accent. The one accent nobody authored.
+    // -----------------------------------------------------------------------
+    //
+    // The four above are checked as a table of literals somebody chose; this
+    // one has to be checked as a *rule*, because its input is whatever
+    // photograph the user has set as their wallpaper. So the seeds below are
+    // deliberately worse than anything Material You would hand over: the two
+    // ends of the range, the app's own paper (a wallpaper that is exactly the
+    // colour we are about to draw it on), and a saturated yellow, which is the
+    // classic accent that looks fine in a swatch and disappears the moment it
+    // is used as text.
+    //
+    // Nothing here asserts a hex. A hex would pin the arithmetic rather than
+    // the promise, and the promise is the handoff's: *the accent clears 4.5:1
+    // against paper*. Every assertion below is on a measured ratio.
+    const AWKWARD_SEEDS: &[(&str, Rgb)] = &[
+        ("black", Rgb::new(0, 0, 0)),
+        ("white", Rgb::new(255, 255, 255)),
+        ("mid grey", Rgb::new(128, 128, 128)),
+        ("the app's own light paper", Rgb::new(0xFB, 0xF7, 0xF0)),
+        ("the app's own dark paper", Rgb::new(0x18, 0x15, 0x12)),
+        ("saturated yellow", Rgb::new(255, 214, 0)),
+        ("a plausible Material You blue", Rgb::new(0x3F, 0x51, 0xB5)),
+    ];
+
+    #[test]
+    fn a_wallpaper_accent_clears_4_5_to_1_as_text_on_paper_in_both_modes() {
+        for (what, seed) in AWKWARD_SEEDS {
+            let accent = WallpaperAccent::from_seed(*seed);
+
+            let light = contrast(accent.colours(false).base, Rgb::from_hex(LIGHT_PAPER));
+            assert!(
+                light >= MIN_CONTRAST,
+                "{what} ({seed}): base vs light paper is only {light:.2}:1"
+            );
+
+            let dark = contrast(accent.colours(true).base, Rgb::from_hex(DARK_PAPER));
+            assert!(
+                dark >= MIN_CONTRAST,
+                "{what} ({seed}): base_dark vs dark paper is only {dark:.2}:1"
+            );
+        }
+    }
+
+    /// The same three pairings H2 asserts for the authored four, asked of the
+    /// derived one. `on_tint` is held against the neutral `fill` as well,
+    /// because that is J3's thirteenth pairing and it is the one the authored
+    /// table actually failed.
+    #[test]
+    fn a_wallpaper_accents_text_pairs_clear_4_5_to_1_in_both_modes() {
+        for (what, seed) in AWKWARD_SEEDS {
+            let accent = WallpaperAccent::from_seed(*seed);
+            for (mode, paper, fill) in [
+                ("light", LIGHT_PAPER, LIGHT_FILL),
+                ("dark", DARK_PAPER, DARK_FILL),
+            ] {
+                let dark = mode == "dark";
+                let c = accent.colours(dark);
+
+                let on_tint = contrast(c.on_tint, c.tint);
+                assert!(
+                    on_tint >= MIN_CONTRAST,
+                    "{what} ({seed}, {mode}): on_tint vs tint is only {on_tint:.2}:1"
+                );
+
+                let on_fill = contrast(c.on_tint, Rgb::from_hex(fill));
+                assert!(
+                    on_fill >= MIN_CONTRAST,
+                    "{what} ({seed}, {mode}): on_tint vs fill is only {on_fill:.2}:1 — this is \
+                     the pairing setlist_detail.rs's \"Undo\" link is drawn in"
+                );
+
+                let on_accent = contrast(c.on_accent, c.base);
+                assert!(
+                    on_accent >= MIN_CONTRAST,
+                    "{what} ({seed}, {mode}): on_accent vs base is only {on_accent:.2}:1"
+                );
+
+                // And the paper it is all sitting on is the paper we said it
+                // was — `on_accent` is that colour by construction, and this
+                // is the assertion that keeps the construction honest rather
+                // than merely internally consistent.
+                assert_eq!(c.on_accent, Rgb::from_hex(paper));
+            }
+        }
+    }
+
+    /// The card's own words: *a wallpaper colour that already clears 4.5:1 is
+    /// kept*. A user whose wallpaper is a deep readable blue gets their blue,
+    /// not this app's opinion of it.
+    #[test]
+    fn a_seed_that_already_clears_the_bar_is_used_exactly_as_it_came() {
+        // #1B3A6B on #FBF7F0 is comfortably past 4.5:1 — asserted here rather
+        // than assumed, so that a future change to `contrast` cannot make this
+        // test vacuous by moving the seed below the bar.
+        let seed = Rgb::new(0x1B, 0x3A, 0x6B);
+        let measured = contrast(seed, Rgb::from_hex(LIGHT_PAPER));
+        assert!(measured >= MIN_CONTRAST, "the fixture itself drifted: {measured:.2}:1");
+
+        let base = WallpaperAccent::from_seed(seed).colours(false).base;
+        assert_eq!(base, seed, "a seed that was already legible was darkened anyway");
+    }
+
+    /// And the other half of it: one that does *not* clear the bar comes back
+    /// darker than it went in, and only just past the bar rather than crushed
+    /// to black. The second half is what `PUSH_STEP` is small for.
+    #[test]
+    fn a_seed_that_misses_the_bar_is_darkened_until_it_clears_and_no_further() {
+        // A mid-tone orange: plainly visible, and plainly not 4.5:1 on cream.
+        let seed = Rgb::new(0xE8, 0x84, 0x5C);
+        let before = contrast(seed, Rgb::from_hex(LIGHT_PAPER));
+        assert!(before < MIN_CONTRAST, "the fixture itself drifted: {before:.2}:1");
+
+        let base = WallpaperAccent::from_seed(seed).colours(false).base;
+        let after = contrast(base, Rgb::from_hex(LIGHT_PAPER));
+        assert!(after >= MIN_CONTRAST, "still only {after:.2}:1 after darkening");
+        assert!(
+            after < MIN_CONTRAST + 1.0,
+            "darkened well past the bar ({after:.2}:1) — the walk is meant to stop at the \
+             first step that clears, so that the user's own colour survives as far as it can"
+        );
+        assert!(
+            relative_luminance(base) < relative_luminance(seed),
+            "it cleared the bar by getting lighter, on light paper"
+        );
+    }
+
+    /// The dark mode goes the other way, and this is the assertion that would
+    /// catch a `derive_family` that darkened in both — which would look right
+    /// in light mode and paint dark mode almost black on black.
+    #[test]
+    fn the_dark_mode_variant_is_lighter_than_the_seed_when_the_seed_is_too_dark() {
+        let seed = Rgb::new(0x1B, 0x3A, 0x6B);
+        let base_dark = WallpaperAccent::from_seed(seed).colours(true).base;
+        assert!(
+            relative_luminance(base_dark) > relative_luminance(seed),
+            "a dark navy stayed dark on the dark theme's near-black paper"
+        );
+    }
+
+    /// `Display` is what every `format!` in this file's `tokens` output goes
+    /// through, so the six digits it writes have to be the six digits the
+    /// authored table already wrote — uppercase, `#`-prefixed, zero-padded.
+    /// Anything else would change every declaration in the token block for
+    /// the four accents that are not supposed to be changing at all.
+    #[test]
+    fn an_authored_accent_still_writes_exactly_the_hexes_it_is_authored_as() {
+        for accent in ACCENTS {
+            let light = accent.colours(false);
+            assert_eq!(light.base.to_string(), accent.base, "{}", accent.name);
+            assert_eq!(light.tint.to_string(), accent.tint, "{}", accent.name);
+            assert_eq!(light.on_tint.to_string(), accent.on_tint, "{}", accent.name);
+            assert_eq!(light.on_accent.to_string(), accent.on_accent, "{}", accent.name);
+            assert_eq!(light.dim.to_string(), accent.dim, "{}", accent.name);
+
+            let dark = accent.colours(true);
+            assert_eq!(dark.base.to_string(), accent.base_dark, "{}", accent.name);
+            assert_eq!(dark.tint.to_string(), accent.tint_dark, "{}", accent.name);
+            assert_eq!(dark.on_tint.to_string(), accent.on_tint_dark, "{}", accent.name);
+            assert_eq!(dark.on_accent.to_string(), accent.on_accent_dark, "{}", accent.name);
+            assert_eq!(dark.dim.to_string(), accent.dim_dark, "{}", accent.name);
+        }
+    }
+
+    /// The whole token block for an authored accent is byte-for-byte what it
+    /// was before K8 rebuilt the middle of it. `tokens` is the one function
+    /// every screen's colour comes out of, and the four authored accents are
+    /// not what this card is changing.
+    #[test]
+    fn the_token_block_for_rust_is_unchanged_by_the_accent_rework() {
+        let light = tokens(false, ResolvedAccent::Authored(RUST));
+        assert!(light.contains("--sla-accent: #B54724;"), "{light}");
+        assert!(light.contains("--sla-accent-tint: #F7E6DE;"), "{light}");
+        assert!(light.contains("--sla-accent-on-tint: #8E3419;"), "{light}");
+        assert!(light.contains("--sla-on-accent: #FBF7F0;"), "{light}");
+        assert!(light.contains("--sla-accent-dim: #D8B4A2;"), "{light}");
+        assert!(light.contains("--sla-paper: #FBF7F0;"), "{light}");
+
+        let dark = tokens(true, ResolvedAccent::Authored(RUST));
+        assert!(dark.contains("--sla-accent: #E8845C;"), "{dark}");
+        assert!(dark.contains("--sla-paper: #181512;"), "{dark}");
+    }
+
+    /// The seed is kept verbatim alongside the family derived from it. It is
+    /// the only record of what the platform actually reported — every other
+    /// field has been through the contrast walk — so a future card that wants
+    /// to show the user their wallpaper colour, or a bug report that needs to
+    /// say what went in, has somewhere to read it.
+    #[test]
+    fn a_wallpaper_accent_remembers_the_colour_it_was_built_from() {
+        let seed = Rgb::new(255, 214, 0);
+        let accent = WallpaperAccent::from_seed(seed);
+        assert_eq!(accent.seed, seed);
+        assert_ne!(
+            accent.colours(false).base,
+            seed,
+            "this fixture is only interesting if the derivation had to move it"
+        );
+    }
+
+    /// The derived accent has no name of its own, and the one it is given says
+    /// where it came from rather than what colour it is — `derive::accent_note`
+    /// prints this on the Settings row.
+    #[test]
+    fn the_wallpaper_accent_is_named_after_where_it_came_from() {
+        let derived = ResolvedAccent::Wallpaper(WallpaperAccent::from_seed(Rgb::new(9, 9, 9)));
+        assert_eq!(derived.name(), "Wallpaper");
+        assert_eq!(ResolvedAccent::Authored(RUST).name(), "Rust");
+    }
+
+    /// `contrast_ratio` is now a wrapper over `contrast`, and the two have to
+    /// stay the same number — every existing audit in this file goes through
+    /// the string one and every K8 assertion goes through the other.
+    #[test]
+    fn the_string_and_the_channel_forms_of_the_contrast_check_agree() {
+        assert_eq!(
+            contrast_ratio(LIGHT_MUTED, LIGHT_PAPER),
+            contrast(Rgb::from_hex(LIGHT_MUTED), Rgb::from_hex(LIGHT_PAPER))
+        );
+    }
+
 }

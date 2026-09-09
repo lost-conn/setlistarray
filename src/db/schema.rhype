@@ -92,6 +92,15 @@ type Preferences {
     filter_tags: String
     filter_tunings: String
     filter_has_chart: Bool
+    // Card K8's Light | Dark | FollowSystem — `ThemeChoice::name()`'s
+    // vocabulary, not the label on screen.
+    theme: String
+    // The two-state dark mode this replaced. **Read only, and only by
+    // `prefs::theme_from`**, which is where the migration and its reasoning
+    // live: an install that predates K8 has a bool here and no `theme`, and it
+    // must come back looking exactly as it looked before the upgrade. Nothing
+    // writes it any more. It stays in the schema because deleting a field is
+    // how you make an existing library forget it.
     dark_mode: Bool
     // "system", or an index into theme::ACCENTS.
     accent: String

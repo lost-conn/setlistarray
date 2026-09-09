@@ -34,7 +34,7 @@
 //! | Keep screen awake while playing | `SettingsStore::keep_awake` |
 //! | Accent | `SettingsStore::accent` |
 //! | Performance mode theme | `SettingsStore::performance_theme` |
-//! | Dark mode | `SettingsStore::dark_mode` |
+//! | Theme | `SettingsStore::theme` (card K8 — Light / Dark / Follow system) |
 //! | Export library (.zip) | `crate::export::build_zip`, card I1 |
 //!
 //! **Left to the card that owns it:**
@@ -52,15 +52,17 @@
 //!   to a breakdown screen; no such screen exists and no card describes one, so
 //!   the two rows are read-only here. The number is the whole of what they can
 //!   honestly offer, and it is offered without pretending to lead anywhere.
-//! * **"Dark mode follows system"** — the handoff asks for it and it cannot be
+//! * ~~**"Dark mode follows system"**~~ — built by card K8, and it did land in
+//!   the same card that landed `AccentChoice::FromSystem`, which is what this
+//!   bullet predicted. What it said until then was that the row "cannot be
 //!   built: nothing in this app or in Rinch can read the system's light/dark
-//!   preference. `rinch-theme` has a `dark_mode` flag an app *sets*; there is no
-//!   API that reports what Android's night mode is set to, and no `#[cfg]` here
-//!   would help because the value does not exist to be read. So the row is a
-//!   plain on/off switch over `SettingsStore::dark_mode`, which is what that
-//!   signal has always been. This is the same shape as
-//!   `AccentChoice::FromSystem`, whose own TODO records the same missing
-//!   platform call, and it should land in the same card that lands that one.
+//!   preference… the value does not exist to be read". It exists now
+//!   (`rinch_android::display::night_mode`, behind `platform::night_mode`), and
+//!   the handoff's two rows — "Dark mode" and "Dark mode follows system" —
+//!   became **one** row of three chips rather than two switches, because two
+//!   switches for one answer is a control that can be set to a contradiction.
+//!   See [`crate::store::ThemeChoice`] for that argument and for what an
+//!   existing install's stored bool becomes.
 //!
 //! Two of these were checked rather than assumed, because the card asked and
 //! the answers went opposite ways. **Library sort** is real: `LibraryViewStore`
@@ -123,13 +125,29 @@
 //! than what the state can already do. See `accent_row` for the chip styling
 //! itself and why it is not `crate::ui::Chip`.
 //!
-//! What is still deliberately absent is `AccentChoice::FromSystem` — the
-//! wallpaper extraction that resolves to Rust today because Rinch exposes no
-//! platform call for it (`AccentChoice::resolve`'s own comment carries the
-//! rest of this). It is not offered as a fifth chip: choosing it would
-//! silently mean Rust, which is a control that lies. The row's own note
-//! (`derive::accent_note`) still names the colour actually on screen, so a
-//! fresh install reads "Rust" and is telling the truth about the pixels.
+//! Since card K8 there is a **fifth chip**, `AccentChoice::FromSystem`, and
+//! this is where the paragraph that used to say why there was not one gets
+//! settled. H2 withheld it because choosing it would silently have meant Rust
+//! — "a control that lies" — and it left behind the trap that mattered more:
+//! anybody who had tapped one of the four was on `Named(_)` forever, with no
+//! control anywhere that put them back. The chip is that control, and it is
+//! why `AccentChoice::all()` exists rather than the `0..ACCENTS.len()` loop
+//! this row used to be written as.
+//!
+//! **Which chip is lit had to change with it, and the reason is not
+//! cosmetic.** It used to be `settings.accent_resolved() == accent`, comparing
+//! the *painted* colour against each swatch, which worked while every choice
+//! resolved to a different accent. It does not work now: on a device whose
+//! wallpaper publishes no colours — which is most of them, including the phone
+//! this was verified on — `FromSystem` resolves to Rust, so comparing resolved
+//! accents would light the Rust chip *and* the System chip and offer no way to
+//! tell which one you were actually on. The comparison is on the choice.
+//!
+//! The row's note on the right (`derive::accent_note`) still names the colour
+//! actually on screen rather than the chip that was tapped, which is the same
+//! contract it has always had: "System" on a device with no wallpaper colour
+//! reads "Rust", because the screen is rust-coloured and saying anything else
+//! would be lying about the pixels.
 //!
 //! ## Export, and its three failure states
 //!
@@ -204,10 +222,10 @@ use crate::model::AttachmentKind;
 use crate::picker::{SaveRequest, Saved};
 use crate::store::{
     AccentChoice, AttachmentsStore, Density, LibraryViewStore, NavStore, PerformanceTheme,
-    SettingsStore, SetlistsStore, SongsStore, Storage,
+    SettingsStore, SetlistsStore, SongsStore, Storage, SystemStore, ThemeChoice,
 };
 use crate::theme::{
-    ACCENTS, SCREEN_PAD, T_BODY, T_CHIP, T_META, T_META_SMALL, T_ROW_TITLE, T_SECTION_CAPS,
+    SCREEN_PAD, T_BODY, T_CHIP, T_META, T_META_SMALL, T_ROW_TITLE, T_SECTION_CAPS,
 };
 use crate::ui::{IconButton, icon};
 
@@ -228,6 +246,7 @@ const ROW: &str = "display: flex; align-items: center; gap: 12px; padding: 12px 
 pub fn Settings() -> NodeHandle {
     let nav = use_store::<NavStore>();
     let settings = use_store::<SettingsStore>();
+    let system = use_store::<SystemStore>();
     let view = use_store::<LibraryViewStore>();
     let attachments = use_store::<AttachmentsStore>();
     let storage = use_store::<Storage>();
@@ -342,7 +361,7 @@ pub fn Settings() -> NodeHandle {
                     move || settings.keep_awake.get(),
                     move || settings.set_keep_awake(!settings.keep_awake.get()))}
 
-                {accent_row(__scope, settings)}
+                {accent_row(__scope, settings, system)}
 
                 {choice_row(__scope, "Performance mode theme",
                     [
@@ -352,9 +371,21 @@ pub fn Settings() -> NodeHandle {
                     move || settings.performance_theme.get(),
                     move |wanted| settings.set_performance_theme(wanted))}
 
-                {switch_row(__scope, "Dark mode",
-                    move || settings.dark_mode.get(),
-                    move || settings.toggle_dark())}
+                // Three chips, not a switch. The handoff draws "Dark mode" and
+                // "Dark mode follows system" as two rows; they are one answer,
+                // and two controls over one answer can be set to a state
+                // neither of them describes. See the module header, and
+                // `ThemeChoice` for the type.
+                //
+                // `choice_row` rather than a sheet, at three options, for the
+                // reason `crate::screens::tuning_sheet`'s header draws the line
+                // at: seven is where this app changes shape, and Library
+                // density and Performance mode theme are already this control
+                // with two.
+                {choice_row(__scope, "Theme",
+                    ThemeChoice::ALL.map(|choice| (choice, choice.label())),
+                    move || settings.theme.get(),
+                    move |wanted| settings.set_theme(wanted))}
             }
 
             // Outside the scroller, not inside it.
@@ -362,7 +393,7 @@ pub fn Settings() -> NodeHandle {
             // `1q` pins this line to the bottom of the content column with
             // `margin-top: auto`, which is right up until the column is taller
             // than the screen — and then the promise scrolls away and the screen
-            // ends on "Dark mode". Out here it is the last thing on the screen
+            // ends on "Theme". Out here it is the last thing on the screen
             // whatever the list above it does, which is what a promise is for.
             div {
                 style: {format!("flex-shrink: 0; padding: 13px {SCREEN_PAD} 16px; \
@@ -652,13 +683,15 @@ fn switch(scope: &mut RenderScope, on: impl Fn() -> bool + Copy + 'static) -> No
 
 /// A row whose value is one of a short closed list, drawn as chips.
 ///
-/// Generic over the value, because the two rows that want it hold different
-/// enums and the alternative is the same fifteen lines twice. Both lists happen
-/// to be two long; nothing here assumes that.
-fn choice_row<T: Copy + PartialEq + 'static>(
+/// Generic over the value, because the rows that want it hold different enums
+/// and the alternative is the same fifteen lines three times. Two of the three
+/// lists are two long and card K8's "Theme" row is three; the length is a const
+/// parameter rather than a `Vec` so that a row with no options at all is not a
+/// thing this function can be asked to draw.
+fn choice_row<T: Copy + PartialEq + 'static, const N: usize>(
     scope: &mut RenderScope,
     label: &'static str,
-    options: [(T, &'static str); 2],
+    options: [(T, &'static str); N],
     current: impl Fn() -> T + Copy + 'static,
     choose: impl Fn(T) + Copy + 'static,
 ) -> NodeHandle {
@@ -696,13 +729,13 @@ fn choice_row<T: Copy + PartialEq + 'static>(
 }
 
 /// The accent row: label and the name of the colour on screen on their own
-/// line, then the four named chips wrapping beneath.
+/// line, then the five named chips wrapping beneath.
 ///
 /// Two lines rather than one, which is what H1's single-line row of four bare
 /// swatches used to fit into. A named chip (dot + word) is wider than a bare
-/// 24px circle, and cramming "Accent", its note, and four of them onto one
+/// 24px circle, and cramming "Accent", its note, and five of them onto one
 /// 44px row either truncates the note or crowds the chips into a scroll a
-/// four-option control has no business needing. So "Accent" and the note keep
+/// five-option control has no business needing. So "Accent" and the note keep
 /// `choice_row`'s label/value baseline on their own line, and the chips wrap
 /// beneath at the handoff's own "wrapping, 7px gaps" rhythm — the same rule
 /// every other chip row on this screen already follows.
@@ -727,7 +760,7 @@ fn choice_row<T: Copy + PartialEq + 'static>(
 /// `crate::app`'s root style closure reads to repaint the entire screen tree —
 /// see the module header. A second, smaller preview here would just be a
 /// slower copy of the one the whole screen already gives for free.
-fn accent_row(scope: &mut RenderScope, settings: SettingsStore) -> NodeHandle {
+fn accent_row(scope: &mut RenderScope, settings: SettingsStore, system: SystemStore) -> NodeHandle {
     let __scope = scope;
     rsx! {
         div {
@@ -735,30 +768,43 @@ fn accent_row(scope: &mut RenderScope, settings: SettingsStore) -> NodeHandle {
                     border-bottom: 1px solid var(--sla-hairline-soft);",
             div { style: "display: flex; align-items: center; gap: 12px;",
                 span { style: {format!("{T_BODY} flex: 1;")}, "Accent" }
-                span { style: {format!("{T_META_SMALL}")}, {move || accent_note(settings.accent.get()).to_string()} }
+                span { style: {format!("{T_META_SMALL}")}, {move || {
+                    accent_note(settings.accent.get(), system.wallpaper.get()).to_string()
+                }} }
             }
             div { style: "display: flex; flex-wrap: wrap; gap: 7px;",
-                for index in 0..ACCENTS.len() {
-                    let accent = ACCENTS[index];
-                    let chosen = move || settings.accent_resolved() == accent;
+                for choice in AccentChoice::all() {
+                    // The chip is lit by the *choice*, not by the colour it
+                    // resolved to — see the module header for the failure that
+                    // rule prevents on a phone with no wallpaper colours.
+                    let chosen = move || settings.accent.get() == choice;
+                    // …and painted by the colour it resolved to, which for the
+                    // System chip is whatever the wallpaper turned out to be
+                    // (or Rust, on a device that publishes none). Both signals
+                    // are read inside the closures, so the System chip
+                    // repaints on a wallpaper change without anything here
+                    // having to hear about it.
+                    let colours = move || {
+                        choice.resolve(system.wallpaper.get()).colours(settings.dark_active())
+                    };
                     div {
-                        key: index,
-                        onclick: move || settings.set_accent(AccentChoice::Named(index)),
+                        key: {choice.label()},
+                        onclick: move || settings.set_accent(choice),
                         style: {move || format!(
                             "{T_CHIP} display: flex; align-items: center; gap: 6px; \
                              border-radius: 999px; padding: 6px 11px; white-space: nowrap; \
                              background: {};",
                             if chosen() {
-                                if settings.dark_mode.get() { accent.tint_dark } else { accent.tint }
+                                colours().tint.to_string()
                             } else {
-                                "var(--sla-fill)"
+                                "var(--sla-fill)".to_string()
                             },
                         )},
                         div {
                             style: {move || format!(
                                 "width: 10px; height: 10px; border-radius: 999px; flex-shrink: 0; \
                                  background: {};",
-                                if settings.dark_mode.get() { accent.base_dark } else { accent.base },
+                                colours().base,
                             )},
                         }
                         // Its own colour, for the F3 reason in the module
@@ -768,11 +814,11 @@ fn accent_row(scope: &mut RenderScope, settings: SettingsStore) -> NodeHandle {
                         // behind.
                         span {
                             style: {move || format!("color: {};", if chosen() {
-                                if settings.dark_mode.get() { accent.on_tint_dark } else { accent.on_tint }
+                                colours().on_tint.to_string()
                             } else {
-                                "var(--sla-muted)"
+                                "var(--sla-muted)".to_string()
                             })},
-                            {accent.name}
+                            {choice.label()}
                         }
                     }
                 }

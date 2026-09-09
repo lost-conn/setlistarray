@@ -1,8 +1,8 @@
 use rinch::prelude::*;
 
 use crate::capture::CaptureMode;
-use crate::store::Storage;
-use crate::theme::{ACCENTS, Accent, RUST};
+use crate::store::{Storage, SystemStore};
+use crate::theme::{ACCENTS, RUST, ResolvedAccent, Rgb, WallpaperAccent};
 
 /// Resolution order for the accent: a user pick wins; otherwise the Material
 /// You primary extracted from the wallpaper, darkened until it clears 4.5:1
@@ -14,44 +14,286 @@ pub enum AccentChoice {
 }
 
 impl AccentChoice {
-    pub fn resolve(self) -> Accent {
+    /// The accent this choice actually paints, given whatever the platform
+    /// last said the wallpaper's primary colour was
+    /// (`SystemStore::wallpaper`).
+    ///
+    /// **This arm stopped lying in card K8.** What used to be here was a TODO
+    /// and a `=> RUST`, with a long note explaining that wallpaper extraction
+    /// was a platform call Rinch did not expose, that card H2 had therefore
+    /// kept "follow system" off the Settings accent picker rather than ship a
+    /// control that silently meant Rust — and that the day the platform call
+    /// arrived, whoever had tapped Rust/Pine/Indigo/Plum would be on
+    /// `Named(_)` forever with no control anywhere that put them back on
+    /// `FromSystem`. All three of those are settled now: the call exists
+    /// (`platform::wallpaper_primary`), the derivation exists
+    /// (`theme::WallpaperAccent`, which is where the 4.5:1 arithmetic lives),
+    /// and the fifth chip H2 withheld is on the picker — see
+    /// `screens::settings`'s `accent_row`, which also had to stop deciding
+    /// which chip is selected by comparing *resolved* accents, because on a
+    /// device with no wallpaper colour `FromSystem` and `Named(0)` resolve to
+    /// the same Rust and would both have lit up.
+    ///
+    /// **Rust is still the answer when there is no wallpaper colour**, and
+    /// that is the ordinary path rather than the error path: `None` is what
+    /// most live wallpapers, most OEM wallpaper stacks and every desktop build
+    /// report, and it is what the phone this card was verified on reports.
+    /// `platform::wallpaper_primary`'s own doc comment has the list.
+    pub fn resolve(self, wallpaper: Option<Rgb>) -> ResolvedAccent {
         match self {
-            // TODO: wallpaper extraction is a platform call Rinch does not
-            // expose yet — falls through to the default until it does.
-            //
-            // Card H2 kept `FromSystem` off the Settings accent picker for
-            // exactly this reason: offering it as a fifth option would mean
-            // Rust today regardless of what the user picked, which is a
-            // control that lies about what it does. That is fine while
-            // `FromSystem` is the *only* value `Preferences` can hold before
-            // a user ever touches the picker — nobody has "chosen" Rust, the
-            // app just hasn't been told otherwise. It stops being fine the
-            // day K8 gives this arm a real wallpaper colour: at that point
-            // whoever has tapped Rust/Pine/Indigo/Plum in Settings is on
-            // `Named(_)` forever, with no control anywhere that sets them
-            // back to `FromSystem`, because H2 built no such control. Adding
-            // that fifth "follow the system" option to the picker is K8's
-            // work, not a gap left here — but it is a real piece of that
-            // card's scope, not a footnote, so it is written down here where
-            // whoever picks up K8 will be reading this match arm anyway.
-            AccentChoice::FromSystem => RUST,
-            AccentChoice::Named(i) => ACCENTS[i.min(ACCENTS.len() - 1)],
+            AccentChoice::FromSystem => match wallpaper {
+                Some(seed) => ResolvedAccent::Wallpaper(WallpaperAccent::from_seed(seed)),
+                None => ResolvedAccent::Authored(RUST),
+            },
+            AccentChoice::Named(i) => {
+                ResolvedAccent::Authored(ACCENTS[i.min(ACCENTS.len() - 1)])
+            }
+        }
+    }
+
+    /// The five options the Settings picker draws, in the order it draws them:
+    /// the four authored accents, then "follow the system".
+    ///
+    /// System **last**, not first. It is the default a fresh install starts on
+    /// (see `Preferences::default`), so first would put the resting state at
+    /// the head of the row — but the four named ones are the four the note on
+    /// the right of the row can name, and a person scanning the chips is
+    /// looking for a colour. "System" is the one that is not a colour, so it
+    /// sits at the end where an "other" belongs.
+    pub fn all() -> [AccentChoice; 5] {
+        [
+            AccentChoice::Named(0),
+            AccentChoice::Named(1),
+            AccentChoice::Named(2),
+            AccentChoice::Named(3),
+            AccentChoice::FromSystem,
+        ]
+    }
+
+    /// What the chip for this choice says. The *choice*, not the colour it
+    /// resolves to — "System" keeps saying System on a device with no
+    /// wallpaper to read, because the chip is the control and the control is
+    /// still doing what it says. What colour that turned out to be is the
+    /// job of the note on the right of the row (`derive::accent_note`).
+    pub fn label(self) -> &'static str {
+        match self {
+            AccentChoice::FromSystem => "System",
+            AccentChoice::Named(i) => ACCENTS[i.min(ACCENTS.len() - 1)].name,
         }
     }
 }
 
+/// Light, Dark, or whatever the system is set to — card K8.
+///
+/// **Why a third state rather than a second switch.** `1q` draws two rows,
+/// "Dark mode" and "Dark mode follows system", and that is two controls for
+/// one answer: with the follow switch on, the dark switch shows something that
+/// is not what it does, and every combination of the two has to mean
+/// something. Three exclusive options mean exactly three things and cannot be
+/// set to a contradiction, which is also the shape `PerformanceTheme` and
+/// `Density` already use on this screen.
+///
+/// The `name`/`from_name` pair is the established idiom for a value that is
+/// persisted — see [`PerformanceTheme`] and [`DefaultTuning`] — and is
+/// deliberately not the on-screen label, so that rewording a chip is not a
+/// migration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThemeChoice {
+    Light,
+    Dark,
+    FollowSystem,
+}
+
+impl ThemeChoice {
+    pub fn name(self) -> &'static str {
+        match self {
+            ThemeChoice::Light => "Light",
+            ThemeChoice::Dark => "Dark",
+            ThemeChoice::FollowSystem => "FollowSystem",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|choice| choice.name() == name)
+    }
+
+    /// What the chip says. Two words for the third one because "System" alone
+    /// would be a colour on the accent row two rows above it and a theme here.
+    pub fn label(self) -> &'static str {
+        match self {
+            ThemeChoice::Light => "Light",
+            ThemeChoice::Dark => "Dark",
+            ThemeChoice::FollowSystem => "Follow system",
+        }
+    }
+
+    pub const ALL: [ThemeChoice; 3] = [
+        ThemeChoice::Light,
+        ThemeChoice::Dark,
+        ThemeChoice::FollowSystem,
+    ];
+}
+
+impl Default for ThemeChoice {
+    /// **Follow the system, on a fresh install.**
+    ///
+    /// The old default was `dark_mode: false` — light, always, until somebody
+    /// found the switch — and it was not chosen so much as inherited: a `bool`
+    /// has to start somewhere and `false` is where a `bool` starts. It is
+    /// worth arguing rather than inheriting again, because this is the value
+    /// every new install lands on and most installs never change.
+    ///
+    /// Following the system is the better default for one reason that
+    /// outweighs the rest: a person who has set their phone to dark has
+    /// already answered this question, once, for every app on the device, and
+    /// an app that opens light anyway is asking them to answer it a second
+    /// time. The handoff asks for exactly this row ("Dark mode follows
+    /// system") and it was only ever absent because nothing could read the
+    /// setting.
+    ///
+    /// It also costs nothing on a device that has no answer:
+    /// `platform::night_mode()` returns `None` on the desktop and on any
+    /// Android build that leaves `uiMode` undefined, and `derive::dark_active`
+    /// resolves `None` to light — so the fresh-install default degrades
+    /// exactly onto the old one wherever the new reading is unavailable.
+    fn default() -> Self {
+        ThemeChoice::FollowSystem
+    }
+}
+
 #[cfg(test)]
-mod tests {
+mod theme_choice_tests {
     use super::*;
 
-    /// Pins today's answer so K8 changing it — the day wallpaper extraction
-    /// exists — is a deliberate edit to this test rather than a silent
-    /// behaviour change nobody noticed. See the long comment on `resolve`
-    /// above for why this arm is temporary and what has to accompany the day
-    /// it changes.
+    /// `name` is the stored form and has to survive a trip through it for all
+    /// three — the round trip in `src/db/prefs.rs` only exercises whichever
+    /// one its fixture happens to pick.
     #[test]
-    fn accent_choice_from_system_resolves_to_rust_until_wallpaper_extraction_lands() {
-        assert_eq!(AccentChoice::FromSystem.resolve(), RUST);
+    fn every_theme_choice_survives_its_own_stored_name() {
+        for choice in ThemeChoice::ALL {
+            assert_eq!(ThemeChoice::from_name(choice.name()), Some(choice));
+        }
+    }
+
+    #[test]
+    fn an_unrecognised_stored_name_is_none_rather_than_a_guess() {
+        assert_eq!(ThemeChoice::from_name("Sepia"), None);
+        // And in particular, the *old* field's values are not accidentally
+        // readable as the new field's names. A `Preferences` row written
+        // before this card has a `dark_mode: Bool`, not a string, and the
+        // migration in `src/db/prefs.rs` is where that is handled — this is
+        // the assertion that stops anybody "helpfully" making "true" parse.
+        assert_eq!(ThemeChoice::from_name("true"), None);
+        assert_eq!(ThemeChoice::from_name("false"), None);
+    }
+
+    #[test]
+    fn a_fresh_install_follows_the_system() {
+        assert_eq!(ThemeChoice::default(), ThemeChoice::FollowSystem);
+    }
+
+    /// The stored name and the on-screen label are separate on purpose, and
+    /// for `FollowSystem` they genuinely differ — which is the case that would
+    /// catch anybody collapsing the two methods back into one.
+    #[test]
+    fn the_label_is_not_the_stored_name_where_the_two_have_no_reason_to_agree() {
+        assert_eq!(ThemeChoice::FollowSystem.name(), "FollowSystem");
+        assert_eq!(ThemeChoice::FollowSystem.label(), "Follow system");
+    }
+}
+
+#[cfg(test)]
+mod accent_choice_tests {
+    use super::*;
+    use crate::theme::{MIN_CONTRAST, contrast};
+
+    /// The device this card was verified on, and every desktop build: no
+    /// wallpaper colour to be had, so `FromSystem` lands on Rust. This test
+    /// replaces the one H2 left behind
+    /// (`accent_choice_from_system_resolves_to_rust_until_wallpaper_extraction_lands`),
+    /// which pinned the same answer for the opposite reason — that there was
+    /// no wallpaper *call*. There is one now; it just says `None` here.
+    #[test]
+    fn from_system_with_no_wallpaper_colour_falls_back_to_rust() {
+        assert_eq!(
+            AccentChoice::FromSystem.resolve(None),
+            ResolvedAccent::Authored(RUST)
+        );
+    }
+
+    /// And when there *is* one, it is used — which is the whole of what K8
+    /// changed, and the thing that cannot be seen on the development phone.
+    #[test]
+    fn from_system_with_a_wallpaper_colour_uses_it_rather_than_rust() {
+        let seed = Rgb::new(0x3F, 0x51, 0xB5);
+        let resolved = AccentChoice::FromSystem.resolve(Some(seed));
+        assert_ne!(resolved, ResolvedAccent::Authored(RUST));
+        assert_eq!(resolved.name(), "Wallpaper");
+    }
+
+    /// The handoff's rule, measured rather than pinned to a hex: whatever the
+    /// wallpaper turns out to be, what the app paints with clears 4.5:1
+    /// against the paper it is painted on, in both modes.
+    #[test]
+    fn a_wallpaper_accent_is_legible_on_paper_whatever_the_wallpaper_was() {
+        for seed in [
+            Rgb::new(0, 0, 0),
+            Rgb::new(255, 255, 255),
+            Rgb::new(255, 214, 0),
+            Rgb::new(0x3F, 0x51, 0xB5),
+        ] {
+            let resolved = AccentChoice::FromSystem.resolve(Some(seed));
+            for dark in [false, true] {
+                let colours = resolved.colours(dark);
+                let paper = Rgb::from_hex(crate::theme::paper(dark));
+                let ratio = contrast(colours.base, paper);
+                assert!(
+                    ratio >= MIN_CONTRAST,
+                    "{seed} in {} mode is only {ratio:.2}:1 on paper",
+                    if dark { "dark" } else { "light" }
+                );
+            }
+        }
+    }
+
+    /// A user pick is a user pick: the wallpaper is read, and then ignored.
+    #[test]
+    fn a_named_accent_ignores_the_wallpaper_entirely() {
+        let seed = Some(Rgb::new(0x3F, 0x51, 0xB5));
+        assert_eq!(
+            AccentChoice::Named(1).resolve(seed),
+            ResolvedAccent::Authored(ACCENTS[1])
+        );
+    }
+
+    /// A stored index from a future version with more accents than this build
+    /// has clamps rather than panicking — the property `Named(i.min(len - 1))`
+    /// has always had and nothing has ever asserted.
+    #[test]
+    fn an_index_past_the_end_of_the_table_clamps_to_the_last_accent() {
+        assert_eq!(
+            AccentChoice::Named(99).resolve(None),
+            ResolvedAccent::Authored(ACCENTS[ACCENTS.len() - 1])
+        );
+    }
+
+    /// The picker draws all five and every one of them is reachable, which is
+    /// the trap H2's comment described: whoever is on `Named(_)` today has to
+    /// have a way back to `FromSystem`.
+    #[test]
+    fn the_picker_offers_every_choice_including_the_way_back_to_the_system() {
+        let all = AccentChoice::all();
+        assert_eq!(all.len(), ACCENTS.len() + 1);
+        assert!(all.contains(&AccentChoice::FromSystem), "no way back to the system");
+        for index in 0..ACCENTS.len() {
+            assert!(all.contains(&AccentChoice::Named(index)), "accent {index} is unreachable");
+        }
+    }
+
+    #[test]
+    fn a_chip_is_labelled_with_the_choice_rather_than_the_colour_it_resolved_to() {
+        assert_eq!(AccentChoice::Named(0).label(), "Rust");
+        assert_eq!(AccentChoice::FromSystem.label(), "System");
     }
 }
 
@@ -202,8 +444,17 @@ mod default_tuning_tests {
 
 #[derive(Clone, Copy)]
 pub struct SettingsStore {
-    /// Mode follows the Android system setting; this mirrors it.
-    pub dark_mode: Signal<bool>,
+    /// Light, Dark, or the system's own answer — see [`ThemeChoice`]. What is
+    /// actually painted is [`dark_active`](Self::dark_active), because the
+    /// third option is not a colour, it is a question asked of
+    /// [`SystemStore::night`].
+    ///
+    /// This used to be a `Signal<bool>` whose doc comment read "Mode follows
+    /// the Android system setting; this mirrors it" — which was aspirational
+    /// rather than true, and stayed that way for as long as nothing could read
+    /// the system setting. Card K8 made it true and had to widen the type to
+    /// do it.
+    pub theme: Signal<ThemeChoice>,
     pub accent: Signal<AccentChoice>,
     pub performance_theme: Signal<PerformanceTheme>,
     pub keep_awake: Signal<bool>,
@@ -224,20 +475,30 @@ pub struct SettingsStore {
     /// have been about that one page.
     pub capture_mode: Signal<CaptureMode>,
     storage: Storage,
+    /// What the platform last said about itself — the night mode two of this
+    /// store's answers depend on, and the wallpaper colour a third does.
+    ///
+    /// Held as a handle rather than passed to `dark_active`/`accent_resolved`
+    /// at each of their call sites, on the same reasoning `SongsStore` is
+    /// handed the `SetlistsStore` it has to reach into: the dependency runs
+    /// one way, `SystemStore` is built first and depends on nothing, and the
+    /// alternative is every screen that wants a colour having to know that the
+    /// answer is assembled from two stores.
+    system: SystemStore,
 }
 
 impl SettingsStore {
-    /// The defaults, remembering nothing.
+    /// The defaults, remembering nothing, on a platform read fresh.
     pub fn new() -> Self {
-        Self::restored(Storage::in_memory())
+        Self::restored(Storage::in_memory(), SystemStore::read())
     }
 
     /// Settings as they were left. They share the Preferences row with the
     /// library view — see `src/db/prefs.rs`.
-    pub fn restored(storage: Storage) -> Self {
+    pub fn restored(storage: Storage, system: SystemStore) -> Self {
         let preferences = storage.preferences();
         Self {
-            dark_mode: Signal::new(preferences.dark_mode),
+            theme: Signal::new(preferences.theme),
             accent: Signal::new(preferences.accent),
             performance_theme: Signal::new(preferences.performance_theme),
             keep_awake: Signal::new(preferences.keep_awake),
@@ -245,6 +506,7 @@ impl SettingsStore {
             default_tuning: Signal::new(preferences.default_tuning),
             capture_mode: Signal::new(preferences.capture_mode),
             storage,
+            system,
         }
     }
 
@@ -255,7 +517,7 @@ impl SettingsStore {
     /// again rather than being handed something.
     pub fn reload(self) {
         let preferences = self.storage.preferences();
-        self.dark_mode.set(preferences.dark_mode);
+        self.theme.set(preferences.theme);
         self.accent.set(preferences.accent);
         self.performance_theme.set(preferences.performance_theme);
         self.keep_awake.set(preferences.keep_awake);
@@ -264,17 +526,32 @@ impl SettingsStore {
         self.capture_mode.set(preferences.capture_mode);
     }
 
-    pub fn accent_resolved(self) -> Accent {
-        self.accent.get().resolve()
+    /// The accent the app is painted in right now: the choice, resolved
+    /// through the wallpaper colour the platform last reported.
+    ///
+    /// A signal read on both halves, so every style closure that calls this
+    /// repaints both when the user taps a chip *and* when the wallpaper
+    /// changes under a running app — which is the K53 half of this card and
+    /// costs nothing extra here, because the reactivity was already how the
+    /// first half worked.
+    pub fn accent_resolved(self) -> ResolvedAccent {
+        self.accent.get().resolve(self.system.wallpaper.get())
     }
 
-    pub fn toggle_dark(self) {
-        self.set_dark(!self.dark_mode.get());
+    /// Whether the app is dark **right now**, which is the question every
+    /// style closure actually has and is not the same as which option is
+    /// selected in Settings.
+    ///
+    /// The rule itself is `crate::derive::dark_active`, a free function over
+    /// two `Copy` values with no store in sight, so the whole resolution table
+    /// is a `cargo test` rather than something only a phone can show you.
+    pub fn dark_active(self) -> bool {
+        crate::derive::dark_active(self.theme.get(), self.system.night.get())
     }
 
-    pub fn set_dark(self, dark: bool) {
-        self.dark_mode.set(dark);
-        self.storage.remember(|p| p.dark_mode = dark);
+    pub fn set_theme(self, theme: ThemeChoice) {
+        self.theme.set(theme);
+        self.storage.remember(|p| p.theme = theme);
     }
 
     pub fn set_accent(self, accent: AccentChoice) {

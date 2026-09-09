@@ -68,12 +68,54 @@
         <!--
           NativeActivity subclass from rinch-android: it loads the .so, owns the
           surface, and exposes the platform services (IME, insets) over JNI.
+
+          `android:configChanges` is a list of the configuration changes this
+          activity promises to handle *itself*. Everything named here arrives
+          as an `onConfigurationChanged` callback — which rinch's Android shell
+          turns into `MainEvent::ConfigChanged` and then into the app's
+          configuration-change handler — and everything *not* named here is
+          handled by Android in the only other way it knows: it destroys the
+          activity and builds a new one, from `onCreate`, with a fresh
+          `ANativeWindow`, a fresh Rust process state, and a fresh mount.
+
+          `uiMode` is the newest entry, and it is here because of what was
+          measured without it. It covers the system dark-mode switch, and it
+          was missing for as long as the app had nothing to do with dark mode
+          — which made the destroy-and-recreate above not merely acceptable
+          but invisible, because the app restarted and read the theme at mount
+          the way it always had.
+
+          It was never actually harmless. On the moto g stylus 5G (SDK 33), an
+          `adb shell cmd uimode night yes` against this app in the foreground,
+          with `uiMode` absent, does this:
+
+            android_activity: Creating: Activity = 0x3176, saved state size = 0
+            RustPanic: rinch-android already initialized
+
+          Android tears the activity down and relaunches it **in the same
+          process**, so `android_main` is entered a second time, and
+          `rinch_android::init` is a `OnceLock` that panics when it is called
+          twice. The process id does not change, which is what makes this so
+          easy to miss from the outside: nothing crashes in the way a crash
+          normally looks. What is left is a live process with a dead main
+          loop, an activity that never draws, and the launcher back on screen.
+          Flipping the system theme with the app open simply killed it.
+
+          With `uiMode` present, the same three flips (yes / no / yes) keep pid
+          and activity instance, log one `ConfigChanged` each, and the app's
+          configuration-change handler reads the new value every time — no
+          relaunch, no second `Creating: Activity`, no panic.
+
+          So the two halves of this feature are a Rust file and one word in an
+          XML attribute, and the XML is the half that fails silently. If the
+          theme ever stops following the system while every test still passes,
+          look here first.
         -->
         <activity
             android:name="com.rinch.RinchActivity"
             android:exported="true"
             android:screenOrientation="portrait"
-            android:configChanges="orientation|keyboardHidden|screenSize|screenLayout|smallestScreenSize">
+            android:configChanges="orientation|keyboardHidden|screenSize|screenLayout|smallestScreenSize|uiMode">
 
             <meta-data
                 android:name="android.app.lib_name"

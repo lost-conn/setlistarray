@@ -882,7 +882,7 @@ mod tests {
         Library {
             songs,
             attachments,
-            settings: SettingsStore::restored(storage),
+            settings: SettingsStore::restored(storage, crate::store::SystemStore::read()),
         }
     }
 
@@ -1036,7 +1036,7 @@ mod tests {
     #[test]
     fn an_in_memory_library_is_never_stamped_even_with_the_toggle_on() {
         let songs = SongsStore::new(Vec::new());
-        let settings = SettingsStore::restored(Storage::in_memory());
+        let settings = SettingsStore::restored(Storage::in_memory(), crate::store::SystemStore::read());
         settings.set_recheck_saved_pages(true);
         let song = songs.add("Song", "Artist");
         let attachments = songs.attachments();

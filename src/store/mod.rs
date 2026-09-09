@@ -15,15 +15,17 @@ mod settings;
 mod setlists;
 mod songs;
 mod storage;
+mod system;
 
 pub use attachments::AttachmentsStore;
 pub use library_view::{Density, Filters, Group, GroupBy, LibraryViewStore, SortDir, SortField};
 pub use nav::{BackPress, NavStore, Route, Sheet, Tab};
 pub use playback::PlaybackStore;
-pub use settings::{AccentChoice, DefaultTuning, PerformanceTheme, SettingsStore};
+pub use settings::{AccentChoice, DefaultTuning, PerformanceTheme, SettingsStore, ThemeChoice};
 pub use setlists::SetlistsStore;
 pub use songs::{SongsStore, now_millis};
 pub use storage::{Fault, Storage};
+pub use system::{Reading, SystemStore};
 
 /// Refill every store from a library that changed entirely underneath the
 /// running app — card I2's import is the one caller, once

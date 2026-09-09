@@ -61,7 +61,6 @@ use rinch::reactive::Effect;
 use rinch_tabler_icons::TablerIcon;
 
 use db::DataDir;
-use platform::SafeArea;
 use screens::{
     AddToSetlistSheet, AttachmentViewer, CaptureScreen, ChartEditor, FilterSheet, FirstRun,
     Library, Performance, RunningOrderSheet, Search, SetlistDetail, SetlistPicker, Settings,
@@ -69,7 +68,7 @@ use screens::{
 };
 use store::{
     AttachmentsStore, BackPress, LibraryViewStore, NavStore, PlaybackStore, Route, SettingsStore,
-    SetlistsStore, SongsStore, Storage, Tab,
+    SetlistsStore, SongsStore, Storage, SystemStore, Tab,
 };
 use theme::{DARK_NEUTRALS, T_META, T_NAV_LABEL, tokens};
 use ui::icon;
@@ -143,19 +142,24 @@ pub fn app() -> NodeHandle {
     let dir = DataDir::current();
     create_context(dir.clone());
 
-    // Read once, at mount: on Android these are JNI calls, and the app is
-    // portrait-locked, so the insets do not change under us.
-    let safe: SafeArea = platform::safe_area();
-
-    // The window's own width, asked for here and thrown away, purely so that
-    // the first screen to want it finds it already answered. `platform::
-    // viewport_width` caches its Android reading, but the places that read it
-    // — `song_detail`'s two page widths above all — are render closures that
-    // run on every redraw, and the miss that fills the cache would otherwise
-    // land in the middle of the first frame of a screen rather than out here
-    // where mount already pays for two JNI calls. Same read, same instant, one
-    // fewer thing happening while a frame is being built.
-    let _ = platform::viewport_width();
+    // What the platform says about itself: the night mode, the wallpaper
+    // colour, the insets and the window's own width, all four taken here and
+    // then held in signals rather than in `let` bindings.
+    //
+    // **They used to be `let` bindings, and card K53 is why they are not.**
+    // The safe area was read once at mount with a comment saying the app is
+    // portrait-locked so the insets cannot change under it, and the viewport
+    // width was asked for here and thrown away purely to fill
+    // `platform::viewport_width`'s process-long cache before the first frame
+    // wanted it. Both were true and both were frozen, for the same reason:
+    // there was nothing to listen to. There is now, and it is registered a few
+    // lines below — see `SystemStore` for what one re-read reaches and the one
+    // thing it deliberately does not.
+    //
+    // First, before any store that resolves a colour: `SettingsStore` is handed
+    // this handle and asks it what the system looks like every time anything
+    // reads a theme.
+    let system = create_store(SystemStore::read());
 
     let storage = create_store(Storage::open(&dir));
     let mut loaded = storage.load();
@@ -207,7 +211,7 @@ pub fn app() -> NodeHandle {
         }
     }
 
-    let settings = create_store(SettingsStore::restored(storage));
+    let settings = create_store(SettingsStore::restored(storage, system));
 
     // Setlists before songs: `SongsStore::delete` reaches into `SetlistsStore`
     // to drop a deleted song's id out of every running order the instant the
@@ -256,7 +260,7 @@ pub fn app() -> NodeHandle {
     // is still the route half of it and still says the viewer is dark whatever
     // anybody sets.
     Effect::new(move || {
-        let light = !settings.dark_mode.get()
+        let light = !settings.dark_active()
             && !derive::dark_chrome(nav.route.get(), settings.performance_theme.get());
         platform::set_light_system_bars(light);
     });
@@ -357,6 +361,39 @@ pub fn app() -> NodeHandle {
     // app, because a function that can end the process cannot be unit-tested.
     // So that last step is here, and it is the only line of this card that a
     // `cargo test` cannot reach.
+    // The platform saying that something the app read at mount is now stale —
+    // the system flipped to dark at sunset, the wallpaper changed, a cutout
+    // moved, the window resized. Cards K8 and K53, and the reason both of them
+    // could be done at once: they are the same event.
+    //
+    // Registered here for the same reason `set_keyboard_interceptor` below is:
+    // there is exactly one slot, last write wins, and a handler installed from
+    // inside a screen would be silently replaced by the next screen to mount
+    // and never reinstated. What varies is not *who* listens, it is what has to
+    // be re-read, and that is `SystemStore::reread` — one function, four
+    // readings, no `#[cfg]`.
+    //
+    // No `#[cfg]` at this call site either, and that is deliberate on rinch's
+    // part rather than luck: the slot lives in `rinch-core`, which is compiled
+    // on every target, so a desktop build registers a handler that is simply
+    // never dispatched. See `rinch_core::events::set_configuration_change_handler`.
+    //
+    // **It runs on the main thread**, which is what makes the `Signal::set`
+    // inside `reread` legal — the shell defers the callback out of Android's
+    // `onConfigurationChanged` into its own loop body precisely so that it
+    // does. A change that arrives while the app is backgrounded is deferred to
+    // the first iteration after the surface comes back rather than dropped.
+    //
+    // And the other half of this feature is one word in
+    // `android/AndroidManifest.xml`: without `uiMode` in `configChanges`,
+    // Android does not deliver a configuration change at all — it destroys the
+    // activity and rebuilds it *in the same process*, `android_main` is entered
+    // a second time, and `rinch_android::init`'s `OnceLock` panics "already
+    // initialized". The pid does not change, so it does not look like a crash;
+    // it looks like the app quietly stopping. That comment lives in the
+    // manifest, where somebody editing the attribute will see it.
+    set_configuration_change_handler(move || system.reread());
+
     set_keyboard_interceptor(move |key: &KeyEventData| {
         if key.key != "Escape" {
             return false;
@@ -382,14 +419,21 @@ pub fn app() -> NodeHandle {
             // The horizontal insets sit on the root so every screen inherits
             // them; a portrait phone reports 0 for both, a cutout in landscape
             // does not.
-            style: {move || format!(
-                "{} height: 100vh; display: flex; flex-direction: column; \
-                 position: relative; overflow: hidden; \
-                 padding-left: {left}px; padding-right: {right}px;",
-                tokens(settings.dark_mode.get(), settings.accent_resolved()),
-                left = safe.left,
-                right = safe.right,
-            )},
+            style: {move || {
+                // `safe_area` is read here rather than captured from a `let`
+                // above, which is the whole of K53's edit in this closure: a
+                // cutout inset that changes underneath the app now repaints
+                // the root instead of being the number that was true at mount.
+                let safe = system.safe_area.get();
+                format!(
+                    "{} height: 100vh; display: flex; flex-direction: column; \
+                     position: relative; overflow: hidden; \
+                     padding-left: {left}px; padding-right: {right}px;",
+                    tokens(settings.dark_active(), settings.accent_resolved()),
+                    left = safe.left,
+                    right = safe.right,
+                )
+            }},
 
             // The OS draws the real status bar (and the notch); this is the
             // space it occupies.
@@ -402,7 +446,7 @@ pub fn app() -> NodeHandle {
             div {
                 style: {move || format!(
                     "height: {}px; flex-shrink: 0; {}",
-                    safe.top,
+                    system.safe_area.get().top,
                     // Re-declaring the dark neutrals here and then reading
                     // `paper` back out of them keeps the rule that no hex is
                     // written outside `theme` — this strip sits *above* the
@@ -499,7 +543,7 @@ pub fn app() -> NodeHandle {
                 Route::Performance(setlist_id) => Performance { setlist: {setlist_id} },
             }
 
-            {bottom_nav(__scope, safe.bottom.max(NAV_MIN_GAP))}
+            {bottom_nav(__scope)}
 
             // The six bottom sheets. All stay mounted for the life of the
             // app, parked below the fold, so that opening one has something to
@@ -522,8 +566,12 @@ pub fn app() -> NodeHandle {
 
 /// Two tabs, and only two. Settings is a gear in each tab's header.
 ///
-/// `gap` is the room below the labels: the gesture bar's inset on Android, the
-/// design's own 22px on the desktop.
+/// The room below the labels is the gesture bar's inset on Android and the
+/// design's own 22px on the desktop, floored at [`NAV_MIN_GAP`]. It used to be
+/// a prop, computed once in `app()` from the safe area read at mount; since
+/// K53 the inset is a signal and this reads it in its own style closure, for
+/// the reason every other reading in this file moved the same way — a number
+/// handed over as a prop is a number frozen at the moment it was handed over.
 ///
 /// ## Why it takes itself off screen rather than not being mounted
 ///
@@ -544,9 +592,10 @@ pub fn app() -> NodeHandle {
 /// headers and `1r` draws neither. Tapping `Setlists` from here still opens
 /// on a screen with its own gear, dimmed nav and all.
 #[component]
-fn bottom_nav(gap: f32) -> NodeHandle {
+fn bottom_nav() -> NodeHandle {
     let nav = use_store::<NavStore>();
     let songs = use_store::<SongsStore>();
+    let system = use_store::<SystemStore>();
 
     rsx! {
         div {
@@ -554,6 +603,7 @@ fn bottom_nav(gap: f32) -> NodeHandle {
                 let route = nav.route.get();
                 let dimmed = matches!(route, Route::Library)
                     && derive::first_run_active(songs.songs.get().len());
+                let gap = system.safe_area.get().bottom.max(NAV_MIN_GAP);
                 format!(
                     "display: {}; opacity: {}; border-top: 1px solid var(--sla-hairline); \
                      padding: 10px 0 {gap}px; flex-shrink: 0;",

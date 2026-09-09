@@ -28,6 +28,7 @@ use crate::capture::CaptureMode;
 use crate::model::Confidence;
 use crate::store::{
     AccentChoice, Density, DefaultTuning, Filters, GroupBy, PerformanceTheme, SortDir, SortField,
+    ThemeChoice,
 };
 
 /// Everything `LibraryViewStore` and `SettingsStore` remember between launches.
@@ -42,7 +43,9 @@ pub struct Preferences {
     pub expanded: Vec<String>,
     /// The library's active filters (card G3) — see `crate::store::Filters`.
     pub filters: Filters,
-    pub dark_mode: bool,
+    /// Light, Dark, or Follow system — card K8. See [`ThemeChoice`], and see
+    /// [`from_fields`] for what a row written before this card becomes.
+    pub theme: ThemeChoice,
     pub accent: AccentChoice,
     pub performance_theme: PerformanceTheme,
     pub keep_awake: bool,
@@ -74,7 +77,7 @@ impl Default for Preferences {
             collapsed: Vec::new(),
             expanded: Vec::new(),
             filters: Filters::default(),
-            dark_mode: false,
+            theme: ThemeChoice::default(),
             accent: AccentChoice::FromSystem,
             performance_theme: PerformanceTheme::FollowApp,
             keep_awake: true,
@@ -141,6 +144,55 @@ fn accent_from(name: &str) -> AccentChoice {
     }
 }
 
+/// The theme choice, and the one field on this row that has to read two
+/// shapes — card K8.
+///
+/// Before K8 the app had a two-state dark mode and stored it as
+/// `dark_mode: Bool`. It has three states now (`ThemeChoice`), which a `Bool`
+/// cannot hold, so the value moved to a new `theme: String` field and the old
+/// one stayed in `schema.rhype` to be read exactly here and nowhere else.
+///
+/// ## What an existing install becomes, and why
+///
+/// **A stored `true` becomes `Dark`; a stored `false` becomes `Light`. Neither
+/// becomes `FollowSystem`.** The temptation is to map `false` onto the new
+/// default — "they never turned dark mode on, so they have no opinion" — and
+/// it is wrong, because a stored `false` is not the absence of an answer. The
+/// old row was written by `set_dark`, which had exactly one caller: the switch
+/// on the Settings screen. A `false` in that field means somebody looked at a
+/// switch and left it off, or turned it off, and mapping that to "follow the
+/// system" would let a sunset turn their app dark on the strength of a
+/// preference they had already expressed to the contrary. An upgrade must not
+/// change how the app looks; that rule decides both arms.
+///
+/// **The absence of the field is what means `FollowSystem`**, and that falls
+/// out of the same rule rather than being a second decision:
+/// [`Preferences::default`] is the fallback for a row that has neither field,
+/// which is a fresh install, and a fresh install has nobody's opinion to
+/// preserve. `ThemeChoice::default`'s own comment argues why following the
+/// system is the right thing to do with nobody's opinion.
+///
+/// The new field wins whenever it is present, so a library that has been
+/// opened once by this version never consults the old one again — including
+/// the case where somebody sets Follow system, which writes `"FollowSystem"`
+/// over a `dark_mode` that is still sitting there saying `false`.
+fn theme_from(fields: &FieldMap, fallback: ThemeChoice) -> ThemeChoice {
+    if let Some(name) = string(fields, "theme") {
+        if let Some(choice) = ThemeChoice::from_name(&name) {
+            return choice;
+        }
+        // A `theme` this build does not recognise — a row from a future
+        // version with a fourth option — falls through to the legacy bool
+        // rather than straight to the default, because the bool is still the
+        // more specific thing this install knows about the user.
+    }
+    match fields.get("dark_mode") {
+        Some(Value::Bool(true)) => ThemeChoice::Dark,
+        Some(Value::Bool(false)) => ThemeChoice::Light,
+        _ => fallback,
+    }
+}
+
 /// One selected confidence chip's stored name, `Unrated` included — the same
 /// four words `crate::derive::group_songs`'s confidence buckets already use,
 /// so a filter chip and a group header never name the same state two ways.
@@ -198,7 +250,7 @@ pub fn to_fields(preferences: &Preferences) -> FieldMap {
         "filter_has_chart",
         Value::Bool(preferences.filters.has_chart),
     );
-    put("dark_mode", Value::Bool(preferences.dark_mode));
+    put("theme", Value::String(preferences.theme.name().into()));
     put("accent", Value::String(accent_name(preferences.accent)));
     put(
         "performance_theme",
@@ -271,7 +323,7 @@ pub fn from_fields(fields: &FieldMap) -> Preferences {
                 .unwrap_or(fallback.filters.tunings),
             has_chart: boolean(fields, "filter_has_chart", fallback.filters.has_chart),
         },
-        dark_mode: boolean(fields, "dark_mode", fallback.dark_mode),
+        theme: theme_from(fields, fallback.theme),
         accent: string(fields, "accent")
             .map(|n| accent_from(&n))
             .unwrap_or(fallback.accent),
@@ -320,7 +372,9 @@ mod tests {
                 tunings: vec!["Drop D".into()],
                 has_chart: true,
             },
-            dark_mode: true,
+            // The non-default one, for the same reason `capture_mode` below
+            // picks its non-default value.
+            theme: ThemeChoice::Dark,
             accent: AccentChoice::Named(2),
             performance_theme: PerformanceTheme::AlwaysDark,
             keep_awake: false,
@@ -351,6 +405,79 @@ mod tests {
     #[test]
     fn an_empty_row_reads_back_as_the_defaults() {
         assert_eq!(from_fields(&FieldMap::new()), Preferences::default());
+    }
+
+    /// Card K8's migration, both values, and the thing it must not do.
+    ///
+    /// A `FieldMap` with a `dark_mode` and no `theme` is exactly what a
+    /// library written by any build before this card holds, and the promise
+    /// is that opening it does not change how the app looks. The third
+    /// assertion is the one that matters most and is the easiest to get
+    /// wrong: `false` is a preference somebody expressed, not the absence of
+    /// one, so it must not quietly become "follow the system" and start
+    /// tracking sunset.
+    #[test]
+    fn a_row_from_before_the_theme_choice_existed_keeps_the_look_it_had() {
+        let mut on = FieldMap::new();
+        on.insert("dark_mode".into(), Value::Bool(true));
+        assert_eq!(from_fields(&on).theme, ThemeChoice::Dark);
+
+        let mut off = FieldMap::new();
+        off.insert("dark_mode".into(), Value::Bool(false));
+        assert_eq!(from_fields(&off).theme, ThemeChoice::Light);
+        assert_ne!(
+            from_fields(&off).theme,
+            ThemeChoice::FollowSystem,
+            "an install that had dark mode switched off must not start following the system"
+        );
+    }
+
+    /// The other half: no `dark_mode` either, which is a fresh install and the
+    /// only case with nobody's opinion to preserve.
+    #[test]
+    fn a_library_with_no_theme_field_at_all_follows_the_system() {
+        assert_eq!(from_fields(&FieldMap::new()).theme, ThemeChoice::FollowSystem);
+    }
+
+    /// Once this build has written a `theme`, the legacy bool is dead — even
+    /// while it is still sitting in the row saying the opposite, which is
+    /// exactly the state an upgraded library is in the moment somebody taps
+    /// "Follow system".
+    #[test]
+    fn the_new_field_wins_over_the_legacy_bool_that_is_still_beside_it() {
+        let mut fields = FieldMap::new();
+        fields.insert("dark_mode".into(), Value::Bool(false));
+        fields.insert("theme".into(), Value::String("FollowSystem".into()));
+        assert_eq!(from_fields(&fields).theme, ThemeChoice::FollowSystem);
+
+        fields.insert("theme".into(), Value::String("Dark".into()));
+        assert_eq!(from_fields(&fields).theme, ThemeChoice::Dark);
+    }
+
+    /// A `theme` from a future version with a fourth option falls back to what
+    /// this build *does* know about the user — the legacy bool — rather than
+    /// jumping straight to the shipped default, which would throw away a
+    /// preference for no reason.
+    #[test]
+    fn an_unreadable_theme_name_falls_back_to_the_legacy_bool_before_the_default() {
+        let mut fields = FieldMap::new();
+        fields.insert("dark_mode".into(), Value::Bool(true));
+        fields.insert("theme".into(), Value::String("Sepia".into()));
+        assert_eq!(from_fields(&fields).theme, ThemeChoice::Dark);
+    }
+
+    /// And all three of the new field's names survive the round trip they are
+    /// stored through, which the `filled()` fixture above only exercises for
+    /// whichever one it happens to hold.
+    #[test]
+    fn every_theme_choice_survives_the_round_trip_through_the_row() {
+        for choice in ThemeChoice::ALL {
+            let preferences = Preferences {
+                theme: choice,
+                ..Default::default()
+            };
+            assert_eq!(from_fields(&to_fields(&preferences)).theme, choice);
+        }
     }
 
     #[test]

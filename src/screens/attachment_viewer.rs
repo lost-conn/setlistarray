@@ -167,7 +167,7 @@ use rinch_tabler_icons::TablerIcon;
 
 use crate::menu::{AttachmentMenuItems, MENU_SURFACE};
 use crate::model::{AttachmentId, AttachmentKind, SongId};
-use crate::store::{AttachmentsStore, NavStore, Route, SongsStore};
+use crate::store::{AttachmentsStore, NavStore, Route, SongsStore, SystemStore};
 use crate::theme::{DARK_NEUTRALS, T_META, T_META_SMALL};
 use crate::ui::icon;
 
@@ -339,6 +339,7 @@ pub fn AttachmentViewer(song: Option<SongId>, attachment: Option<AttachmentId>) 
     let nav = use_store::<NavStore>();
     let songs = use_store::<SongsStore>();
     let attachments = use_store::<AttachmentsStore>();
+    let system = use_store::<SystemStore>();
 
     let song_id = song.unwrap_or_default();
     let id = attachment.unwrap_or_default();
@@ -400,8 +401,13 @@ pub fn AttachmentViewer(song: Option<SongId>, attachment: Option<AttachmentId>) 
     // logical, and every page this screen drew came out 393 wide with a strip
     // of backdrop down each side. The framework had no viewport width to ask
     // for at the time; `platform::viewport_width` is now that ask.
-    let safe = crate::platform::safe_area();
-    let viewport = crate::platform::viewport_width();
+    //
+    // Both read from `SystemStore` since card K53 rather than straight off
+    // `platform`, so the app has one place that knows what window it is in.
+    // Still once, in the body: see `crate::store::system`'s header for what a
+    // width change does and does not reach on a screen that is already open.
+    let safe = system.safe_area.get();
+    let viewport = system.viewport_width.get();
     let column = (viewport - safe.left - safe.right).max(1.0) as u32
         - (2 * PAGE_GUTTER).min(viewport.max(1.0) as u32 - 1);
 

@@ -8,7 +8,7 @@ use crate::model::{
     Attachment, AttachmentId, AttachmentKind, Confidence, Song, SongId, fmt_bytes, fmt_duration,
 };
 use crate::picker::Picked;
-use crate::store::{AttachmentsStore, NavStore, Route, SetlistsStore, SongsStore};
+use crate::store::{AttachmentsStore, NavStore, Route, SetlistsStore, SongsStore, SystemStore};
 use crate::theme::{SCREEN_PAD, T_BODY, T_CHART, T_DETAIL_TITLE, T_META, T_META_SMALL};
 use crate::ui::{AttachmentThumb, ConfidenceDots, IconButton, MetaChip, icon};
 
@@ -29,6 +29,16 @@ pub fn SongDetail(id: Option<SongId>) -> NodeHandle {
     let songs = use_store::<SongsStore>();
     let setlists = use_store::<SetlistsStore>();
     let attachments = use_store::<AttachmentsStore>();
+    let system = use_store::<SystemStore>();
+    // How wide the window is, as a closure rather than a number, and card K53
+    // is the whole reason for the parentheses. Every page width on this screen
+    // is derived from this (see `card_page_width`), and until K53 it came from
+    // `platform::viewport_width()`, which cached its answer for the life of the
+    // process — so a window that changed size under a running app kept drawing
+    // its pages at the width the app started at, forever. Read from the signal,
+    // inside the render closures below, it is a subscription instead: the width
+    // changes, the closures re-run, the pages are re-fitted.
+    let viewport = move || system.viewport_width.get();
     let menu_open = Signal::new(false);
     // Whether the add-attachment chooser is showing its rows.
     let adding = Signal::new(false);
@@ -247,7 +257,7 @@ pub fn SongDetail(id: Option<SongId>) -> NodeHandle {
                                         // less its 18 px of padding, so the
                                         // page's corners sit concentric inside
                                         // the card's rather than proud of them.
-                                        for (src, width, height) in page_of_primary(songs, attachments, id) {
+                                        for (src, width, height) in page_of_primary(songs, attachments, id, viewport()) {
                                             img {
                                                 key: {src.clone()},
                                                 src: {src.clone()},
@@ -269,14 +279,14 @@ pub fn SongDetail(id: Option<SongId>) -> NodeHandle {
                                                 key: {att_id},
                                                 attachment: {att_id},
                                                 base_px: {CARD_BASE_PX},
-                                                column_px: {card_page_width()},
+                                                column_px: {card_page_width(viewport())},
                                                 budget: {crate::capture::render::CARD_ELEMENTS},
                                                 style: {format!(
                                                     "max-height: {CARD_PREVIEW_HEIGHT}px; overflow: hidden;"
                                                 )},
                                             }
                                         }
-                                        for (index, line, note) in preview_of_primary(songs, attachments, id) {
+                                        for (index, line, note) in preview_of_primary(songs, attachments, id, viewport()) {
                                             div {
                                                 key: {index},
                                                 style: {if note {
@@ -327,7 +337,7 @@ pub fn SongDetail(id: Option<SongId>) -> NodeHandle {
                                         {icon(__scope, if open { TablerIcon::ChevronUp } else { TablerIcon::ChevronDown }, 17)}
                                     }
                                 }
-                                for (src, width, height) in page_of_row(songs, attachments, id, index, expanded) {
+                                for (src, width, height) in page_of_row(songs, attachments, id, index, expanded, viewport()) {
                                     img {
                                         key: {src.clone()},
                                         src: {src.clone()},
@@ -340,7 +350,7 @@ pub fn SongDetail(id: Option<SongId>) -> NodeHandle {
                                         key: {att_id},
                                         attachment: {att_id},
                                         base_px: {CARD_BASE_PX},
-                                        column_px: {row_page_width()},
+                                        column_px: {row_page_width(viewport())},
                                         budget: {crate::capture::render::CARD_ELEMENTS},
                                         style: {format!(
                                             "max-height: {CARD_PREVIEW_HEIGHT}px; overflow: hidden; \
@@ -348,7 +358,7 @@ pub fn SongDetail(id: Option<SongId>) -> NodeHandle {
                                         )},
                                     }
                                 }
-                                for (line_index, line, note) in preview_of_row(songs, attachments, id, index, expanded) {
+                                for (line_index, line, note) in preview_of_row(songs, attachments, id, index, expanded, viewport()) {
                                     div {
                                         key: {line_index},
                                         style: {if note {
@@ -702,9 +712,10 @@ fn preview_of_primary(
     songs: SongsStore,
     attachments: AttachmentsStore,
     id: SongId,
+    viewport: f32,
 ) -> Vec<(usize, String, bool)> {
     match songs.get(id).and_then(|song| song.primary()) {
-        Some(primary) => preview(attachments, primary),
+        Some(primary) => preview(attachments, primary, viewport),
         None => Vec::new(),
     }
 }
@@ -716,6 +727,7 @@ fn preview_of_row(
     id: SongId,
     index: usize,
     expanded: Signal<Vec<AttachmentId>>,
+    viewport: f32,
 ) -> Vec<(usize, String, bool)> {
     let Some(attachment) = other_id(songs, attachments, id, index) else {
         return Vec::new();
@@ -723,7 +735,7 @@ fn preview_of_row(
     if !expanded.get().contains(&attachment) {
         return Vec::new();
     }
-    preview(attachments, attachment)
+    preview(attachments, attachment, viewport)
 }
 
 /// What one chart shows: `(index, text, is a note)`.
@@ -740,7 +752,7 @@ fn preview_of_row(
 /// per attachment; the performance budget's rule is about *rows* — the
 /// library builds three hundred of them and must not touch a body for any —
 /// and the row list still cannot: `AttachmentsStore::items` never carries one.
-fn preview(attachments: AttachmentsStore, id: AttachmentId) -> Vec<(usize, String, bool)> {
+fn preview(attachments: AttachmentsStore, id: AttachmentId, viewport: f32) -> Vec<(usize, String, bool)> {
     let Some(attachment) = attachments.get(id) else {
         return Vec::new();
     };
@@ -781,7 +793,7 @@ fn preview(attachments: AttachmentsStore, id: AttachmentId) -> Vec<(usize, Strin
     // anyway, because a PDF has no extracted body to have more lines of, but
     // the whole call is skipped rather than half of it so that G2's text
     // extraction does not have to remember this when it gives one a body.
-    if page_image(attachments, id, card_page_width()).is_none() {
+    if page_image(attachments, id, card_page_width(viewport)).is_none() {
         if let Some(note) = note(&attachment, lines.len(), all.len()) {
             lines.push((lines.len(), note, true));
         }
@@ -809,16 +821,28 @@ fn preview(attachments: AttachmentsStore, id: AttachmentId) -> Vec<(usize, Strin
 /// A width that is only known once there is a surface cannot be a `const`, and
 /// the alternative — pushing the arithmetic out to the four call sites — would
 /// have put the same subtraction in four places so that it could stay spelled
-/// with an `=` instead of a `()`. Both are cheap to call: the platform shim
-/// caches the width after its first successful read, which matters because
-/// [`preview_of_primary`] and [`page_of_primary`] are called from render
-/// closures and so run on every redraw of this screen.
-fn card_page_width() -> u32 {
-    row_page_width().saturating_sub(2 * 18)
+/// with an `=` instead of a `()`.
+///
+/// **They take the width rather than going and getting it, and that is card
+/// K53's edit.** K31 left them calling `platform::viewport_width()`, which was
+/// cheap because that shim cached its Android reading — and frozen, because it
+/// cached it in a `OnceLock` for the life of the process. The width now
+/// arrives from `SystemStore::viewport_width`, read in the render closures at
+/// the top of this file, so a window that changes size re-fits these pages
+/// instead of keeping the number the app launched with. It also makes both of
+/// these plain arithmetic over an argument, which is why the test at the
+/// bottom of this file can state a page width without a window.
+///
+/// Nothing here re-*rasterises*: `pdf::pages` draws every page once at a fixed
+/// 1080 px and these two only decide the box it is fitted into. See
+/// `crate::store::system`'s header for why that means a width change has
+/// nothing on disk to invalidate.
+fn card_page_width(viewport: f32) -> u32 {
+    row_page_width(viewport).saturating_sub(2 * 18)
 }
 
-fn row_page_width() -> u32 {
-    (crate::platform::viewport_width() as u32).saturating_sub(2 * SCREEN_PAD_PX)
+fn row_page_width(viewport: f32) -> u32 {
+    (viewport as u32).saturating_sub(2 * SCREEN_PAD_PX)
 }
 
 /// The type size a captured page is drawn at inside a card.
@@ -948,11 +972,12 @@ fn page_of_primary(
     songs: SongsStore,
     attachments: AttachmentsStore,
     id: SongId,
+    viewport: f32,
 ) -> Vec<(String, u32, u32)> {
     songs
         .get(id)
         .and_then(|song| song.primary())
-        .and_then(|primary| page_image(attachments, primary, card_page_width()))
+        .and_then(|primary| page_image(attachments, primary, card_page_width(viewport)))
         .into_iter()
         .collect()
 }
@@ -969,6 +994,7 @@ fn page_of_row(
     id: SongId,
     index: usize,
     expanded: Signal<Vec<AttachmentId>>,
+    viewport: f32,
 ) -> Vec<(String, u32, u32)> {
     let Some(attachment) = other_id(songs, attachments, id, index) else {
         return Vec::new();
@@ -976,7 +1002,7 @@ fn page_of_row(
     if !expanded.get().contains(&attachment) {
         return Vec::new();
     }
-    page_image(attachments, attachment, row_page_width())
+    page_image(attachments, attachment, row_page_width(viewport))
         .into_iter()
         .collect()
 }
@@ -1023,6 +1049,16 @@ fn note(attachment: &Attachment, shown: usize, total: usize) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The width every page-width assertion in this module is made at.
+    ///
+    /// The desktop's real one, because that is the window `scripts/
+    /// screenshot.sh` measures and several of its checks count absolute pixels
+    /// recorded at exactly 393. It is a named constant rather than a literal
+    /// because card K53 turned these helpers into arithmetic over an argument
+    /// — before it, they went and got this number themselves, and a test could
+    /// not have stated it.
+    const TEST_VIEWPORT: f32 = crate::WIDTH as f32;
     use crate::model::{Attachment, AttachmentKind, Song};
 
     fn text(body: Option<&str>) -> Attachment {
@@ -1093,11 +1129,11 @@ mod tests {
         let expanded = Signal::new(Vec::new());
         let primary_before = songs.get(id).unwrap().primary_attachment;
 
-        assert!(preview_of_row(songs, attachments, id, 0, expanded).is_empty());
+        assert!(preview_of_row(songs, attachments, id, 0, expanded, TEST_VIEWPORT).is_empty());
 
         toggle_expanded(songs, attachments, id, 0, expanded);
 
-        let lines = preview_of_row(songs, attachments, id, 0, expanded);
+        let lines = preview_of_row(songs, attachments, id, 0, expanded, TEST_VIEWPORT);
         assert_eq!(lines[0].1, "Blue jean baby");
         assert_eq!(
             songs.get(id).unwrap().primary_attachment,
@@ -1108,14 +1144,14 @@ mod tests {
 
         // And it closes again.
         toggle_expanded(songs, attachments, id, 0, expanded);
-        assert!(preview_of_row(songs, attachments, id, 0, expanded).is_empty());
+        assert!(preview_of_row(songs, attachments, id, 0, expanded, TEST_VIEWPORT).is_empty());
     }
 
     #[test]
     fn a_typed_chart_renders_its_own_text() {
         let (songs, attachments, id) = library(vec![text(Some("G       D
 Carolina"))]);
-        let lines = preview_of_primary(songs, attachments, id);
+        let lines = preview_of_primary(songs, attachments, id, TEST_VIEWPORT);
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[0].1, "G       D");
         assert_eq!(lines[1].1, "Carolina");
@@ -1127,7 +1163,7 @@ Carolina"))]);
         let body: String = (0..20).map(|n| format!("line {n}
 ")).collect();
         let (songs, attachments, id) = library(vec![text(Some(&body))]);
-        let lines = preview_of_primary(songs, attachments, id);
+        let lines = preview_of_primary(songs, attachments, id, TEST_VIEWPORT);
         assert_eq!(lines.len(), PREVIEW_LINES + 1);
         assert_eq!(lines[PREVIEW_LINES], (PREVIEW_LINES, "+12 more lines".into(), true));
     }
@@ -1139,7 +1175,7 @@ Carolina"))]);
 verse one
 
 verse two"))]);
-        let lines = preview_of_primary(songs, attachments, id);
+        let lines = preview_of_primary(songs, attachments, id, TEST_VIEWPORT);
         assert_eq!(lines[0].1, "verse one");
         assert_eq!(lines[1].1, " ", "the gap is kept, as something with a height");
         assert_eq!(lines[2].1, "verse two");
@@ -1155,7 +1191,7 @@ verse two"))]);
             (AttachmentKind::Text, "Nothing typed yet."),
         ] {
             let (songs, attachments, id) = library(vec![of_kind(kind)]);
-            let lines = preview_of_primary(songs, attachments, id);
+            let lines = preview_of_primary(songs, attachments, id, TEST_VIEWPORT);
             assert_eq!(lines.len(), 1, "one note, and no skeleton bars");
             assert_eq!(lines[0].1, expected);
             assert!(lines[0].2, "and it is styled as a note, not as a chart");
@@ -1174,7 +1210,7 @@ verse two"))]);
             body: Some("Verse one".into()),
             ..of_kind(AttachmentKind::CapturedPage)
         }]);
-        assert!(preview_of_primary(songs, attachments, id).is_empty());
+        assert!(preview_of_primary(songs, attachments, id, TEST_VIEWPORT).is_empty());
         assert_eq!(capture_of_primary(songs, attachments, id).len(), 1);
         assert_eq!(
             note(&of_kind(AttachmentKind::CapturedPage), 0, 0),
@@ -1409,7 +1445,7 @@ verse two"))]);
         let (songs, attachments, id) = on_disk("song_detail_page_in_card");
         import_chart(songs, id, 2);
 
-        let page = page_of_primary(songs, attachments, id);
+        let page = page_of_primary(songs, attachments, id, TEST_VIEWPORT);
         assert_eq!(page.len(), 1, "one page, and it is page one");
         let (src, width, height) = page[0].clone();
         assert!(
@@ -1422,14 +1458,14 @@ verse two"))]);
         // cached at 1080 x 1398, so 313 px of card is 313 x 1398 / 1080 = 405.1,
         // rounded up. See `page_image` for why a percentage width will not do
         // and why the rounding goes up.
-        assert_eq!((width, height), (card_page_width(), 406));
+        assert_eq!((width, height), (card_page_width(TEST_VIEWPORT), 406));
         assert_eq!(
             width, 313,
             "the 393 window this test platform really has, less 22 of column and 18 of card, twice"
         );
 
         assert!(
-            preview_of_primary(songs, attachments, id).is_empty(),
+            preview_of_primary(songs, attachments, id, TEST_VIEWPORT).is_empty(),
             "and the sentence that stood in for it is gone, rather than sitting under it"
         );
     }
@@ -1443,8 +1479,8 @@ verse two"))]);
         let directory = attachments.directory(chart).expect("a directory");
         std::fs::remove_file(directory.join(crate::pdf::pages::page_file(1))).expect("the page");
 
-        assert!(page_of_primary(songs, attachments, id).is_empty());
-        let lines = preview_of_primary(songs, attachments, id);
+        assert!(page_of_primary(songs, attachments, id, TEST_VIEWPORT).is_empty());
+        let lines = preview_of_primary(songs, attachments, id, TEST_VIEWPORT);
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].1, "No page preview yet.");
         assert!(lines[0].2, "and it is a note, not a chart");
@@ -1460,9 +1496,9 @@ verse two"))]);
         let page = directory.join(crate::pdf::pages::page_file(1));
         std::fs::rename(&page, page.with_extension("png.part")).expect("interrupt it");
 
-        assert!(page_of_primary(songs, attachments, id).is_empty());
+        assert!(page_of_primary(songs, attachments, id, TEST_VIEWPORT).is_empty());
         assert_eq!(
-            preview_of_primary(songs, attachments, id)[0].1,
+            preview_of_primary(songs, attachments, id, TEST_VIEWPORT)[0].1,
             "No page preview yet."
         );
     }
@@ -1475,8 +1511,8 @@ verse two"))]);
         songs.attach(id, text(Some("Capo 3"))).expect("attached");
         let attachments = songs.attachments();
 
-        assert!(page_of_primary(songs, attachments, id).is_empty());
-        assert_eq!(preview_of_primary(songs, attachments, id)[0].1, "Capo 3");
+        assert!(page_of_primary(songs, attachments, id, TEST_VIEWPORT).is_empty());
+        assert_eq!(preview_of_primary(songs, attachments, id, TEST_VIEWPORT)[0].1, "Capo 3");
     }
 
     /// A chart in a collapsed row gets the picture when the row is opened and
@@ -1488,8 +1524,8 @@ verse two"))]);
         import_chart(songs, id, 1);
         let expanded = Signal::new(Vec::new());
 
-        assert!(page_of_row(songs, attachments, id, 0, expanded).is_empty());
+        assert!(page_of_row(songs, attachments, id, 0, expanded, TEST_VIEWPORT).is_empty());
         toggle_expanded(songs, attachments, id, 0, expanded);
-        assert_eq!(page_of_row(songs, attachments, id, 0, expanded).len(), 1);
+        assert_eq!(page_of_row(songs, attachments, id, 0, expanded, TEST_VIEWPORT).len(), 1);
     }
 }

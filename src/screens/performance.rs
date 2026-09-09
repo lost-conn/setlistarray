@@ -106,6 +106,7 @@ use crate::derive::{
 use crate::model::{AttachmentId, SetlistId, SongId};
 use crate::store::{
     AttachmentsStore, NavStore, PlaybackStore, Route, SetlistsStore, SettingsStore, SongsStore,
+    SystemStore,
 };
 use crate::theme::{DARK_NEUTRALS, T_CHIP, T_META, T_META_SMALL, T_ROW_TITLE};
 use crate::ui::icon;
@@ -248,6 +249,7 @@ pub fn Performance(setlist: Option<SetlistId>) -> NodeHandle {
     // Read for one thing only: whether this screen forces itself dark. See the
     // "Theme" section of the header.
     let settings = use_store::<SettingsStore>();
+    let system = use_store::<SystemStore>();
 
     let id = setlist.unwrap_or_default();
 
@@ -278,8 +280,15 @@ pub fn Performance(setlist: Option<SetlistId>) -> NodeHandle {
     // the replacement. Still copied rather than shared with the viewer: the two
     // screens subtract different things from the same width, and a helper that
     // took a list of what to subtract would be longer than either.
-    let safe = crate::platform::safe_area();
-    let column = (crate::platform::viewport_width() - safe.left - safe.right).max(1.0) as u32;
+    //
+    // Read from `SystemStore` since card K53 rather than straight off
+    // `platform`, so that there is one place in the app that knows what the
+    // window is — and read here in the body, once, deliberately: a chart
+    // column that changed size mid-gig would re-rasterise a page while
+    // somebody was playing from it. See `crate::store::system`'s header for
+    // the decision about a screen that is already open when the window moves.
+    let safe = system.safe_area.get();
+    let column = (system.viewport_width.get() - safe.left - safe.right).max(1.0) as u32;
 
     // The page a PDF chart opens on, drawn before the frame that shows it
     // rather than after. Same self-healing job the viewer and `song_detail`

@@ -351,7 +351,7 @@ mod tests {
                 setlists,
                 attachments,
                 view: LibraryViewStore::restored(storage),
-                settings: SettingsStore::restored(storage),
+                settings: SettingsStore::restored(storage, crate::store::SystemStore::read()),
             }
         }
 
@@ -620,7 +620,7 @@ mod tests {
         let dir = scratch("store-settings-restart");
         {
             let s = Session::open(&dir);
-            s.settings.toggle_dark();
+            s.settings.set_theme(crate::store::ThemeChoice::Dark);
             s.settings.set_accent(crate::store::AccentChoice::Named(2));
             s.settings
                 .set_performance_theme(crate::store::PerformanceTheme::AlwaysDark);
@@ -629,7 +629,7 @@ mod tests {
         }
 
         let s = Session::open(&dir);
-        assert!(s.settings.dark_mode.get());
+        assert_eq!(s.settings.theme.get(), crate::store::ThemeChoice::Dark);
         assert_eq!(s.settings.accent.get(), crate::store::AccentChoice::Named(2));
         assert_eq!(
             s.settings.performance_theme.get(),

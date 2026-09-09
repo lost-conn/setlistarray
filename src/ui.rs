@@ -44,6 +44,31 @@ pub fn IconButton(glyph: Option<TablerIcon>, size: Option<u32>, onclick: Option<
 /// fill state used for the current sort field. `glyph` is an optional
 /// trailing icon — e.g. the sort direction arrow — drawn as a path so it
 /// reads as part of the label rather than a second element.
+///
+/// ## The label is a `span` with its own `color`, and card K8 is why
+///
+/// It was a bare text node under the chip's own `div` until this card, taking
+/// `color` by inheritance the way the whole file does. That is F3's fault
+/// exactly — *"a bare text node under a restyled parent does not re-resolve an
+/// inherited `color`"*, which `screens::settings`'s header states as a rule and
+/// which every control on that screen already obeys — and it was invisible here
+/// for a year for one reason: nothing could change `--sla-ink` while a chip was
+/// on screen. The only way to flip the theme was the switch in Settings, and
+/// leaving Settings remounts the library, which rebuilds the chip from nothing.
+///
+/// K8 made the theme flip underneath whatever is on screen: the system goes
+/// dark at sunset and the library repaints where it stands. Measured on the
+/// moto g stylus 5G on 2026-09-09, `adb shell cmd uimode night yes` with the
+/// library open, then the same screen reached by a cold launch, differ in
+/// exactly three places — the labels of "Group: Confidence", "Confidence ↓" and
+/// "Filter", and nothing else in the whole capture. The pill behind the active
+/// one had repainted to the dark theme's near-white `ink`; the word on it had
+/// not, so it was near-white on near-white and simply gone.
+///
+/// The glyph needs no such wrapper and did not move in that diff: an icon is an
+/// element with a style of its own, and it is the *element* that re-resolves.
+/// So `color` stays on the outer `div` for it, and the one thing that was a
+/// bare text node stops being one.
 #[component]
 pub fn Chip(
     label: String,
@@ -52,20 +77,21 @@ pub fn Chip(
     selected: bool,
     onclick: Option<Callback>,
 ) -> NodeHandle {
-    let colors = if active {
-        "background: var(--sla-ink); color: var(--sla-paper);"
+    let (background, ink) = if active {
+        ("var(--sla-ink)", "var(--sla-paper)")
     } else if selected {
-        "background: var(--sla-fill); color: var(--sla-ink-2);"
+        ("var(--sla-fill)", "var(--sla-ink-2)")
     } else {
-        "background: var(--sla-fill); color: var(--sla-muted);"
+        ("var(--sla-fill)", "var(--sla-muted)")
     };
 
     rsx! {
         div {
             onclick: move || { if let Some(cb) = &onclick { cb.invoke() } },
-            style: {format!("{T_CHIP} {colors} border-radius: 999px; padding: 6px 12px; \
+            style: {format!("{T_CHIP} background: {background}; color: {ink}; \
+                             border-radius: 999px; padding: 6px 12px; \
                              white-space: nowrap; display: flex; align-items: center; gap: 4px;")},
-            {label.clone()}
+            span { style: {format!("color: {ink};")}, {label.clone()} }
             if let Some(g) = glyph {
                 {icon(__scope, g, 14)}
             }
@@ -74,18 +100,26 @@ pub fn Chip(
 }
 
 /// A metadata chip on song detail. The key chip is the only tinted one.
+///
+/// The label is a `span` carrying its own `color` for the reason [`Chip`]'s
+/// doc comment gives at length: a bare text node does not re-resolve an
+/// inherited colour when the token underneath it changes, which nothing could
+/// make happen mid-screen until card K8 let the system flip the theme where
+/// the app stands. Same construct, same fault, fixed the same way rather than
+/// waiting to be found a second time on a different screen.
 #[component]
 pub fn MetaChip(label: String, is_key: bool) -> NodeHandle {
-    let colors = if is_key {
-        "background: var(--sla-accent-tint); color: var(--sla-accent-on-tint);"
+    let (background, ink) = if is_key {
+        ("var(--sla-accent-tint)", "var(--sla-accent-on-tint)")
     } else {
-        "background: var(--sla-fill); color: var(--sla-ink-2);"
+        ("var(--sla-fill)", "var(--sla-ink-2)")
     };
 
     rsx! {
         div {
-            style: {format!("{T_CHIP} {colors} border-radius: 8px; padding: 6px 11px;")},
-            {label.clone()}
+            style: {format!("{T_CHIP} background: {background}; color: {ink}; \
+                             border-radius: 8px; padding: 6px 11px;")},
+            span { style: {format!("color: {ink};")}, {label.clone()} }
         }
     }
 }
