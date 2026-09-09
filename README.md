@@ -870,6 +870,26 @@ The `../rinch-fixes` integration branch carries the still-open fixes above
 the long press works in an APK built here and would not in one built against
 `main`. Move the pin once they land — card A1.
 
+**Filed 2026-09-09**, cut from `main` for the same reason the rest below were —
+it needs nothing else on the integration branch:
+
+- [joeleaver/rinch#575](https://github.com/joeleaver/rinch/pull/575) — an app
+  can be told what it was launched with. `share.rs` could fire an `ACTION_SEND`
+  at the chooser; nothing could be on the receiving end of one, so an app whose
+  manifest declares an `<intent-filter>` was a share target that appeared in
+  every chooser and then opened on whatever screen it would have opened on
+  anyway. `on_incoming_intent` and a drain beside the others in
+  `android_runtime` are the plumbing; the two things that are not plumbing are
+  the cold-start handshake — `onCreate` queues rather than calling a native,
+  because `RinchActivity.java` already warns that a native called from a
+  lifecycle override races the thread registering them, and `bridge::init`
+  calls `flushPendingIntents()` once registration is known to be done — and the
+  rule that the drain *keeps* what it cannot deliver, without which the launch
+  share would be discarded on every cold start by a handler that had not
+  registered yet. Card "Share intents"; the PDF half was driven through Files
+  by Google's real share sheet, because `am start --grant-read-uri-permission`
+  does not actually confer the grant it names.
+
 **Filed 2026-09-09**, both found while making the app follow the system's dark
 mode and its Material You accent, and both cut from `main` for the same reason
 the pair below were — neither needs anything else on the integration branch:
