@@ -870,6 +870,33 @@ The `../rinch-fixes` integration branch carries the still-open fixes above
 the long press works in an APK built here and would not in one built against
 `main`. Move the pin once they land — card A1.
 
+**Filed 2026-09-09**, both found while making the app follow the system's dark
+mode and its Material You accent, and both cut from `main` for the same reason
+the pair below were — neither needs anything else on the integration branch:
+
+- [joeleaver/rinch#571](https://github.com/joeleaver/rinch/pull/571) — a
+  configuration-change handler, so a platform reading can stop being frozen at
+  mount. Nothing surfaced `MainEvent::ConfigChanged`, so dark mode flipping at
+  sunset, a new accent, or insets changing on a fold were all things Android
+  knew and nothing carried across. `set_configuration_change_handler` is the
+  slot, shaped after `set_keyboard_interceptor` and living in `rinch-core` for
+  a reason worth reading: every module in `rinch-android` is
+  `cfg(target_os = "android")`, so a hook there would be *absent* on desktop
+  rather than inert, and every call site would pay for it with a `#[cfg]` and a
+  stub. It dispatches on the main thread because the handler's whole job is to
+  write signals, and `Signal::set` panics off it. Card K53, which had been
+  parked precisely because there was nothing to listen to.
+- [joeleaver/rinch#572](https://github.com/joeleaver/rinch/pull/572) —
+  `night_mode`, `wallpaper_primary` and `system_accent`, the three readings
+  that say what the system's theme *is*. All three need
+  `bridge::with_activity`, which is private to that crate, which is why none of
+  them could live here. `system_accent` is the one with the argument behind it:
+  `theme_customization_overlay_packages` carries a `color_source` that reads
+  `preset` whenever somebody picked a basic colour in Wallpaper & style, and in
+  that configuration the wallpaper's own primary is exactly the thing they
+  overrode — so extracting it returns a confidently wrong answer rather than a
+  missing one. Cards K8 and the system half of the theme work.
+
 **Filed 2026-09-03**, both found the day before while building the backup and
 the Settings screen, and both cut from `main` rather than from the
 integration branch because neither needs anything else on it:
