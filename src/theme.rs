@@ -551,6 +551,21 @@ pub fn tokens(dark: bool, accent: ResolvedAccent) -> String {
     // five colours for the mode it was told about.
     let AccentColours { base, tint, on_tint, on_accent, dim } = accent.colours(dark);
 
+    // The FAB's drop shadow, as the accent's own three channels rather than as
+    // a sixth colour anybody has to derive.
+    //
+    // It is a token at all because it could not be written as one any other
+    // way: a shadow wants `rgba(r, g, b, .5)` and the accent tokens are
+    // `#RRGGBB` strings, and CSS cannot take the alpha off one and put it on
+    // the other — `rgba(var(--sla-accent), .5)` is not a thing. So the three
+    // call sites that draw a FAB spelled the numbers out instead, and what
+    // they spelled out was `rgba(181,71,36,.5)`, which is Rust. The button
+    // went purple with the Material You palette behind it and kept a rust
+    // shadow, in an app where the accent has been user-choosable since H2 and
+    // system-derived since K8 — the shadow was the last thing still insisting
+    // on the colour the app shipped with.
+    let (shadow_r, shadow_g, shadow_b) = (base.r, base.g, base.b);
+
     format!(
         "{neutrals}\
          --sla-accent: {base};\
@@ -558,6 +573,7 @@ pub fn tokens(dark: bool, accent: ResolvedAccent) -> String {
          --sla-accent-on-tint: {on_tint};\
          --sla-on-accent: {on_accent};\
          --sla-accent-dim: {dim};\
+         --sla-accent-shadow: rgba({shadow_r}, {shadow_g}, {shadow_b}, 0.5);\
          --sla-font-display: {FONT_DISPLAY};\
          --sla-font-ui: {FONT_UI};\
          --sla-font-mono: {FONT_MONO};\
@@ -1412,6 +1428,58 @@ mod tests {
             assert_eq!(dark.on_accent.to_string(), accent.on_accent_dark, "{}", accent.name);
             assert_eq!(dark.dim.to_string(), accent.dim_dark, "{}", accent.name);
         }
+    }
+
+    /// The FAB's shadow is the accent's own colour, in every mode and for both
+    /// kinds of accent.
+    ///
+    /// It was `rgba(181,71,36,.5)` written out by hand at three call sites —
+    /// Rust, forever, whatever the app was actually painted in. Nobody saw it
+    /// while the shipped accent *was* Rust; a Material You palette put a purple
+    /// button over an orange shadow and made it obvious. The assertion is that
+    /// the three channels track `--sla-accent` rather than that they are any
+    /// particular number, because the number is now whatever the device says.
+    #[test]
+    fn the_fab_shadow_follows_whatever_the_accent_is() {
+        let cases = [
+            (ResolvedAccent::Authored(RUST), false),
+            (ResolvedAccent::Authored(RUST), true),
+            (ResolvedAccent::Authored(ACCENTS[2]), false),
+            (
+                ResolvedAccent::Derived(DerivedAccent::from_seed(
+                    AccentSource::System,
+                    Rgb::new(177, 40, 255),
+                )),
+                true,
+            ),
+        ];
+
+        for (accent, dark) in cases {
+            let block = tokens(dark, accent);
+            let base = accent.colours(dark).base;
+            let wanted = format!(
+                "--sla-accent-shadow: rgba({}, {}, {}, 0.5);",
+                base.r, base.g, base.b
+            );
+            assert!(
+                block.contains(&wanted),
+                "{} in {dark:?} wanted {wanted}\n{block}",
+                accent.name()
+            );
+        }
+
+        // And the point of the whole change, stated as its own fact: an accent
+        // that is not Rust does not get Rust's shadow. The loop above would
+        // pass if `tokens` ignored its argument and every case happened to be
+        // Rust, which is exactly the bug being fixed.
+        let purple = ResolvedAccent::Derived(DerivedAccent::from_seed(
+            AccentSource::System,
+            Rgb::new(177, 40, 255),
+        ));
+        assert!(
+            !tokens(true, purple).contains("rgba(181, 71, 36"),
+            "a purple accent must not paint a rust shadow"
+        );
     }
 
     /// The whole token block for an authored accent is byte-for-byte what it

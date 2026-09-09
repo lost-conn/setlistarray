@@ -353,7 +353,7 @@ pub fn SetlistDetail(id: Option<SetlistId>) -> NodeHandle {
                     },
                     style: "background: var(--sla-accent); color: var(--sla-on-accent); border-radius: 16px; \
                             padding: 16px; display: flex; align-items: center; justify-content: center; gap: 8px; \
-                            font-weight: 600; font-size: 16px; box-shadow: 0 8px 18px -4px rgba(181,71,36,.5);",
+                            font-weight: 600; font-size: 16px; box-shadow: 0 8px 18px -4px var(--sla-accent-shadow);",
                     {icon(__scope, TablerIcon::PlayerPlay, 19)}
                     "Play set"
                 }

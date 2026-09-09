@@ -291,7 +291,7 @@ pub fn Library() -> NodeHandle {
                         width: 60px; height: 60px; \
                         border-radius: 20px; background: var(--sla-accent); color: var(--sla-on-accent); \
                         display: flex; align-items: center; justify-content: center; \
-                        box-shadow: 0 8px 18px -4px rgba(181,71,36,.5);",
+                        box-shadow: 0 8px 18px -4px var(--sla-accent-shadow);",
                 {icon(__scope, TablerIcon::Plus, 24)}
             }
         }
