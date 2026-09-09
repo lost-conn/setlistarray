@@ -207,7 +207,7 @@ use crate::store::{
     SettingsStore, SetlistsStore, SongsStore, Storage,
 };
 use crate::theme::{
-    ACCENTS, SCREEN_PAD, T_BODY, T_CHIP, T_META, T_META_SMALL, T_SCREEN_TITLE, T_SECTION_CAPS,
+    ACCENTS, SCREEN_PAD, T_BODY, T_CHIP, T_META, T_META_SMALL, T_ROW_TITLE, T_SECTION_CAPS,
 };
 use crate::ui::{IconButton, icon};
 
@@ -257,16 +257,29 @@ pub fn Settings() -> NodeHandle {
     rsx! {
         div { style: "flex: 1; display: flex; flex-direction: column; min-height: 0;",
 
-            // The same back row every secondary screen in this app wears, at the
-            // same 18px inset. ← and nothing else: there is no action on this
-            // screen that belongs in a top bar.
-            div { style: "padding: 2px 18px 8px; display: flex; align-items: center;",
+            // ← and the screen's name on the same line, which is the one place
+            // this screen departs from the back row every other secondary
+            // screen wears.
+            //
+            // It used to be that row exactly — ← alone, at an 18px inset, with
+            // a 34px `T_SCREEN_TITLE` "Settings" below it inside the scroll
+            // area. That is the right shape for song detail and setlist detail,
+            // where the big title *is* the content's own name and belongs with
+            // the content, scrolling away as you read past it. Settings has no
+            // such subject: the word names the screen, not anything on it, and
+            // a 34px line spending the top of a list of preferences on saying
+            // where you already are is a row of that list you do not get.
+            //
+            // So it joins the ←, in the same 19px the chart editor and the song
+            // form put their headings in — those two are the app's other
+            // screens whose title is the screen rather than a song — and it
+            // stays put while the preferences scroll under it.
+            div { style: "padding: 2px 18px 8px; display: flex; align-items: center; gap: 6px;",
                 IconButton { glyph: TablerIcon::ChevronLeft, size: 19, onclick: move || nav.back() }
+                div { style: {format!("{T_ROW_TITLE} font-size: 19px;")}, "Settings" }
             }
 
             div { style: {format!("flex: 1; min-height: 0; overflow-y: auto; padding: 0 {SCREEN_PAD} 20px;")},
-
-                div { style: {format!("{T_SCREEN_TITLE}")}, "Settings" }
 
                 {section(__scope, "Storage")}
 
