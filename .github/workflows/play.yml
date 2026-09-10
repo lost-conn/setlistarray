@@ -1,0 +1,187 @@
+# Build SetListArray's App Bundle on a GitHub runner and hand it to Google Play.
+#
+# Everything the bundle *is* comes from `build-apk.sh --bundle`, run here
+# exactly as it runs on a laptop — the protobuf link, bundletool's 16 KB
+# alignment and the check on it, the commit-count versionCode, the upload-key
+# signature. This file only reproduces the laptop around that script, and the
+# laptop has two things a runner does not. One is the frameworks, which
+# `Cargo.toml` names by path as `../rinch-fixes` and `../rhypedb-main`; they
+# come from `.github/siblings.env`, cloned beside this repo at pinned commits
+# (`scripts/pin-siblings.sh` has why the pin is a commit and not a branch). The
+# other is a toolchain somebody installed once by hand, and that is every step
+# below that installs something, each at the version the laptop uses — NDK r27c
+# above all, because the `p_align 0x4000` card K33's alignment rests on is
+# r27c's.
+#
+# A `v*` tag releases to the internal testing track. Running the workflow by
+# hand picks the track, or `none` to build without uploading, which is also how
+# to get the signed bundle Play Console needs for the app's first, manual
+# upload. Production is deliberately not a choice: promoting a release there is
+# for a person in Play Console, having looked at it.
+#
+# The secrets live in the `play` environment rather than on the repository, so
+# only a job that names the environment can read them and the environment's
+# own rules decide which refs may. That matters once the repository is public:
+# nothing here runs on `pull_request`, and nothing should, because a workflow a
+# stranger's pull request can start must never be one holding the upload key.
+#
+# The crate's tests do not run here. They build the desktop shell, whose
+# windowing and portal dependencies this job has no other use for; they are
+# worth a job of their own, and it is not this one.
+name: Play
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      track:
+        description: "Play track to release to, or none to build only"
+        type: choice
+        options: [internal, alpha, beta, none]
+        default: internal
+      status:
+        description: "Release status: draft until Play has reviewed the app once"
+        type: choice
+        options: [completed, draft]
+        default: completed
+
+permissions:
+  contents: read
+
+# Two uploads racing for one versionCode is a guaranteed rejection for the
+# second, so they queue instead.
+concurrency:
+  group: play
+  cancel-in-progress: false
+
+jobs:
+  bundle:
+    runs-on: ubuntu-24.04
+    environment: play
+    timeout-minutes: 90
+    env:
+      TRACK: ${{ inputs.track || 'internal' }}
+      STATUS: ${{ inputs.status || 'completed' }}
+      BUNDLETOOL_VERSION: 1.18.3
+      BUNDLETOOL_SHA256: a099cfa1543f55593bc2ed16a70a7c67fe54b1747bb7301f37fdfd6d91028e29
+    steps:
+      - name: Check out SetListArray
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: setlistarray
+          # The versionCode is `git rev-list --count HEAD`, and in the shallow
+          # clone checkout makes by default that count is 1 — every build would
+          # be version 1, and Play refuses every upload after the first.
+          fetch-depth: 0
+
+      - name: Read the sibling pins
+        run: grep -E '^[A-Z_]+=' setlistarray/.github/siblings.env >> "$GITHUB_ENV"
+
+      - name: Check out rinch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.RINCH_REPO }}
+          ref: ${{ env.RINCH_REV }}
+          path: rinch-fixes
+
+      - name: Check out rhypedb
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.RHYPEDB_REPO }}
+          ref: ${{ env.RHYPEDB_REV }}
+          path: rhypedb-main
+
+      # The versionName is `Cargo.toml`'s version, so a tag that disagrees with
+      # it would ship a release whose name in Play is not the name on the tag.
+      - name: The tag is the version it releases
+        if: github.ref_type == 'tag'
+        working-directory: setlistarray
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+          if [[ "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml's version $version"
+            exit 1
+          fi
+
+      - name: Rust, as rust-toolchain.toml asks
+        working-directory: setlistarray
+        run: rustup toolchain install
+
+      - name: Cache the Rust build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: setlistarray
+          # The siblings are path dependencies, so their source is in no hash
+          # Cargo.lock contributes to the cache key. Their pins are.
+          key: ${{ hashFiles('setlistarray/.github/siblings.env') }}
+
+      - name: cargo-ndk
+        uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2.87.10
+        with:
+          tool: cargo-ndk@4.1.2
+
+      - name: NDK r27c
+        id: ndk
+        uses: nttld/setup-ndk@ed92fe6cadad69be94a966a7ee3271275e62f779 # v1.6.0
+        with:
+          ndk-version: r27c
+          add-to-path: false
+
+      - name: The SDK pieces build-apk.sh names
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "build-tools;35.0.0" "platforms;android-35" > /dev/null
+          test -x "$ANDROID_HOME/build-tools/35.0.0/aapt2"
+          test -f "$ANDROID_HOME/platforms/android-35/android.jar"
+
+      - name: bundletool
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/bundletool.jar" \
+            "https://github.com/google/bundletool/releases/download/$BUNDLETOOL_VERSION/bundletool-all-$BUNDLETOOL_VERSION.jar"
+          echo "$BUNDLETOOL_SHA256  $RUNNER_TEMP/bundletool.jar" | sha256sum -c -
+
+      - name: The upload key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_BASE64 }}
+        run: |
+          if [[ -z "$KEYSTORE_BASE64" ]]; then
+            echo "::error::ANDROID_UPLOAD_KEYSTORE_BASE64 is not set in the play environment"
+            exit 1
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/upload.jks"
+
+      # `< /dev/null` because jarsigner asks for any password it was not given,
+      # and a question on a runner is a job that hangs until the timeout rather
+      # than one that fails and says which secret is missing.
+      - name: Build the bundle
+        working-directory: setlistarray
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+          BUNDLETOOL_JAR: ${{ runner.temp }}/bundletool.jar
+          ANDROID_UPLOAD_KEYSTORE: ${{ runner.temp }}/upload.jks
+          ANDROID_UPLOAD_KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
+          ANDROID_UPLOAD_STORE_PASS: ${{ secrets.ANDROID_UPLOAD_STORE_PASS }}
+          ANDROID_UPLOAD_KEY_PASS: ${{ secrets.ANDROID_UPLOAD_KEY_PASS }}
+        run: |
+          export ANDROID_SDK_BUILD_TOOLS="$ANDROID_HOME/build-tools/35.0.0"
+          export ANDROID_SDK_PLATFORM="$ANDROID_HOME/platforms/android-35/android.jar"
+          ./build-apk.sh --bundle --build-only < /dev/null
+          jarsigner -verify setlistarray.aab | grep -F "jar verified."
+
+      - name: Attach the bundle to the run
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: setlistarray-${{ github.run_number }}
+          path: setlistarray/setlistarray.aab
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload to Play
+        if: env.TRACK != 'none'
+        uses: r0adkll/upload-google-play@e738b9dd8f2476ea806d921b64aacd24f34515a5 # v1.1.5
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: dev.lostconnection.setlistarray
+          releaseFiles: setlistarray/setlistarray.aab
+          track: ${{ env.TRACK }}
+          status: ${{ env.STATUS }}

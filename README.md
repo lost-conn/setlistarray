@@ -378,6 +378,47 @@ target — 6,935,051 bytes for arm64-v8a, 6,976,008 for x86_64 — almost all of
 about a third. It was 5.8 MiB before the capture engine brought html5ever and
 its friends in.
 
+### Releasing to Play
+
+`.github/workflows/play.yml` builds the bundle on a GitHub runner and uploads
+it. Pushing a `v*` tag (matching `Cargo.toml`'s version, so `v0.1.0` today)
+releases to the internal testing track; running the workflow by hand (Actions →
+Play → Run workflow) picks the track, or `none` to build only. Either way the
+signed bundle is attached to the run.
+
+The runner has no `../rinch-fixes` or `../rhypedb-main`, so it clones both
+beside this repo at the commits in `.github/siblings.env` — rinch from the
+`lost-conn/rinch` fork, which carries `local/both-fixes` until upstream catches
+up. After building against a newer rinch here, push it and re-pin before
+tagging:
+
+```bash
+git -C ../rinch-fixes push fork local/both-fixes
+scripts/pin-siblings.sh           # records both HEADs; refuses one the remote lacks
+scripts/pin-siblings.sh --check   # exit 1 if either sibling has moved past its pin
+```
+
+Once, by hand, before the workflow can upload anything:
+
+1. Create the app in Play Console and upload its first bundle there — the API
+   cannot create an app. A run with track `none` produces the signed bundle.
+2. Create a Google Cloud service account, enable the Google Play Android
+   Developer API in its project, invite the account in Play Console → Users and
+   permissions with release rights, and download a JSON key for it.
+3. Add the secrets below to the repository's `play` environment (Settings →
+   Environments), which is also where to limit it to `master` and `v*` tags.
+
+| Secret | What |
+| --- | --- |
+| `ANDROID_UPLOAD_KEYSTORE_BASE64` | The upload keystore, as `base64 -w0 upload.jks` |
+| `ANDROID_UPLOAD_KEY_ALIAS` | Its alias; `upload` if unset |
+| `ANDROID_UPLOAD_STORE_PASS` | The keystore's password |
+| `ANDROID_UPLOAD_KEY_PASS` | The key's password, only if it differs |
+| `PLAY_SERVICE_ACCOUNT_JSON` | The service account's JSON key |
+
+Until Play has reviewed the app once it is a *draft app*, and the API accepts
+only draft releases for one: run by hand with status `draft` until then.
+
 ### The launcher icon
 
 `android/res/` is generated, not exported. The designed artwork is the three
