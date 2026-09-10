@@ -241,7 +241,9 @@ use crate::ui::{IconButton, icon};
 
 /// The last line on the screen, and the reason the screen has no account
 /// section. Exact, and a `const` rather than a literal in the markup so the test
-/// at the bottom of this file can hold it against the handoff word for word.
+/// at the bottom of this file can hold it to what it promises. The wording was
+/// the design handoff's until that was retired on 2026-09-10; this is where it
+/// is authored now.
 pub const PROMISE: &str = "SetListArray · works with no connection. Nothing is uploaded anywhere.";
 
 /// One row: label on the left, whatever states or changes it on the right.
@@ -845,20 +847,7 @@ fn accent_row(scope: &mut RenderScope, settings: SettingsStore, system: SystemSt
 mod tests {
     use super::*;
 
-    /// The footer line is the app's central promise, and the handoff is where
-    /// it is authored. Held against that file rather than against a copy of
-    /// itself, so a reworded footer fails here instead of quietly becoming a
-    /// different promise than the one the design makes.
-    #[test]
-    fn the_footer_is_the_promise_the_handoff_authored() {
-        let handoff = include_str!("../../design_handoff_setlistarray/README.md");
-        assert!(
-            handoff.contains(PROMISE),
-            "the footer line no longer matches the handoff: {PROMISE}"
-        );
-    }
-
-    /// It is also the only sentence on the screen that mentions the network, and
+    /// The footer is the only sentence on the screen that mentions the network, and
     /// what it says about it is "no". A guard on the two words that carry that.
     #[test]
     fn the_promise_still_promises_no_upload() {

@@ -6,9 +6,12 @@ them into setlists. No account, no sync, nothing uploaded. One outbound
 network call exists in the whole app — fetching a webpage you have pasted in
 yourself, so that it still opens with no signal.
 
-Built with [Rinch](https://github.com/joeleaver/rinch). The design handoff in
-`design_handoff_setlistarray/` is the authority: the hi-fi file for visuals,
-the wireframes (turn 2 wins over turn 1) for flow.
+Built with [Rinch](https://github.com/joeleaver/rinch). The design arrived as a
+handoff — a hi-fi file for visuals, wireframes for flow — and was the authority
+until the app had absorbed it; it was retired on 2026-09-10. It is still in
+history, and the `design_handoff_setlistarray/README.md:NNN` line numbers cited
+in comments refer to it there:
+`git show 6189dc7:design_handoff_setlistarray/README.md`.
 
 ## Running it
 

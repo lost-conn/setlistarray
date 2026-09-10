@@ -102,11 +102,10 @@ use crate::model::Song;
 use crate::store::{AttachmentsStore, LibraryViewStore, SettingsStore, SetlistsStore, SongsStore, Storage};
 use crate::theme::{SCREEN_PAD, T_META};
 
-/// Verbatim from the handoff (`design_handoff_setlistarray/README.md`, §13,
-/// "First run — WIREFRAME (`1r`)"). A `const` rather than a literal in the
-/// markup so the test at the bottom of this file can hold it against that
-/// file word for word, the same guard `screens::settings::PROMISE` keeps on
-/// its own footer.
+/// Verbatim from the design handoff (§13, "First run — WIREFRAME (`1r`)"),
+/// which was retired on 2026-09-10 — the README says where it went. A test
+/// used to hold these against that file word for word; with the file gone,
+/// these three constants are where the screen's words are authored.
 const QUESTION: &str = "What's a song you know how to play?";
 const SUBLINE: &str = "Add it now. Charts, keys and setlists can come later — or never.";
 const FOOTER: &str = "Everything stays on this phone. No account, no signal needed.";
@@ -254,23 +253,5 @@ pub fn FirstRun() -> NodeHandle {
                 }
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The handoff is where this screen's three lines are authored. Held
-    /// against that file rather than a copy of itself, the same guard
-    /// `screens::settings::PROMISE` keeps, so a reworded question, sub-line
-    /// or footer fails a test here instead of quietly drifting from the
-    /// design.
-    #[test]
-    fn first_runs_strings_are_the_handoffs_own_words() {
-        let handoff = include_str!("../../design_handoff_setlistarray/README.md");
-        assert!(handoff.contains(QUESTION), "question drifted from the handoff: {QUESTION}");
-        assert!(handoff.contains(SUBLINE), "sub-line drifted from the handoff: {SUBLINE}");
-        assert!(handoff.contains(FOOTER), "footer drifted from the handoff: {FOOTER}");
     }
 }
