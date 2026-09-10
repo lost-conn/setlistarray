@@ -59,8 +59,36 @@
       compressed library does not install, and the failure is an installer
       error a long way from either edit.
     -->
+    <!--
+      `android:icon` and `android:roundIcon` are the app's whole presence on a
+      home screen, and until 2026-09-09 neither line was here — an app with no
+      icon resource gets Android's default green robot, on the launcher, in
+      Recents, in the share sheet it had just worked to get into, and in
+      Settings.
+
+      Both point at `res/mipmap-anydpi-v26/*.xml`, which are `<adaptive-icon>`
+      elements rather than pictures; those files carry the long version of why
+      the artwork could not simply be dropped in at the size it was drawn, and
+      what the third `<monochrome>` layer is for. The short version is that
+      Android shows the central 72dp of a 108dp layer and masks it to a shape
+      the app never learns, so everything under `res/mipmap-*dpi/` is generated
+      from `assets/icon/` by `scripts/make-icons.py` rather than exported by
+      hand.
+
+      The `mipmap-*dpi/ic_launcher.png` and `ic_launcher_round.png` bitmaps in
+      that generated set will never be chosen by the resource resolver on a
+      device this app runs on: `anydpi` outranks every density qualifier and
+      `minSdkVersion` is 28, so the `-v26` XML always wins. They are shipped
+      because plenty of things read an APK's icon *without* asking the
+      resolver — `aapt2 dump badging`, store tooling, third-party launchers
+      that scrape `mipmap-` entries for their icon packs — and what those find
+      should be the designed square lockup (`assets/icon/whole.png`) rather
+      than nothing at all. 130 KB against a 26 MB APK.
+    -->
     <application
         android:label="SetListArray"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:hasCode="true"
         android:extractNativeLibs="false"
         android:allowBackup="false">

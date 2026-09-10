@@ -910,6 +910,137 @@ mod tests {
         );
     }
 
+    /// The launcher icon, which is four files in three languages that only
+    /// work together, and whose failure mode is a green robot.
+    ///
+    /// Until 2026-09-09 this app had no `android/res/` at all and no
+    /// `android:icon` line, so Android drew its default robot everywhere the
+    /// app appears — the launcher, Recents, Settings, and the share sheet the
+    /// share-target card had just worked to get into. Adding the icon took an
+    /// edit in each of:
+    ///
+    /// 1. `AndroidManifest.xml`, pointing `android:icon` and
+    ///    `android:roundIcon` at `@mipmap/ic_launcher`;
+    /// 2. `res/mipmap-anydpi-v26/ic_launcher.xml`, an `<adaptive-icon>` naming
+    ///    its three layers;
+    /// 3. `res/mipmap-*dpi/*.png`, written by `scripts/make-icons.py` from the
+    ///    three files in `assets/icon/`;
+    /// 4. `build-apk.sh`, which had never run `aapt2 compile` because there
+    ///    had never been anything to compile.
+    ///
+    /// Only the fourth of those fails loudly on its own (`aapt2 link` stops
+    /// with "resource mipmap/ic_launcher not found"). The other three fail by
+    /// building a perfectly good APK with the wrong picture on it, on a phone,
+    /// which is the pattern cards K15 and K20 set: if it can be caught on a
+    /// laptop, catch it on a laptop.
+    ///
+    /// The `<monochrome>` layer gets its own assertion because it fails more
+    /// quietly still. Leave it out and the icon is *correct* — it simply stays
+    /// full-colour on a home screen where the user has turned themed icons on
+    /// and everything else has followed the wallpaper. That is a thing you
+    /// notice on somebody else's phone, six months later.
+    ///
+    /// The PNG sizes are checked by reading the IHDR header rather than by
+    /// trusting the generator, because the whole point of the 108dp/72dp
+    /// framing is that a layer at the wrong scale still looks like an icon.
+    #[test]
+    fn the_launcher_icon_is_adaptive_and_keeps_its_monochrome_layer() {
+        let manifest = strip_xml_comments(include_str!("../android/AndroidManifest.xml"));
+        assert!(
+            manifest.contains(r#"android:icon="@mipmap/ic_launcher""#)
+                && manifest.contains(r#"android:roundIcon="@mipmap/ic_launcher_round""#),
+            "AndroidManifest.xml no longer points at the launcher icon; Android falls back \
+             to its default robot, everywhere the app appears"
+        );
+
+        for name in ["ic_launcher", "ic_launcher_round"] {
+            let path = format!("android/res/mipmap-anydpi-v26/{name}.xml");
+            let xml = strip_xml_comments(
+                &std::fs::read_to_string(format!("{}/{path}", env!("CARGO_MANIFEST_DIR")))
+                    .unwrap_or_else(|e| panic!("{path} is gone: {e}")),
+            );
+            assert!(
+                xml.contains("<adaptive-icon"),
+                "{path} is no longer an <adaptive-icon>; the launcher cannot mask a flat \
+                 bitmap to the device's shape and will letterbox it instead"
+            );
+            for layer in ["background", "foreground", "monochrome"] {
+                assert!(
+                    xml.contains(&format!("<{layer} android:drawable=")),
+                    "{path} has lost its <{layer}> layer{}",
+                    if layer == "monochrome" {
+                        " — the app keeps a full-colour icon on a themed home screen, \
+                         and nothing else says so"
+                    } else {
+                        ""
+                    }
+                );
+            }
+        }
+
+        // 108dp for the three adaptive layers, 48dp for the legacy bitmaps,
+        // times the density multiplier. `scripts/make-icons.py` writes all of
+        // these; this is the floor under a hand-dropped export at the wrong
+        // size, which is exactly what an icon looks like when it is subtly
+        // wrong on a phone and fine in a file manager.
+        for (bucket, scale) in [
+            ("mdpi", 1.0f64),
+            ("hdpi", 1.5),
+            ("xhdpi", 2.0),
+            ("xxhdpi", 3.0),
+            ("xxxhdpi", 4.0),
+        ] {
+            for (name, dp) in [
+                ("ic_launcher_background", 108.0f64),
+                ("ic_launcher_foreground", 108.0),
+                ("ic_launcher_monochrome", 108.0),
+                ("ic_launcher", 48.0),
+                ("ic_launcher_round", 48.0),
+            ] {
+                let path = format!("android/res/mipmap-{bucket}/{name}.png");
+                let bytes = std::fs::read(format!("{}/{path}", env!("CARGO_MANIFEST_DIR")))
+                    .unwrap_or_else(|e| {
+                        panic!("{path} is gone; re-run scripts/make-icons.py: {e}")
+                    });
+                // A PNG opens with an 8-byte signature and then an IHDR chunk
+                // whose payload starts at byte 16 with width and height, four
+                // bytes each, big-endian. No decoder needed for a size.
+                assert_eq!(
+                    &bytes[..8],
+                    b"\x89PNG\r\n\x1a\n",
+                    "{path} is not a PNG; aapt2 will refuse it"
+                );
+                let dim = |at: usize| u32::from_be_bytes(bytes[at..at + 4].try_into().unwrap());
+                let want = (dp * scale).round() as u32;
+                assert_eq!(
+                    (dim(16), dim(20)),
+                    (want, want),
+                    "{path} is {}x{}, not {want}x{want} — a {dp}dp asset at {scale}x. \
+                     Re-run scripts/make-icons.py rather than exporting by hand",
+                    dim(16),
+                    dim(20)
+                );
+            }
+        }
+
+        // The build's half. `-R` is the trap here: aapt2 accepts it for a
+        // compiled archive without complaint, treats the contents as an
+        // overlay, and links an APK whose resources.arsc the manifest cannot
+        // resolve against.
+        let script = strip_shell_comments(include_str!("../build-apk.sh"));
+        assert!(
+            script.contains(r#"aapt2" compile --dir "$SCRIPT_DIR/android/res""#),
+            "build-apk.sh no longer compiles android/res; aapt2 link cannot take a directory \
+             of PNGs, and the manifest's @mipmap/ic_launcher has nothing to resolve to"
+        );
+        assert!(
+            script.contains(r#""$APK_DIR/res.zip""#) && !script.contains("-R "),
+            "build-apk.sh no longer passes the compiled resources to aapt2 link as a \
+             positional argument; -R overlays them instead, which links without error and \
+             produces an APK the manifest cannot resolve icons out of"
+        );
+    }
+
     /// The phone gets the GPU painter, and nothing about that is visible in a
     /// test run on a laptop — which is the reason to assert it here.
     ///

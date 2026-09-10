@@ -172,12 +172,32 @@ echo "==> Packaging APK..."
 mkdir -p "$APK_DIR/lib/$ABI"
 cp "$SO_PATH" "$APK_DIR/lib/$ABI/"
 
+# The launcher icon is the only compiled resource this app has, and it arrived
+# on 2026-09-09 — before that `android/res/` did not exist and this was a bare
+# `aapt2 link` over a manifest with nothing to resolve.
+#
+# `aapt2` will not take a directory of PNGs and XML at link time. Everything has
+# to go through `compile` first, which is what turns `mipmap-xxxhdpi/
+# ic_launcher.png` into a configuration-tagged entry and `mipmap-anydpi-v26/
+# ic_launcher.xml` into a binary `<adaptive-icon>`; the result is a flat archive
+# that `link` takes as a **positional argument**. Not `-R`: that flag exists for
+# overlaying somebody else's resources on top of yours, it is accepted here
+# without complaint, and it produces an APK whose `resources.arsc` the manifest's
+# `@mipmap/ic_launcher` cannot resolve to.
+#
+# The failure when either half is missing is at least a loud one — `link` stops
+# with "resource mipmap/ic_launcher not found" rather than building an APK with
+# a green robot on it.
+echo "==> Compiling resources..."
+"$BUILD_TOOLS/aapt2" compile --dir "$SCRIPT_DIR/android/res" -o "$APK_DIR/res.zip"
+
 "$BUILD_TOOLS/aapt2" link \
     --manifest "$SCRIPT_DIR/android/AndroidManifest.xml" \
     -I "$PLATFORM" \
     --min-sdk-version 28 \
     --target-sdk-version 35 \
-    -o "$APK_DIR/base.apk"
+    -o "$APK_DIR/base.apk" \
+    "$APK_DIR/res.zip"
 
 # `classes.dex` is deflated like any other entry; the library is **stored**.
 #

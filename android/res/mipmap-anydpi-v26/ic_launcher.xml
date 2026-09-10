@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The launcher icon, in the only form Android has really wanted since API 26.
+
+  An `<adaptive-icon>` is not a picture. It is two 108dp layers that the
+  launcher composites, shows the central 72dp of, and masks to whatever shape
+  the device's theme is using — a circle on a Pixel, a squircle here on the
+  moto g stylus, a rounded square somewhere else. The app does not get to know
+  which, which is why the three PNGs this points at are laid out the way
+  `scripts/make-icons.py` lays them out: the whole of the designed artwork
+  (`assets/icon/maskable.png`) is the *visible* 72dp, and the outer 18dp on
+  each side is gradient bleed that exists only so the mask has something to eat.
+
+  That framing is the answer to a real problem rather than a stylistic choice.
+  The artwork was drawn to the *web* maskable safe zone — a circle covering 80%
+  of the canvas — and Android's is 66dp out of 108, 61%. At its drawn size the
+  glyph reaches 39.2dp from centre and a circular mask clips the corners off
+  both brackets. Scaled by 72/108 it reaches 27.4dp and survives every mask,
+  and the composite of these two layers over the visible region is the artwork
+  pixel for pixel. `scripts/make-icons.py` re-measures both of those on every
+  run and refuses to write files if either stops being true.
+
+  `<monochrome>` is the Material You layer, and it is a *third* image rather
+  than the foreground reused. The system ignores that drawable's colour and
+  tints its alpha, and the foreground's alpha contains the design's drop
+  shadow; tinted, a shadow stops reading as a shadow and becomes a soft accent
+  halo sitting down and to the right of the glyph. So the monochrome layer is
+  the glyph's own coverage, unmixed out of the artwork against the fitted
+  gradient — see the second half of `scripts/make-icons.py`'s module comment for
+  how, and why the shadow falls out of that arithmetic on its own.
+
+  Omit this element and nothing fails: the app simply keeps its full-colour
+  icon on a home screen where every other app has gone themed, which is the
+  kind of thing you only notice on somebody else's phone.
+
+  On the `-v26` in the directory name: this app's `minSdkVersion` is 28, so the
+  version qualifier can never exclude anything and `mipmap-anydpi` alone would
+  behave identically. It is spelled the long way because that is the name every
+  Android document, tool and Stack Overflow answer uses, and a directory that
+  does not match them costs more than the four characters do.
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@mipmap/ic_launcher_background" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+    <monochrome android:drawable="@mipmap/ic_launcher_monochrome" />
+</adaptive-icon>

@@ -364,6 +364,46 @@ target — 6,935,051 bytes for arm64-v8a, 6,976,008 for x86_64 — almost all of
 about a third. It was 5.8 MiB before the capture engine brought html5ever and
 its friends in.
 
+### The launcher icon
+
+`android/res/` is generated, not exported. The designed artwork is the three
+files in `assets/icon/` — the full-bleed `maskable.png`, the glyph alone on
+transparent in `mono.png`, and the rounded-square lockup in `whole.png` — and
+`scripts/make-icons.py` turns them into the adaptive icon Android actually
+wants:
+
+```bash
+python3 scripts/make-icons.py        # needs Pillow and NumPy; nothing else here does
+```
+
+It is committed output, so a checkout builds without running it. Re-run it when
+the artwork changes.
+
+Two things it does that an export cannot. It **splits the layers**: the design
+has the glyph sitting on a radial gradient, and an `<adaptive-icon>` needs those
+as separate drawables, so the script fits the gradient against the pixels
+`mono.png` says the glyph never touches and paints it back clean — measured
+0.28/255 RMS against the artwork, and it refuses to write anything if that ever
+drifts past 6. And it **rescales for Android's mask**: the artwork was drawn to
+the web maskable safe zone (a circle over 80% of the canvas) where Android
+guarantees only 61%, so at its drawn size a circular launcher mask clipped the
+corners off both brackets. The whole design is scaled by 72/108, which makes
+`maskable.png` exactly the visible 72dp and the rest gradient bleed.
+
+The third layer is `<monochrome>`, for Android 13's themed icons, and it is not
+the foreground reused: the system tints that drawable's *alpha*, and the
+foreground's alpha carries the design's drop shadow, which tinted stops being a
+shadow and becomes an accent-coloured halo. So the monochrome coverage is
+unmixed out of the artwork against the fitted gradient, where the shadow — being
+darker than the gradient rather than lighter — falls out on its own.
+
+`the_launcher_icon_is_adaptive_and_keeps_its_monochrome_layer` in `src/lib.rs`
+holds the four files that only work together: the manifest's two attributes, the
+`<adaptive-icon>` and its three layers, every generated PNG at its right pixel
+size, and `build-apk.sh`'s `aapt2 compile`. Only the last of those fails loudly
+on its own. The rest build a perfectly good APK with the wrong picture on it.
+The whole set costs 222 KiB of the APK.
+
 ### One permission, on purpose
 
 `android/AndroidManifest.xml` declares exactly one:

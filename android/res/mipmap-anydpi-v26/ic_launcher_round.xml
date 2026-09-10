@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  `android:roundIcon` points here, and this file is deliberately identical to
+  `ic_launcher.xml`.
+
+  The round icon resource predates adaptive icons: it was API 25's answer to
+  round launchers, a second *bitmap* the app supplied already cropped to a
+  circle. Adaptive icons made it redundant a version later — the launcher masks
+  the layers itself, to a circle or to anything else — but `roundIcon` is still
+  read, and a launcher that asks for it and finds nothing falls back to
+  `android:icon` rather than to something wrong. Pointing it at the same
+  `<adaptive-icon>` means the round path and the ordinary path cannot drift
+  apart, which is the only failure this resource has ever really produced.
+
+  The circular *bitmap* the same script writes into `mipmap-*dpi/
+  ic_launcher_round.png` is the pre-adaptive form, and is not what this file
+  is; see `AndroidManifest.xml` for what those bitmaps are still for.
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@mipmap/ic_launcher_background" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+    <monochrome android:drawable="@mipmap/ic_launcher_monochrome" />
+</adaptive-icon>
