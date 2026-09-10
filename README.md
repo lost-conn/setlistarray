@@ -1200,3 +1200,27 @@ seam every window-backed layout and paint site uses.
   directory lock with it — is released on the worker's thread. A second
   *process* gets a clean refusal, but a test that restarts the app in-process
   has to retry (`db::restart`). The app itself opens the library once.
+
+## License
+
+SetListArray is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version. It is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See [LICENSE](LICENSE) for the full text.
+
+GPLv3 rather than the MIT/Apache pair most of the Rust tree carries, and for one
+reason: a modified SetListArray shipped to anyone has to ship its source with
+it. Every dependency is permissive or MPL-2.0, and all of them fold into a
+GPLv3 program.
+
+The license covers the code, not the name. "SetListArray" and the icon in
+`assets/icon/` say which app this is, and a fork is welcome under a name and an
+icon of its own. A copy on Play wearing this one's is exactly what the GPL does
+not prevent — anyone may redistribute the app, even for money, so long as the
+source goes with it — and what the store's impersonation policy does.
+
+The bundled fonts keep their own licenses, in `assets/fonts/licenses/`: the SIL
+Open Font License 1.1 for Newsreader and Karla, and the Bitstream Vera terms for
+DejaVu Sans Mono.

@@ -2,6 +2,12 @@
 name = "setlistarray"
 version = "0.1.0"
 edition = "2024"
+# GPLv3 and not the MIT/Apache pair most of this tree carries, chosen on
+# 2026-09-10 for one reason: a modified SetListArray shipped to anyone has to
+# ship its source too. The *or-later* is the FSF's recommended form. Every
+# dependency is permissive or MPL-2.0 and folds into it; the one that would not
+# is anything GPLv2-only, since Apache-2.0 cannot go into GPLv2.
+license = "GPL-3.0-or-later"
 
 # Two targets from one crate. The desktop binary is `main.rs`; Android loads the
 # `cdylib` and calls `android_main`. `rlib` is what the binary and the tests
