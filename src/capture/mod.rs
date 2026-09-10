@@ -260,7 +260,7 @@ pub struct Limits {
 pub const DEFAULT_USER_AGENT: &str = concat!(
     "Mozilla/5.0 (compatible; SetListArray/",
     env!("CARGO_PKG_VERSION"),
-    "; +https://github.com/lostconnection/setlistarray) offline-chart-capture"
+    "; +https://github.com/lost-conn/setlistarray) offline-chart-capture"
 );
 
 impl Default for Limits {
