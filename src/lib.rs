@@ -910,6 +910,94 @@ mod tests {
         );
     }
 
+    /// The bundle's half of card K33, which the APK's half cannot reach.
+    ///
+    /// The test above holds `zip -0` and `zipalign -P 16` in place, and
+    /// neither touches what Play actually ships: from an App Bundle, Play
+    /// builds and packs the APKs itself, and the only say this project has in
+    /// how the library is stored there is `BundleConfig.json`. So the same two
+    /// facts are asserted of that — stored, and aligned to 16 KB rather than
+    /// bundletool's default of 4 — along with the check `build-apk.sh
+    /// --bundle` runs on bundletool's own output, which exists because
+    /// bundletool marks the alignment field experimental.
+    ///
+    /// The failure without either is the quiet kind this crate keeps tests
+    /// for. Without the config, a bundle that builds and is refused at upload
+    /// by Play's 16 KB check; with the config and not the check, one that
+    /// stops being aligned the day a bundletool upgrade drops the field, and
+    /// says so only at upload.
+    #[test]
+    fn the_bundle_asks_play_to_keep_the_library_mapped() {
+        let script = strip_shell_comments(include_str!("../build-apk.sh"));
+        assert!(
+            script.contains(
+                r#""uncompressNativeLibraries": { "enabled": true, "alignment": "PAGE_ALIGNMENT_16K" }"#
+            ),
+            "build-apk.sh no longer asks bundletool for a stored, 16 KB-aligned library; Play \
+             repacks the bundle itself, so the config is the only place that can ask (card K33)"
+        );
+        assert!(
+            script.contains(r#"zipalign" -c -P 16 4 "$SPLIT""#),
+            "build-apk.sh no longer checks the APK bundletool cuts from the bundle for 16 KB \
+             alignment; the config field that asks for it is experimental upstream"
+        );
+    }
+
+    /// The version, which Play reads and the manifest must not say.
+    ///
+    /// `aapt2 link --version-code` fills in a `versionCode` the manifest left
+    /// out and quietly defers to one it finds. So the script injecting the
+    /// commit count is only half of this; the other half is the *absence* of
+    /// the attribute from `AndroidManifest.xml`, and an absence is the easiest
+    /// thing in a file to undo. A helpful edit restoring `versionCode="1"`
+    /// would build without a word and pin every build after it at 1, which
+    /// Play refuses from the second upload on.
+    #[test]
+    fn the_version_comes_from_the_build_not_the_manifest() {
+        let manifest = strip_xml_comments(include_str!("../android/AndroidManifest.xml"));
+        for attribute in ["android:versionCode", "android:versionName"] {
+            assert!(
+                !manifest.contains(attribute),
+                "AndroidManifest.xml sets {attribute}; aapt2 defers to it over the value \
+                 build-apk.sh injects, and Play refuses an upload whose versionCode it has seen"
+            );
+        }
+        let script = strip_shell_comments(include_str!("../build-apk.sh"));
+        assert!(
+            script.contains(r#"--version-code "$VERSION_CODE""#)
+                && script.contains("rev-list --count HEAD"),
+            "build-apk.sh no longer injects a versionCode that rises with every commit"
+        );
+    }
+
+    /// Back, which Android 16 stops delivering to an app that targets it.
+    ///
+    /// At `targetSdkVersion` 36 on an Android 16 device, `KEYCODE_BACK` is no
+    /// longer dispatched — predictive back takes the gesture instead — and
+    /// Back is a key to this app: rinch turns `AKEYCODE_BACK` into Escape, and
+    /// `NavStore::press_back` is behind that. Without the opt-out the key
+    /// simply stops arriving and Back leaves the app from every screen.
+    /// Nothing on the Android 13 handset this app is tried on can show that,
+    /// which is the whole reason to assert it here.
+    #[test]
+    fn the_back_key_still_arrives_at_target_sdk_36() {
+        let manifest = strip_xml_comments(include_str!("../android/AndroidManifest.xml"));
+        let target: u32 = manifest
+            .split(r#"android:targetSdkVersion=""#)
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .and_then(|n| n.parse().ok())
+            .expect("AndroidManifest.xml declares a numeric targetSdkVersion");
+        if target >= 36 {
+            assert!(
+                manifest.contains(r#"android:enableOnBackInvokedCallback="false""#),
+                "the app targets SDK {target} without opting out of predictive back; on \
+                 Android 16 KEYCODE_BACK is no longer dispatched, and Back leaves the app \
+                 from every screen instead of reaching NavStore::press_back"
+            );
+        }
+    }
+
     /// The launcher icon, which is four files in three languages that only
     /// work together, and whose failure mode is a green robot.
     ///

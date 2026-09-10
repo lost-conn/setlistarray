@@ -32,11 +32,39 @@
   one of them is a feature the user asked for.
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="dev.lostconnection.setlistarray"
-    android:versionCode="1"
-    android:versionName="0.1.0">
+    package="dev.lostconnection.setlistarray">
 
-    <uses-sdk android:minSdkVersion="28" android:targetSdkVersion="35" />
+    <!--
+      `android:versionCode` and `android:versionName` are deliberately not on
+      the element above. `build-apk.sh` injects both at link time — the code
+      is the commit count of the tree being built, the name is `Cargo.toml`'s
+      `version` — because Play refuses any upload whose versionCode it has
+      already seen, and a `versionCode="1"` typed into this file is a number
+      that has to be bumped by hand, which is to say forgotten. They were
+      here, at 1 and 0.1.0, until the first Play build on 2026-09-10.
+
+      Putting either one back does not fail loudly, which is why this note
+      exists. aapt2's version-code flag only *injects*: it fills in an
+      attribute the manifest left out and quietly defers to one it finds, so
+      a restored `versionCode="1"` would win over the script and every build
+      after it would be version 1 again, rejected by Play at upload.
+      `the_version_comes_from_the_build_not_the_manifest` in `src/lib.rs`
+      fails the build instead. (The flag is not spelled out here because an
+      XML comment may not contain two hyphens in a row, and aapt2 stops at
+      the first one with nothing better than "not well-formed".)
+
+      `targetSdkVersion` is 36 because Play has refused new apps and updates
+      targeting anything lower since 2026-08-31. The number is not cosmetic:
+      36 is the level at which Android 16 stops delivering the Back key to an
+      app that has not said it can do without it — see the note above
+      `<application>` for what that would cost this app and the one attribute
+      that holds it off. `minSdkVersion` is unchanged at 28. Both live only
+      here: the min- and target-SDK flags `build-apk.sh` used to hand aapt2
+      are defaults for a manifest that says nothing, which this one never
+      did, and a second copy of 35 in the script sitting beside a 36 here
+      would have read as a disagreement that was not one.
+    -->
+    <uses-sdk android:minSdkVersion="28" android:targetSdkVersion="36" />
 
     <uses-permission android:name="android.permission.INTERNET" />
 
@@ -85,12 +113,40 @@
       should be the designed square lockup (`assets/icon/whole.png`) rather
       than nothing at all. 130 KB against a 26 MB APK.
     -->
+    <!--
+      `android:enableOnBackInvokedCallback="false"` is what keeps the Back key
+      working now that this app targets SDK 36, and it is an opt-out with an
+      expiry date.
+
+      Back reaches this app as a key. Rinch's shell reads `AKEYCODE_BACK` off
+      the NativeActivity input queue and calls it Escape, and `app()` in
+      `src/lib.rs` hands Escape to `NavStore::press_back` — which is the whole
+      of how the phone's Back came to do what each screen's own arrow does.
+      From Android 16, an app targeting 36 gets predictive back instead, and
+      in Google's words "`onBackPressed` is not called and
+      `KeyEvent.KEYCODE_BACK` is not dispatched anymore". Nothing in this app
+      would notice. The key would simply stop arriving, and Back on song
+      detail would animate the app away to the home screen rather than return
+      to the library — on every Android 16 phone, and on none of the Android
+      13 handsets this app has been run on, which cannot show it.
+
+      Set to `false`, Android 16 goes on dispatching the key as it always
+      has. Google calls the opt-out temporary, and the real fix belongs in
+      rinch rather than here: `RinchActivity` registering an
+      `OnBackInvokedCallback` on API 33+ and forwarding it down the path the
+      key takes today, enabled only while `press_back` has somewhere to go so
+      that the system can still animate the exit from a tab root. When that
+      lands this attribute goes, and
+      `the_back_key_still_arrives_at_target_sdk_36` in `src/lib.rs` goes with
+      it.
+    -->
     <application
         android:label="SetListArray"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:hasCode="true"
         android:extractNativeLibs="false"
+        android:enableOnBackInvokedCallback="false"
         android:allowBackup="false">
 
         <!--

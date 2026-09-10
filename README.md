@@ -343,6 +343,8 @@ screen — the two things that genuinely differ each have a seam:
 | `android.jar` (android-35) | `~/android/sdk/platforms/android-35/android.jar` | `ANDROID_SDK_PLATFORM` |
 | The Rinch checkout (for `RinchActivity.java`) | `../rinch-fixes` | `RINCH_DIR` |
 | Signing key | `target/debug.keystore`, generated on first run | `ANDROID_DEBUG_KEYSTORE` |
+| bundletool, `--bundle` only | `~/android/bundletool-all-1.18.3.jar` — the `-all` jar from [its releases](https://github.com/google/bundletool/releases), not the library jar in `~/.gradle/caches` | `BUNDLETOOL_JAR` |
+| Upload key, `--bundle` only | none: the bundle is left unsigned, and Play refuses it | `ANDROID_UPLOAD_KEYSTORE`, `ANDROID_UPLOAD_KEY_ALIAS` (default `upload`), `ANDROID_UPLOAD_STORE_PASS`, `ANDROID_UPLOAD_KEY_PASS` |
 
 Also `cargo-ndk` on `PATH` (`cargo install cargo-ndk`), a JDK for `javac`, and
 the Android targets — which `rust-toolchain.toml` already declares. `adb` is
@@ -355,7 +357,19 @@ export ANDROID_NDK_HOME=$HOME/android/android-ndk-r27c
 ./build-apk.sh --build-only          # signed APK at ./setlistarray.apk
 ./build-apk.sh --target x86_64       # for an emulator or Waydroid, not a phone
 ./build-apk.sh                       # the above, then adb install and launch
+./build-apk.sh --bundle --build-only # App Bundle for Play at ./setlistarray.aab
+./build-apk.sh --bundle              # the above, then installed through bundletool as Play would
 ```
+
+**For Play**, `--bundle` is the one to upload. Both endings take their
+`versionCode` from `git rev-list --count HEAD` and their `versionName` from
+`Cargo.toml`, injected at link time; the manifest deliberately says neither,
+because Play refuses a versionCode it has already seen and aapt2 will not
+override one the manifest sets. So a bundle for upload wants a committed tree:
+two uploads from the same commit are the same versionCode, and the second is
+refused. The app targets SDK 36, which Play has required of new apps and
+updates since 2026-08-31, and opts out of predictive back to keep the Back key
+arriving on Android 16 — the manifest has the why.
 
 Defaults to `arm64-v8a` and the release profile. It builds `--lib` only: the
 desktop binary and the probe are not part of the APK. Roughly 6.6 MiB on either
