@@ -42,6 +42,7 @@ mod gesture_reachability;
 mod glyph_coverage;
 pub mod import;
 pub mod keep_awake;
+mod licenses;
 mod menu;
 mod model;
 pub mod pdf;
@@ -68,7 +69,7 @@ use rinch_tabler_icons::TablerIcon;
 use db::DataDir;
 use screens::{
     AddToSetlistSheet, AttachmentViewer, CaptureScreen, ChartEditor, FilterSheet, FirstRun,
-    Library, Performance, RunningOrderSheet, SaveShared, Search, SetlistDetail, SetlistPicker,
+    Library, Licenses, Performance, RunningOrderSheet, SaveShared, Search, SetlistDetail, SetlistPicker,
     Settings, Setlists, SongDetail, SongForm, SortGroupSheet, TuningSheet,
 };
 use store::{
@@ -538,6 +539,9 @@ pub fn app() -> NodeHandle {
                 // The real screen since card H1; its header is where the
                 // rows `1q` draws that are *not* here are accounted for.
                 Route::Settings => Settings {},
+                // What the app is under and what it is built from. The
+                // About section at the foot of Settings is the way in.
+                Route::Licenses => Licenses {},
                 // Search & filter (`1p`, G1). Carries nothing: the query it is
                 // a screen for is `LibraryViewStore::query`, for the reasons
                 // the variant's own doc comment gives.
@@ -1464,11 +1468,12 @@ mod tests {
     /// that was not here before is, without exception, downstream of an edit
     /// to some `Cargo.toml`.
     ///
-    /// **Why `Cargo.lock` can be `include_str!`'d safely even though it is
-    /// untracked.** `.gitignore` excludes it — checked directly, `git
-    /// ls-files Cargo.lock` prints nothing — which makes it reasonable to ask
-    /// what this test does on a checkout that has never had one. The answer
-    /// is: nothing, because there is no such checkout by the time a test
+    /// **Why `Cargo.lock` can be `include_str!`'d safely.** It has been
+    /// tracked since 2026-09-10, when the Play workflow needed CI to resolve
+    /// the versions a laptop does; until then `.gitignore` excluded it, which
+    /// made it reasonable to ask what this test does on a checkout that has
+    /// never had one. The answer was, and would still be: nothing, because
+    /// there is no such checkout by the time a test
     /// binary exists. Cargo resolves dependencies and writes `Cargo.lock`
     /// before it invokes `rustc` on anything at all, on every build, lock
     /// file present or not going in; `include_str!` reads the file at that

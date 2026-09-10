@@ -1,0 +1,36 @@
+# cargo-about's configuration, read by `scripts/make-notices.py`.
+#
+# `accepted` is the licenses a dependency may carry, and it is a gate as much
+# as a list: SetListArray is GPL-3.0-or-later, and everything it links has to be
+# something that folds into a GPLv3 program. Every entry below does. A crate
+# arriving under anything else — GPL-2.0-only, a non-commercial clause, a
+# proprietary licence — fails `make-notices.py` rather than slipping into the
+# APK, and the fix is a decision, not an edit to this list.
+accepted = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Unlicense",
+    "Zlib",
+    "GPL-3.0-or-later",
+]
+
+# The platforms a build of this app exists for: the phone, the emulator, and
+# the desktop it is developed on. Without a list, cargo-about resolves a graph
+# of its own choosing, and on 2026-09-10 that graph did not contain
+# `rinch-android` — the one crate every APK is guaranteed to ship.
+targets = [
+    "aarch64-linux-android",
+    "x86_64-linux-android",
+    "x86_64-unknown-linux-gnu",
+]

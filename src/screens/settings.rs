@@ -398,6 +398,20 @@ pub fn Settings() -> NodeHandle {
                     ThemeChoice::ALL.map(|choice| (choice, choice.label())),
                     move || settings.theme.get(),
                     move |wanted| settings.set_theme(wanted))}
+
+                // What the app is, and what it is under. Last, below every
+                // preference, because nobody opens Settings to read it — but
+                // GPLv3 asks an interactive program to say where its license
+                // can be read, and Settings is where a person looks for
+                // anything about the app rather than about a song. The note on
+                // the right is the license's SPDX name, so the row says what it
+                // opens before it is tapped.
+                {section(__scope, "About")}
+
+                {reading_row(__scope, "Version", move || env!("CARGO_PKG_VERSION").to_string())}
+                {link_row(__scope, "Licenses",
+                    move || crate::licenses::APP_LICENSE.to_string(),
+                    move || nav.go(crate::store::Route::Licenses))}
             }
 
             // Outside the scroller, not inside it.

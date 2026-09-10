@@ -1933,6 +1933,7 @@ pub fn route_orphaned(
         Route::Library
         | Route::Setlists
         | Route::Settings
+        | Route::Licenses
         | Route::AddSong
         | Route::Search
         | Route::SaveShared => false,
@@ -4158,6 +4159,7 @@ mod tests {
             Route::Library,
             Route::Setlists,
             Route::Settings,
+            Route::Licenses,
             Route::AddSong,
             Route::Search,
             Route::SaveShared,

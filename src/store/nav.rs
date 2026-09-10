@@ -18,6 +18,11 @@ pub enum Route {
     SongDetail(SongId),
     SetlistDetail(SetlistId),
     Settings,
+    /// What SetListArray is licensed under, and the notice of every crate it
+    /// is built from (`crate::licenses`). Opened from the About section at the
+    /// foot of Settings, and its ← goes back to Settings rather than to a tab
+    /// root, because Settings is the only place it can have been opened from.
+    Licenses,
     /// The add/edit form (`1j`). One screen serves both: adding starts empty,
     /// editing arrives carrying the song it is about to overwrite.
     AddSong,

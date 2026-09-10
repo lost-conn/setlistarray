@@ -1227,3 +1227,20 @@ source goes with it — and what the store's impersonation policy does.
 The bundled fonts keep their own licenses, in `assets/fonts/licenses/`: the SIL
 Open Font License 1.1 for Newsreader and Karla, and the Bitstream Vera terms for
 DejaVu Sans Mono.
+
+The app shows all of this itself, under Settings → About → Licenses: its own
+notice and the GPL's text, then the notice of every crate it is built from,
+which MIT, BSD and Apache all require a binary to carry. Those notices are
+generated, not written:
+
+```bash
+cargo install cargo-about --features cli --locked   # once
+python3 scripts/make-notices.py                     # after anything that changes Cargo.lock
+```
+
+It writes `src/licenses/third_party.rs` from each crate's own license files, and
+refuses to if any crate a build actually compiles came back without one. A test
+fails whenever `Cargo.lock` has moved since the file was generated.
+`about.toml`'s `accepted` list is every license a dependency may carry — each of
+them compatible with GPLv3 — so a crate under anything else stops the generator
+rather than joining the APK.

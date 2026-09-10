@@ -352,6 +352,7 @@ mod tests {
             Route::Setlists,
             Route::SetlistDetail(SET),
             Route::Settings,
+            Route::Licenses,
             Route::SongDetail(7),
         ] {
             assert!(!wanted(route, true), "{route:?} must not hold the screen");

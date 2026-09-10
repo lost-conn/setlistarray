@@ -26,6 +26,7 @@ mod first_run;
 // before the file picker rather than after.
 mod import_flow;
 mod library;
+mod licenses;
 mod performance;
 // The running order (F3): the sheet behind performance mode's `≡ set` chip.
 // A sheet and not a screen, and mounted in `crate::app` beside the other three
@@ -60,6 +61,7 @@ pub use chart_editor::ChartEditor;
 pub use filter_sheet::FilterSheet;
 pub use first_run::FirstRun;
 pub use library::Library;
+pub use licenses::Licenses;
 pub use performance::Performance;
 pub use running_order::RunningOrderSheet;
 pub use save_shared::SaveShared;
