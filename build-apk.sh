@@ -14,6 +14,7 @@ set -euo pipefail
 #   ./build-apk.sh --target x86_64     # for an emulator (default: arm64-v8a)
 #   ./build-apk.sh --debug             # debug profile (slow: Stylo and Parley)
 #   ./build-apk.sh --software          # the tiny-skia painter instead of the GPU one
+#   ./build-apk.sh --shots             # the store-listing tour, not the app (card S1)
 #
 # Requirements:
 #   ANDROID_NDK_HOME          NDK r27c        (default ~/android/android-ndk-r27c)
@@ -68,6 +69,20 @@ RELEASE=true
 # years behind it should stay one flag away.
 FEATURES="rinch/android-gpu"
 
+# `--shots` (card S1) builds an APK that is not the app: it seeds the demo
+# library, pins the theme and the accent away from the emulator's wallpaper,
+# and walks itself through the screens that sell SetListArray, announcing each
+# one to logcat for `scripts/store-shots.sh` to photograph. See `src/shots.rs`.
+#
+# It is composed with FEATURES after the loop rather than appended inside it,
+# and that is not tidiness. `--software` sets FEATURES to the empty string, so
+# `--shots --software` in that order would have thrown the shots feature away
+# and `--software --shots` would not — two spellings of one intention giving
+# two different APKs, and the wrong one of them is an APK that looks correct,
+# installs, launches, and then sits on the library screen forever while the
+# capture script times out waiting for a line it will never print.
+SHOTS=false
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --target) TARGET="$2"; shift 2 ;;
@@ -75,14 +90,19 @@ while [[ $# -gt 0 ]]; do
         --build-only) BUILD_ONLY=true; shift ;;
         --bundle) BUNDLE=true; shift ;;
         --software) FEATURES=""; shift ;;
+        --shots) SHOTS=true; shift ;;
         # Accepted and deliberately a no-op: `--gpu` is what four cards' worth
         # of notes and commit messages say, and having it fail now would make
         # every one of them wrong.
         --gpu) FEATURES="rinch/android-gpu"; shift ;;
-        -h|--help) sed -n '3,33p' "$0"; exit 0 ;;
+        -h|--help) sed -n '3,34p' "$0"; exit 0 ;;
         *) echo "Unknown arg: $1"; exit 1 ;;
     esac
 done
+
+if [[ "$SHOTS" == true ]]; then
+    FEATURES="${FEATURES:+$FEATURES,}shots"
+fi
 
 case "$TARGET" in
     arm64-v8a)   ABI="arm64-v8a";   TRIPLE="aarch64-linux-android" ;;

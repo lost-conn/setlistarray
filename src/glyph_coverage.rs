@@ -27,6 +27,18 @@
 //! body — where most of this app's actual user-facing prose lives — which a
 //! textual scan would have to know `rsx!`'s grammar to find at all.
 //!
+//! ## Why control characters are asked nothing
+//!
+//! Because the question does not apply to them. The fault this file guards
+//! against is a *drawn* character with no glyph behind it, and a line break is
+//! never drawn — it is handed to the line breaker, not to the shaper, so no
+//! font on earth has a `U+000A` in its `cmap` and none is missing one either.
+//! Card S1 added the first shipped literal in this crate with newlines in it
+//! (three typed chord charts in `src/seed.rs`, where the line breaks are half
+//! of what makes a chart a chart) and this scan reported thirty-eight tofu
+//! boxes that do not exist. See the skip in the test below for why that is a
+//! correction to the question rather than an entry on [`tests::ALLOWLIST`].
+//!
 //! ## Why test modules are out
 //!
 //! A `#[cfg(test)] mod tests { … }` in this tree is where the capture
@@ -342,6 +354,33 @@ mod tests {
         for path in &files {
             for found in scan_file(path) {
                 for ch in found.text.chars() {
+                    // A control character is not a glyph request, so asking
+                    // the `cmap` about it is asking the wrong question and
+                    // getting a "no" that means nothing.
+                    //
+                    // Card S1 is what found this, by adding the first shipped
+                    // literal in this crate with a newline in it: `src/seed.rs`
+                    // carries three typed chord charts, and a chord chart is a
+                    // picture made of characters — the line breaks are half of
+                    // what makes it one. This scan read those 38 newlines as 38
+                    // tofu boxes. They are not: a line terminator never reaches
+                    // the shaper as a character to draw, it reaches the line
+                    // breaker as an instruction, and DejaVu Sans Mono having no
+                    // `U+000A` in its `cmap` is as true and as irrelevant of
+                    // every other font ever made.
+                    //
+                    // Deliberately *not* an `ALLOWLIST` entry, which is the
+                    // other place this could have gone and is the wrong shape
+                    // for it. That list is per-character dispensation — "this
+                    // one literal never reaches a screen" — and the module doc
+                    // above warns in as many words against reaching for it to
+                    // make the test pass. This is not a dispensation for a
+                    // character; it is a correction to what the test asks, and
+                    // it holds for every control character in every literal
+                    // this crate will ever have.
+                    if ch.is_control() {
+                        continue;
+                    }
                     if ALLOWLIST.iter().any(|(allowed, _)| *allowed == ch) {
                         continue;
                     }

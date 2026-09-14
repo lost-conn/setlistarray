@@ -1,0 +1,194 @@
+# Photograph SetListArray on a headless emulator and keep the frames.
+#
+# Card S1, and **the capture half only**. This file is meant to grow: card S4
+# adds the compositing — captions from `store/shots.json`, the device frame,
+# the 1080x1920 crop Play actually accepts — and then the upload to the Play
+# listing beside the copy `store/metadata/` already holds. The job below stops
+# one step short of all of that on purpose, so that what it produces can be
+# looked at by a person before anything of it is published. Room has been left:
+# a `composite` job reading this one's artifact is the obvious next shape, and
+# the artifact name and layout below are the seam it will attach to.
+#
+# Everything the pictures *are* comes out of `scripts/store-shots.sh`, run here
+# exactly as it runs on a laptop, and the list of screens out of `src/shots.rs`
+# — same as `play.yml`, which reproduces a laptop around `build-apk.sh` and
+# decides nothing itself. What that script needs and a runner does not have is
+# the frameworks: `Cargo.toml` names rinch and rhypedb by path as
+# `../rinch-fixes` and `../rhypedb-main`, so they are cloned beside this repo
+# at the commits `.github/siblings.env` pins, which is the same pattern and the
+# same file `play.yml` uses.
+#
+# ## `workflow_dispatch` only, and never on a tag
+#
+# Deliberate, and it is the one thing about this file worth not changing
+# casually. A tag means a release, and a release is `play.yml`'s job; this one
+# holds no secret, names no environment and uploads nothing anywhere. Store
+# screenshots change when the *app's screens* change, which is not on the same
+# clock as a version bump — and a listing run that fired automatically on every
+# tag would be a run nobody asked for, producing pictures nobody looked at,
+# competing for the same emulator time as the build that actually ships.
+#
+# There is nothing here a stranger's pull request could steal, because there is
+# nothing here: no `play` environment, no keystore, no service account. That is
+# a property worth keeping as this file grows — if S4's upload step ever wants
+# a credential, it belongs in a job of its own that names the environment, not
+# bolted onto this one.
+#
+# ## Why the AVD is 1080x1920
+#
+# Because it is 16:9 exactly, and that is a ratio Google Play accepts for a
+# phone screenshot without argument. The handset this project is developed
+# against — a moto g stylus 5G — has a 1080x2400 panel, or 2.22:1, which Play
+# rejects outright; so "plug the phone in and screenshot it" is not a pipeline
+# that can exist, and the emulator is not standing in for a device here, it is
+# the only thing with the right shape. The `pixel` profile below is 1080x1920,
+# and `scripts/store-shots.sh` re-measures the panel before it captures
+# anything and refuses to run on one that is not — a check that matters most
+# here, where nobody is watching, and where a profile silently resolving to
+# something else would otherwise produce a green run and a directory of
+# unusable pictures.
+#
+# The emulator is headless (`-no-window`) and silent (`-noaudio`), on
+# swiftshader rather than the host's GL. On a runner that is merely correct;
+# the reason it is written down is that on a developer's machine it is
+# `CLAUDE.md`'s first rule, and the two invocations should not drift.
+name: Listing
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      # The emulator the pictures are taken on. Pinned, all three of them:
+      # a system image is a rendering engine, a set of system fonts and a
+      # status bar, and every one of those ends up in the frame.
+      API_LEVEL: 34
+      AVD_TARGET: default
+      AVD_ARCH: x86_64
+      AVD_PROFILE: pixel
+    steps:
+      - name: Check out SetListArray
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: setlistarray
+
+      - name: Read the sibling pins
+        run: grep -E '^[A-Z_]+=' setlistarray/.github/siblings.env >> "$GITHUB_ENV"
+
+      - name: Check out rinch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.RINCH_REPO }}
+          ref: ${{ env.RINCH_REV }}
+          path: rinch-fixes
+
+      - name: Check out rhypedb
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.RHYPEDB_REPO }}
+          ref: ${{ env.RHYPEDB_REV }}
+          path: rhypedb-main
+
+      # Without this the emulator falls back to a software CPU and the run goes
+      # from four minutes to "the timeout". The udev rule is the standard
+      # recipe from the emulator action's own README.
+      - name: Let the runner use KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Rust, as rust-toolchain.toml asks
+        working-directory: setlistarray
+        run: rustup toolchain install
+
+      - name: Cache the Rust build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: setlistarray
+          # The siblings are path dependencies, so their source is in no hash
+          # Cargo.lock contributes to the cache key. Their pins are.
+          key: ${{ hashFiles('setlistarray/.github/siblings.env') }}
+
+      - name: cargo-ndk
+        uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2.87.10
+        with:
+          tool: cargo-ndk@4.1.2
+
+      - name: NDK r27c
+        id: ndk
+        uses: nttld/setup-ndk@ed92fe6cadad69be94a966a7ee3271275e62f779 # v1.6.0
+        with:
+          ndk-version: r27c
+          add-to-path: false
+
+      - name: The SDK pieces build-apk.sh names
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "build-tools;35.0.0" "platforms;android-35" > /dev/null
+          test -x "$ANDROID_HOME/build-tools/35.0.0/aapt2"
+          test -f "$ANDROID_HOME/platforms/android-35/android.jar"
+
+      # Built before the emulator step rather than inside it. `store-shots.sh`
+      # will build for itself when handed no APK — that is the right default on
+      # a laptop — but on a runner it would mean an emulator sitting idle
+      # through a cold Rust build, and an emulator that boots and then waits
+      # several minutes is an emulator with several minutes in which to go
+      # wrong. `--target x86_64` matches AVD_ARCH above; the two have to agree
+      # or the install fails with an ABI nobody mentions.
+      - name: Build the shots APK
+        working-directory: setlistarray
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          export ANDROID_SDK_BUILD_TOOLS="$ANDROID_HOME/build-tools/35.0.0"
+          export ANDROID_SDK_PLATFORM="$ANDROID_HOME/platforms/android-35/android.jar"
+          export RINCH_DIR="$GITHUB_WORKSPACE/rinch-fixes"
+          ./build-apk.sh --shots --target "$AVD_ARCH" --build-only < /dev/null
+          test -f setlistarray.apk
+
+      # The action boots the AVD and runs `script` against it;
+      # `store-shots.sh` finds the device already attached and adopts it,
+      # which is the branch in that script written for exactly this caller.
+      # `-no-window` is passed anyway rather than relied upon: it is a promise
+      # this repository makes in `CLAUDE.md` and it should be visible at every
+      # place an emulator is started, not only in the one that happens to
+      # default to it.
+      - name: Capture the screens
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: ${{ env.API_LEVEL }}
+          target: ${{ env.AVD_TARGET }}
+          arch: ${{ env.AVD_ARCH }}
+          profile: ${{ env.AVD_PROFILE }}
+          avd-name: sla-shots
+          force-avd-creation: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot -camera-back none -camera-front none
+          disable-animations: true
+          script: |
+            cd "$GITHUB_WORKSPACE/setlistarray"
+            scripts/store-shots.sh --apk "$GITHUB_WORKSPACE/setlistarray/setlistarray.apk" --out "$GITHUB_WORKSPACE/setlistarray/.shots"
+
+      # Raw frames, exactly as the panel drew them: no caption, no crop, no
+      # device frame. That is what card S4 will take as its input, and it is
+      # also what a person needs in order to say "that one is wrong" about a
+      # screen rather than about a composite.
+      #
+      # `if-no-files-found: error` because the failure this guards against is
+      # the quiet one: a capture step that somehow exits 0 having written
+      # nothing would otherwise leave a green run with an empty artifact, and
+      # the next person to look would be looking at the wrong half of the
+      # pipeline.
+      - name: Attach the frames to the run
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: listing-shots-${{ github.run_number }}
+          path: setlistarray/.shots/*.png
+          if-no-files-found: error
+          retention-days: 30

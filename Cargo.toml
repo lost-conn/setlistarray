@@ -217,6 +217,21 @@ log = "0.4"
 #   cargo run --release --features devtools
 devtools = ["rinch/debug"]
 
+# The store-listing tour (card S1, `src/shots.rs`): seed the demo library on
+# Android, pin the accent and the theme so the emulator's wallpaper cannot pick
+# the colours of a public store page, and walk a fixed list of screens
+# announcing each one to logcat for `scripts/store-shots.sh` to photograph.
+#
+# No dependencies, because it adds none: everything it drives is this crate's
+# own stores and the cross-platform `set_timeout` already in rinch's prelude.
+# It is a feature rather than a binary of its own because the thing being
+# photographed has to *be* the app — a second entry point would be a second app
+# that looks like it, and the first divergence between them would land on the
+# store page rather than in a test.
+#
+#   ./build-apk.sh --shots --target x86_64
+shots = []
+
 [profile.dev]
 opt-level = 1
 

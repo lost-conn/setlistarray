@@ -50,6 +50,11 @@ pub mod picker;
 pub mod platform;
 mod screens;
 mod seed;
+/// The store-listing tour — a fixed list of screens, walked once and announced
+/// to logcat so `scripts/store-shots.sh` can photograph each one. Behind the
+/// `shots` feature, and in no build that ships.
+#[cfg(feature = "shots")]
+mod shots;
 /// The app as an Android share target — what another app's share sheet hands
 /// over, and what this app makes of it. Compiled on both platforms on purpose:
 /// only the registration and the `content://` read are Android's, and every
@@ -235,7 +240,7 @@ pub fn app() -> NodeHandle {
     let attachments = create_store(AttachmentsStore::restored(storage, loaded.attachments));
     let setlists = create_store(SetlistsStore::restored(storage, loaded.setlists));
     let songs = create_store(SongsStore::restored(storage, attachments, setlists, loaded.songs));
-    create_store(LibraryViewStore::restored(storage));
+    let view = create_store(LibraryViewStore::restored(storage));
     let playback = create_store(PlaybackStore::new());
     let nav = create_store(NavStore::new());
 
@@ -437,6 +442,18 @@ pub fn app() -> NodeHandle {
             }
         }
     });
+
+    // Card S1's store-listing tour, in a build that asked for it and in no
+    // other. Here rather than in `crate::android`, which is where the decision
+    // to *be* a shots build is made and where that decision reads: the tour
+    // drives stores, and this is the only place in the app where all six of
+    // them exist at once. Everything above it has already run by now — the
+    // library is loaded and seeded, the effects that follow the route are
+    // installed — so the first thing `shots::run` does, which is to pin the
+    // theme and the accent away from whatever the emulator's wallpaper
+    // suggested, lands before a single frame is drawn.
+    #[cfg(feature = "shots")]
+    shots::run(shots::Stage { nav, playback, songs, setlists, view, settings });
 
     rsx! {
         div {
@@ -723,6 +740,26 @@ pub fn run_desktop() {
 #[cfg(target_os = "android")]
 pub fn start_android(dir: DataDir) {
     start(dir, false);
+}
+
+/// The same door, for the build that exists to be photographed (card S1).
+///
+/// One difference and one only: `seed: true`. `start_android` above passes
+/// `false` and `crate::android`'s comment says why — a phone has no command
+/// line, and demo content on a real device would be somebody else's songs in
+/// your book. Neither of those is true of an emulator that was created sixty
+/// seconds ago to take eight pictures and will be deleted afterwards, and the
+/// pictures are of the library, so a shots build with an empty library has
+/// nothing to photograph at all.
+///
+/// A second function rather than an argument on the first, because the caller
+/// is `android_main` and the choice is a `#[cfg]` there: a parameter would put
+/// `cfg!(feature = "shots")` at a call site whose whole job is to be the one
+/// obvious line, and would leave `start_android(dir, false)` readable as
+/// something a caller could get wrong.
+#[cfg(all(target_os = "android", feature = "shots"))]
+pub fn start_android_for_shots(dir: DataDir) {
+    start(dir, true);
 }
 
 #[cfg(test)]
