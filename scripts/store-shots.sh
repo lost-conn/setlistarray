@@ -4,10 +4,11 @@
 # itself through them.
 #
 # Card S1. The pictures this produces are raw frames at the panel's own
-# 1080x1920 — no caption, no device frame, no crop. Card S2 keys the captions
-# to the shot ids by name and card S4 does the compositing and the upload; what
-# this script owes them is a directory of correctly sized, correctly timed
-# frames and a loud failure when it cannot produce one.
+# 1080x1920 — no caption, no device frame, no crop. Card S2's
+# `scripts/store-frame.py` reads this directory and does the compositing; what
+# this script owes it is a directory of correctly sized, correctly timed frames,
+# a note of where the system bars were when they were taken, and a loud failure
+# when it cannot produce one.
 #
 # Usage:
 #   scripts/store-shots.sh                    # build, boot, install, capture
@@ -60,6 +61,50 @@
 # card K36 is on record that the two painters have differed in what they draw,
 # not only in how fast they draw it, and a store page is the worst place to
 # find that out.
+#
+# ---------------------------------------------------------------------------
+# The status bar is put into a demo state, and the bars are measured
+# ---------------------------------------------------------------------------
+#
+# Two things card S2 asked of this script, both about what is in the frame
+# rather than about the app.
+#
+# **SysUI demo mode.** A raw capture carries whatever the emulator's status bar
+# happened to be saying: the wall clock to the minute, a wifi glyph with the
+# "no internet" exclamation on it because a swiftshader AVD's network is what it
+# is, a battery at 51% with a charging bolt through it, and — on this image —
+# the little bug-droid that means "a developer settings override is on". None of
+# that is the app, all of it differs between one run and the next, and the two
+# ways it shows up are both bad: seven screenshots on a store page with seven
+# different clocks in them, or a reviewer's eye landing on a broken wifi icon
+# instead of on a chord chart. `com.android.systemui.demo` is the platform's own
+# answer, meant for exactly this, and it pins all of it: a settled 9:30, full
+# signal, full battery, nothing else.
+#
+# It is entered before the tour and **exited afterwards, including on failure**,
+# through the same `trap` that shuts the emulator down. A device left in demo
+# mode looks fine and lies about everything in its status bar, and the person
+# who finds that out is whoever next picks the device up for something
+# unrelated — which on CI is nobody and on a laptop is somebody halfway through
+# a different problem.
+#
+# **The insets, written down next to the PNGs.** The compositor crops the
+# navigation bar off every frame (it has to: on a `full_screen` route like
+# `chart-viewer` the nav bar is drawn *over* the chart's last lines rather than
+# beside them) and keeps the status bar. Where to cut is a number that belongs
+# to the device, so it is read off the device here — `dumpsys window displays`
+# names both bars' frames — and saved as `insets.json` beside the frames.
+#
+# The alternative was two constants in the Python, and they would have been
+# right on the day they were measured. `sla-shots` is 1080x1920 at 420dpi with
+# three-button navigation, which makes the nav bar 48dp and so 126px; recreate
+# the AVD from a system image that defaults to gesture navigation and the same
+# bar is 24dp, and the compositor would crop 126px off a frame with 63px of bar
+# in it and quietly shave a row of the app's own bottom chrome off all seven
+# pictures. That is the class of bug this repository keeps turning into a test
+# rather than a constant — see `the_apk_maps_its_native_library_instead_of_
+# extracting_it` for the pattern — and the version of it available here is to
+# measure rather than to assume.
 #
 # ---------------------------------------------------------------------------
 # Why 1080x1920
@@ -176,6 +221,70 @@ EMULATOR="$(find_tool emulator "${EMULATOR:-}" "$HOME/Android/Sdk/emulator/emula
 # take it away from them.
 BOOTED_BY_US=false
 
+# ---------------------------------------------------------------------------
+# The status bar, pinned
+# ---------------------------------------------------------------------------
+#
+# `DEMO_ON` is what tells the exit path whether there is anything to undo, and
+# it is set *before* the first broadcast rather than after the last one: a run
+# interrupted halfway through arming demo mode is still a run that has to leave
+# it. The header argues why any of this happens at all.
+DEMO_ON=false
+
+demo() {
+    "$ADB" shell am broadcast -a com.android.systemui.demo "$@" > /dev/null 2>&1
+}
+
+demo_mode_enter() {
+    # The one setting that gates the whole protocol. If SystemUI will not take
+    # it, nothing below is doing anything and every frame carries the
+    # emulator's real clock, so this is worth failing on rather than warning
+    # about: the frames are the deliverable and a silently un-pinned status bar
+    # is not visible until somebody compares seven of them side by side.
+    "$ADB" shell settings put global sysui_demo_allowed 1 > /dev/null 2>&1 || true
+    local allowed
+    allowed="$("$ADB" shell settings get global sysui_demo_allowed 2>/dev/null | tr -d '\r')"
+    [[ "$allowed" == "1" ]] \
+        || die "this device will not allow SysUI demo mode (sysui_demo_allowed=${allowed:-unset}); every frame would carry its real status bar — see this script's header"
+
+    DEMO_ON=true
+    demo -e command enter
+
+    # 9:30, and not the wall clock. A time is the one thing in a status bar
+    # that a reader *reads*, and seven screenshots showing seven times three
+    # minutes apart is a page that looks assembled rather than composed. The
+    # value is arbitrary and deliberately unremarkable — morning, on the half
+    # hour, nothing to think about.
+    demo -e command clock -e hhmm 0930
+
+    # `fully true` is the difference between a wifi glyph and a wifi glyph with
+    # an exclamation mark beside it. Without it SystemUI draws the "connected
+    # but no internet" variant, which is the truth about a swiftshader AVD and
+    # is not the truth about anybody's phone.
+    demo -e command network -e wifi show -e level 4 -e fully true
+    demo -e command network -e mobile show -e level 4 -e datatype none -e fully true
+
+    # A full battery with no bolt through it. An emulator is always "plugged
+    # in", and a charging icon in a screenshot reads as a phone tethered to a
+    # wall, which is the opposite of what this app is for.
+    demo -e command battery -e level 100 -e plugged false
+
+    # Everything else off: no notification icons, and none of the small status
+    # glyphs that arrive from whatever the device was doing before this run.
+    demo -e command notifications -e visible false
+    demo -e command status -e volume hide -e bluetooth hide -e location hide \
+        -e alarm hide -e sync hide -e tty hide -e eri hide -e mute hide -e speakerphone hide
+
+    ok "status bar pinned (9:30, full signal, full battery)"
+}
+
+demo_mode_exit() {
+    [[ "$DEMO_ON" == true ]] || return 0
+    DEMO_ON=false
+    demo -e command exit || true
+    "$ADB" shell settings put global sysui_demo_allowed 0 > /dev/null 2>&1 || true
+}
+
 device_serial() {
     "$ADB" devices | sed -n '2,$p' | awk '$2 == "device" { print $1; exit }'
 }
@@ -218,6 +327,13 @@ export ANDROID_SERIAL="$SERIAL"
 
 cleanup() {
     [[ -n "${LOGCAT_PID:-}" ]] && kill "$LOGCAT_PID" 2>/dev/null || true
+    # Before the emulator goes, and *whatever* killed the run. `--keep` and a
+    # run that adopted somebody's device both leave a device behind, and
+    # leaving it behind in demo mode is the one outcome here that outlives the
+    # script — see the header. `|| true` throughout because this is the exit
+    # path: a device that has already gone away must not turn a real failure
+    # into a confusing one.
+    demo_mode_exit
     if [[ "$BOOTED_BY_US" == true && "$KEEP" != true ]]; then
         info "shutting the emulator down"
         "$ADB" emu kill > /dev/null 2>&1 || true
@@ -225,6 +341,16 @@ cleanup() {
     fi
 }
 trap cleanup EXIT
+# And on the two ways a run ends that are not the script's own decision. An
+# untrapped SIGINT or SIGTERM kills bash outright and the `EXIT` trap above
+# never runs — so a Ctrl-C halfway through the tour, which is the *ordinary*
+# way somebody stops one of these, would leave the emulator up and the device
+# in demo mode. Trapping them as a bare `exit` is the whole fix: `exit` from a
+# signal handler runs the EXIT trap on its way out, once, so `cleanup` still
+# happens exactly the way it does on a clean run. The codes are the
+# conventional 128 + signal.
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # The panel, before anything is built or installed: a mis-shaped AVD is worth
 # failing on in the first five seconds rather than after a two-minute build and
@@ -270,6 +396,61 @@ info "installing $(basename "$APK")…"
 "$ADB" install -r "$APK" > /dev/null || die "adb install failed"
 
 mkdir -p "$OUT_DIR"
+
+# ---------------------------------------------------------------------------
+# Where the system bars are, written down beside the pictures
+# ---------------------------------------------------------------------------
+#
+# One `frame=[left,top][right,bottom]` per bar, straight out of
+# `dumpsys window displays`, which on API 34 lists every inset source on the
+# display by name:
+#
+#   InsetsSource id=6aa50000  type=statusBars      frame=[0,0][1080,63]      visible=true
+#   InsetsSource id=27370001  type=navigationBars  frame=[0,1794][1080,1920] visible=true
+#
+# Read once, before the tour, because these belong to the display rather than
+# to the app: the app never asks for them to change, and the one screen that
+# goes full screen (`chart-viewer`) does not hide the nav bar — it draws
+# *underneath* it, which is the whole reason the compositor has to crop rather
+# than keep. The header argues why this is measured at all instead of written
+# into the Python as a pair of constants.
+#
+# `navigation_mode` goes in too, and it is the thing most likely to explain a
+# surprising number later: 0 is three-button, 1 is two-button, 2 is gestures,
+# and the bar's height follows from it.
+bar_frame() {
+    printf '%s\n' "$WINDOW_DUMP" \
+        | grep -oE "type=$1 frame=\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\] visible=true" \
+        | head -n 1 \
+        | sed -E 's/.*frame=\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\].*/\1 \2 \3 \4/'
+}
+
+WINDOW_DUMP="$("$ADB" shell dumpsys window displays 2>/dev/null | tr -d '\r')"
+STATUS_FRAME="$(bar_frame statusBars)"
+NAV_FRAME="$(bar_frame navigationBars)"
+[[ -n "$STATUS_FRAME" && -n "$NAV_FRAME" ]] \
+    || die "could not read the system bar insets off this device; scripts/store-frame.py crops by them and has nothing to crop by"
+read -r SB_L SB_T SB_R SB_B <<< "$STATUS_FRAME"
+read -r NB_L NB_T NB_R NB_B <<< "$NAV_FRAME"
+
+NAV_MODE="$("$ADB" shell settings get secure navigation_mode 2>/dev/null | tr -d '\r')"
+SDK="$("$ADB" shell getprop ro.build.version.sdk | tr -d '\r')"
+FINGERPRINT="$("$ADB" shell getprop ro.build.fingerprint | tr -d '\r')"
+
+cat > "$OUT_DIR/insets.json" <<JSON
+{
+  "note": "Where the system bars were when the PNGs beside this file were taken. Written by scripts/store-shots.sh, read by scripts/store-frame.py, which keeps the status bar and crops the navigation bar off every frame. Measured rather than assumed: see store-shots.sh's header.",
+  "panel": { "width": $WANT_W, "height": $WANT_H },
+  "status_bar": { "left": $SB_L, "top": $SB_T, "right": $SB_R, "bottom": $SB_B, "height": $((SB_B - SB_T)) },
+  "navigation_bar": { "left": $NB_L, "top": $NB_T, "right": $NB_R, "bottom": $NB_B, "height": $((NB_B - NB_T)) },
+  "navigation_mode": "${NAV_MODE:-unknown}",
+  "sdk": "$SDK",
+  "fingerprint": "$FINGERPRINT"
+}
+JSON
+ok "insets: status bar $((SB_B - SB_T))px, nav bar $((NB_B - NB_T))px (navigation_mode ${NAV_MODE:-unknown})  ->  $OUT_DIR/insets.json"
+
+demo_mode_enter
 
 # ---------------------------------------------------------------------------
 # The tour

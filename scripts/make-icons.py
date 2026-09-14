@@ -32,8 +32,8 @@ gradient. But the gradient is radial and unusually clean, so it can simply be
 `maskable.png` that `mono.png` says the glyph and its shadow never touch, and
 paint it back at any size. Measured on 2026-09-09, that reconstruction has an
 RMS error of 0.28/255 and a worst pixel of 1.8/255 against the artwork —
-`_check_fidelity` below re-measures it on every run and refuses to write
-anything if it drifts, because a background that is *nearly* the designed
+`icon_gradient.check_fidelity` re-measures it on every run and refuses to
+write anything if it drifts, because a background that is *nearly* the designed
 gradient is a bug nobody would ever look for.
 
 **Two: the glyph is drawn too big for Android's mask.** `maskable.png` is a
@@ -73,6 +73,21 @@ writes: the glyph, its edges intact, no shadow at all.
 
 The full-colour `foreground` keeps the shadow, because there it is doing the
 job it was drawn for.
+
+────────────────────────────────────────────────────────────────────────────
+Where the gradient fit went
+────────────────────────────────────────────────────────────────────────────
+
+`fit_gradient`, `paint_background` and `check_fidelity` used to be written out
+below and now live in `scripts/icon_gradient.py`, imported. Nothing about what
+they do changed with the move — this script regenerates `android/res/` byte for
+byte across it, which was checked rather than assumed — and the reason for it
+is entirely about the *other* caller. Card S2's `scripts/store-frame.py` paints
+the Play listing on this same gradient, and the only alternative was to copy a
+colour out of the artwork into a second file. That copy would be correct until
+the artwork is redrawn and then wrong forever, silently, in a store listing
+nobody re-opens; the module's own docstring argues it properly. The fit is a
+measurement of the design, so it belongs somewhere both painters can ask.
 """
 
 import argparse
@@ -81,6 +96,19 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
+
+# A sibling file, found because Python puts a script's own directory at the
+# front of `sys.path` — so this works from any working directory, the way the
+# line at the top of this docstring promises, without either file knowing where
+# the repository is checked out.
+from icon_gradient import (
+    LAYER_DP,
+    VISIBLE_DP,
+    check_fidelity,
+    fit_gradient,
+    load_artwork,
+    paint_background,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "assets" / "icon"
@@ -92,94 +120,16 @@ RES = ROOT / "android" / "res"
 # emulator or a launcher asking for a thumbnail will pick up.
 DENSITIES = {"mdpi": 1.0, "hdpi": 1.5, "xhdpi": 2.0, "xxhdpi": 3.0, "xxxhdpi": 4.0}
 
-# An adaptive icon's layers are 108dp; the system shows the central 72dp and
-# masks that. The legacy bitmap under `android:icon` is a plain 48dp square.
-LAYER_DP = 108
-VISIBLE_DP = 72
+# An adaptive icon's layers are 108dp and the system shows the central 72dp of
+# them; those two numbers are `icon_gradient`'s, imported above, because the
+# background painter's framing is built out of them. The legacy bitmap under
+# `android:icon` is a plain 48dp square and is this file's business alone.
 LEGACY_DP = 48
 
 # The radius, in dp out of the 108dp layer, inside which Android guarantees
 # content survives every launcher mask. Asserted against the finished
 # foreground rather than trusted.
 SAFE_RADIUS_DP = 33.0
-
-
-def _load(name):
-    return np.asarray(Image.open(SRC / name).convert("RGBA")).astype(np.float64)
-
-
-def fit_gradient(maskable, mono):
-    """Recover the radial gradient underneath the glyph.
-
-    Returns `(centre, profile)`: the centre in source pixels, and an array
-    indexed by integer radius holding the RGB the artwork has at that distance.
-
-    The centre is searched for rather than assumed, so that this still does the
-    right thing if the artwork is redrawn — but the search is over the pixels
-    the glyph and its shadow do not touch, which is what makes the answer mean
-    anything. `_check_fidelity` is the part that decides whether the answer was
-    good enough to use.
-    """
-    clean = mono[:, :, 3] < 1.0
-    h, w, _ = maskable.shape
-    yy, xx = np.mgrid[0:h, 0:w]
-    max_r = int(np.hypot(h, w)) + 2
-
-    def profile_for(cx, cy):
-        d = np.hypot(xx - cx, yy - cy).astype(np.int32)
-        d_clean = d[clean]
-        counts = np.bincount(d_clean, minlength=max_r)
-        prof = np.zeros((max_r, 3))
-        for c in range(3):
-            sums = np.bincount(d_clean, maskable[:, :, c][clean], minlength=max_r)
-            band = np.where(counts > 0, sums / np.maximum(counts, 1), np.nan)
-            # A radius no clean pixel fell in (the far corners, or a band the
-            # glyph happens to cover entirely) carries the last value that was
-            # measured. The profile is monotone out there; this is extending
-            # it, not inventing it.
-            last = 0.0
-            for i in range(max_r):
-                if np.isnan(band[i]):
-                    band[i] = last
-                else:
-                    last = band[i]
-            prof[:, c] = band
-        residual = float(
-            np.mean((prof[d[clean]] - maskable[:, :, :3][clean]) ** 2)
-        )
-        return prof, residual
-
-    # Coarse pass over the whole canvas, then a fine pass around the winner.
-    best = None
-    for cx in range(0, 769, 32):
-        for cy in range(0, 769, 32):
-            prof, residual = profile_for(cx, cy)
-            if best is None or residual < best[0]:
-                best = (residual, cx, cy, prof)
-    _, bx, by, _ = best
-    for cx in range(bx - 24, bx + 25, 8):
-        for cy in range(by - 24, by + 25, 8):
-            prof, residual = profile_for(cx, cy)
-            if residual < best[0]:
-                best = (residual, cx, cy, prof)
-
-    residual, cx, cy, prof = best
-    print(f"    gradient centre ({cx}, {cy}), rms {residual ** 0.5:.3f}/255")
-    return (cx, cy), prof
-
-
-def paint_background(size, centre, profile):
-    """The gradient, painted at `size`², framed so the central 72/108 of it is
-    exactly the source artwork's canvas."""
-    src_per_px = (LAYER_DP / VISIBLE_DP) * 768.0 / size
-    inset = size * (LAYER_DP - VISIBLE_DP) / 2 / LAYER_DP
-    yy, xx = np.mgrid[0:size, 0:size]
-    sx = (xx + 0.5 - inset) * src_per_px
-    sy = (yy + 0.5 - inset) * src_per_px
-    d = np.clip(np.hypot(sx - centre[0], sy - centre[1]).astype(np.int32), 0, len(profile) - 1)
-    rgb = profile[d]
-    out = np.dstack([rgb, np.full((size, size), 255.0)])
-    return Image.fromarray(np.clip(out + 0.5, 0, 255).astype(np.uint8), "RGBA")
 
 
 def place_glyph(glyph, size):
@@ -214,33 +164,6 @@ def circle_crop(img):
     return Image.fromarray(np.clip(out + 0.5, 0, 255).astype(np.uint8), "RGBA")
 
 
-def _check_fidelity(maskable, mono, centre, profile):
-    """Refuse to write anything unless the split really is the artwork.
-
-    Paints the background at the source's own scale, composites the source
-    glyph back over it, and compares against `maskable.png` itself. A drift
-    here means the gradient stopped being radial — a redrawn icon, most
-    likely — and the honest answer is to say so rather than to ship a
-    background that is *almost* the design.
-    """
-    yy, xx = np.mgrid[0:768, 0:768]
-    d = np.clip(np.hypot(xx + 0.5 - centre[0], yy + 0.5 - centre[1]).astype(np.int32), 0, len(profile) - 1)
-    bg = profile[d]
-    a = mono[:, :, 3:4] / 255.0
-    comp = mono[:, :, :3] * a + bg * (1 - a)
-    worst = float(np.abs(comp - maskable[:, :, :3]).max())
-    rms = float(np.mean((comp - maskable[:, :, :3]) ** 2)) ** 0.5
-    print(f"    foreground over background reproduces the artwork: rms {rms:.3f}, worst {worst:.1f}")
-    if worst > 6.0:
-        sys.exit(
-            f"ERROR: the fitted gradient is off by {worst:.1f}/255 at its worst pixel.\n"
-            "       assets/icon/maskable.png is no longer a radial gradient with the glyph\n"
-            "       on top of it, so it cannot be split into adaptive-icon layers this way.\n"
-            "       Ask the designer for the two layers separately."
-        )
-    return np.dstack([bg, np.full((768, 768), 255.0)])
-
-
 def _check_safe_zone(foreground_768_alpha):
     """The reason the whole design is scaled by 72/108 — asserted, not assumed."""
     a = foreground_768_alpha
@@ -259,13 +182,12 @@ def _check_safe_zone(foreground_768_alpha):
 
 
 def build():
-    maskable = _load("maskable.png")
-    mono = _load("mono.png")
+    maskable, mono = load_artwork(SRC)
     whole = Image.open(SRC / "whole.png").convert("RGBA")
 
     print("--> fitting the gradient out of assets/icon/maskable.png")
     centre, profile = fit_gradient(maskable, mono)
-    background_768 = _check_fidelity(maskable, mono, centre, profile)
+    background_768 = check_fidelity(maskable, mono, centre, profile)
     _check_safe_zone(mono[:, :, 3])
 
     mono_glyph = monochrome_source(maskable, background_768)

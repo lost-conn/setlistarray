@@ -1658,6 +1658,76 @@ mod tests {
         );
     }
 
+    /// The join between `src/shots.rs` and `store/shots.json`, asserted in both
+    /// directions.
+    ///
+    /// Card S1 put the tour in Rust and card S2 put the captions in JSON, and
+    /// both of those were the right call for their own reasons — `src/shots.rs`
+    /// argues the first at length, and the second is simply that a caption is
+    /// prose somebody edits without touching Rust. What it leaves behind is a
+    /// pair of files in two languages held together by nothing but seven
+    /// strings, and a string join with no check on it fails in the quietest way
+    /// available: rename a shot on one side and the picture keeps being taken,
+    /// keeps being composited, and goes onto the store page with whatever the
+    /// compositor does when it finds no caption for it. Nobody is looking at
+    /// the id by then. They are looking at a picture, and a picture with no
+    /// words under it looks like a picture with no words under it — a design
+    /// decision, not a bug — until somebody opens the listing a month later and
+    /// counts.
+    ///
+    /// So: the same set, exactly, and the failure names the ids rather than the
+    /// count, because "6 != 7" tells you to go and diff two files by hand and
+    /// the ids tell you what happened.
+    ///
+    /// **The ids are read out of `shots.rs` as text**, which deserves its
+    /// explanation. `mod shots` is `#[cfg(feature = "shots")]` and that feature
+    /// is off in every build that is not a capture run, so `crate::shots::SHOTS`
+    /// simply does not exist to be referenced from here under a plain
+    /// `cargo test` — and putting *this* test behind the same feature would be
+    /// worse than not having it, because the run that would then never
+    /// execute it is the ordinary one everybody does before committing.
+    /// `include_str!` does not care about `cfg`: the file is on disk either
+    /// way, the table in it is a `const` written one `id: "…"` per line, and
+    /// reading it is the version of this check that works in both builds. The
+    /// scan is confined to the `SHOTS` table's own braces so that the `id`
+    /// field on the `Shot` struct above it, and the prose either side, cannot
+    /// contribute.
+    #[test]
+    fn the_listing_has_a_caption_for_every_shot_and_no_others() {
+        let listing: serde_json::Value = serde_json::from_str(include_str!("../store/shots.json"))
+            .expect("store/shots.json parses as JSON");
+        let mut captioned: Vec<String> = listing
+            .get("shots")
+            .and_then(serde_json::Value::as_object)
+            .expect("store/shots.json holds its captions under a `shots` object")
+            .keys()
+            .cloned()
+            .collect();
+        captioned.sort();
+
+        let mut toured = shot_ids_in_the_tour();
+        toured.sort();
+
+        assert!(
+            !toured.is_empty(),
+            "no ids were found in src/shots.rs's SHOTS table; either the tour is empty or \
+             the table stopped being written one `id: \"…\"` per line, which is the shape \
+             shot_ids_in_the_tour reads"
+        );
+
+        let uncaptioned: Vec<&String> = toured.iter().filter(|id| !captioned.contains(id)).collect();
+        let orphaned: Vec<&String> = captioned.iter().filter(|id| !toured.contains(id)).collect();
+
+        assert!(
+            uncaptioned.is_empty() && orphaned.is_empty(),
+            "src/shots.rs and store/shots.json name different shots.\n  \
+             photographed with no caption written for them: {uncaptioned:?}\n  \
+             captioned but never photographed: {orphaned:?}\n\
+             These two files are joined by these strings and by nothing else; a rename on \
+             either side has to happen on both."
+        );
+    }
+
     /// A release with no release note, caught on a laptop instead of on a
     /// runner holding the upload key.
     ///
@@ -1754,6 +1824,36 @@ mod tests {
             let note = std::fs::read_to_string(path).expect("a readable release note");
             assert_listing_field(&format!("store/metadata/en-US/changelogs/{name}"), &note, 500);
         }
+    }
+
+    /// The `id` of every shot in `src/shots.rs`'s `SHOTS` table, read out of the
+    /// file as text.
+    ///
+    /// Why text rather than the table itself is argued in
+    /// `the_listing_has_a_caption_for_every_shot_and_no_others` above: the
+    /// module is behind a cargo feature and the test has to work with that
+    /// feature off, which is the case that matters most.
+    ///
+    /// The bet this takes is that the table stays written the way it is
+    /// written — `id: "library",` on a line of its own — and the bet is a safe
+    /// one to lose, because losing it produces an empty list and the test
+    /// above fails loudly on exactly that rather than silently agreeing with
+    /// whatever the JSON says.
+    fn shot_ids_in_the_tour() -> Vec<String> {
+        let source = include_str!("shots.rs");
+        let table = source
+            .split_once("pub const SHOTS: &[Shot] = &[")
+            .map(|(_, rest)| rest)
+            .expect("src/shots.rs declares a SHOTS table");
+        table
+            .lines()
+            // The table's closing bracket, unindented, is where it ends. The
+            // `];` cannot appear inside it: every line in between is indented.
+            .take_while(|line| *line != "];")
+            .filter_map(|line| line.trim().strip_prefix("id: \""))
+            .filter_map(|rest| rest.split('"').next())
+            .map(str::to_string)
+            .collect()
     }
 
     /// `Cargo.toml`'s `version`, which is this app's versionName everywhere it

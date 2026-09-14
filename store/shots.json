@@ -1,0 +1,74 @@
+{
+  "note": [
+    "The captions for the Play listing's screenshots, and the layout each one is",
+    "composited with. `scripts/store-shots.sh` photographs the app on a headless",
+    "emulator and drops raw 1080x1920 frames in `.shots/`; `scripts/store-frame.py`",
+    "reads this file and turns them into the finished pictures.",
+    "",
+    "The keys under `shots` are the ids in `src/shots.rs`'s SHOTS table, and they",
+    "have to be exactly those ids — `store/shots.json` and `src/shots.rs` are two",
+    "files in two languages joined only by these strings. Rename one on either side",
+    "and the shot it names quietly loses its caption, which is not a failure anybody",
+    "sees until the listing is live. So a cargo test asserts the two sets match in",
+    "both directions; see `the_listing_has_a_caption_for_every_shot_and_no_others`",
+    "in `src/lib.rs`.",
+    "",
+    "Layout lives here rather than in the compositor because it is per-shot by",
+    "nature. `performance` is the clear case: its own screen already carries a title",
+    "across the top, so a caption sitting above it is two headings stacked, and that",
+    "shot wants its caption underneath instead. That is one word in this file rather",
+    "than a branch in Python.",
+    "",
+    "Every key in `defaults` may be repeated inside a shot to override it, and only",
+    "the ones that differ are worth writing. `caption_position` is `above`, `below`",
+    "or `none`; `plate_scale` is the plate's width as a fraction of the 1080px",
+    "canvas; `plate_offset` moves it in pixels from the middle of the canvas (x, y,",
+    "positive down); `type_scale` multiplies the caption's size; the shadow is a",
+    "real gaussian blur in pixels, offset in pixels, opacity 0 to 1; `corner_radius`",
+    "is in pixels of the finished plate."
+  ],
+
+  "canvas": { "width": 1080, "height": 1920 },
+
+  "defaults": {
+    "caption_position": "above",
+    "type_scale": 1.0,
+    "plate_scale": 0.74,
+    "plate_offset": [0, 78],
+    "shadow_blur": 26,
+    "shadow_offset": [0, 14],
+    "shadow_opacity": 0.32,
+    "corner_radius": 28
+  },
+
+  "feature_graphic": {
+    "wordmark": "SetListArray",
+    "type_scale": 1.0
+  },
+
+  "shots": {
+    "library": {
+      "caption": "Every song you know, and how solid you are on it"
+    },
+    "song-detail": {
+      "caption": "Key, capo, tempo, and the chart you read from"
+    },
+    "chart-viewer": {
+      "caption": "The chart, full screen, with nothing on top of it"
+    },
+    "search-in-chart": {
+      "caption": "Search finds the words inside your charts"
+    },
+    "setlists": {
+      "caption": "Sets with the running time already worked out"
+    },
+    "setlist-detail": {
+      "caption": "Reorder the set and watch the clock follow"
+    },
+    "performance": {
+      "caption": "Where you are, what is next, screen kept awake",
+      "caption_position": "below",
+      "plate_offset": [0, -72]
+    }
+  }
+}

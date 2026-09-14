@@ -5,3 +5,11 @@
 /.screenshots
 /setlistarray.aab
 /.shots
+/scripts/__pycache__
+# The finished listing images (card S2). They are a pure function of the seed,
+# the shot list and the app, and `scripts/store-frame.py` rebuilds them from
+# `.shots/` in a minute — so the repository keeps the words, which are worth
+# reviewing in a diff, and not the two megabytes of PNG, which are not. Card
+# S4's workflow regenerates them on the runner and attaches them to the run for
+# a human to look at before anything reaches Play.
+/store/metadata/en-US/images
