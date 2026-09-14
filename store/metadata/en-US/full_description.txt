@@ -1,45 +1,43 @@
-SetListArray is an offline-first book of the songs you know how to play.
+Someone hands you a guitar and asks you to play something. What do you actually know, all the way through, right now?
 
-Put a song in it, attach the chart you actually read from, and arrange the songs into setlists. That is the whole app. There is no account to make, nothing to sign in to, and nothing about your book leaves the phone.
+SetListArray is that question written down and answered: an offline-first book of the songs you know how to play, with the chart you read from attached to each one. No account, no sign-in, and nothing about your book leaves the phone.
+
+WHEN YOUR MIND GOES BLANK
+
+"Play something" is a hard question at the exact moment it gets asked. Your book answers it. Every song can be marked solid, rusty or still learning, and the library opens already sorted that way — the ones you could start this second, then the ones that need a run-through first.
+
+Mark them as you go. Sort by what you have not played in months when you want to bring something back.
+
+WHEN THERE IS NO SIGNAL
+
+The campsite three hours up a fire road. The basement. The green room with one bar. The flight. Charts live on the phone, not on a site that has to load:
+
+• PDFs, drawn a page at a time, with zoom and rotate. A photocopy out of a fake book works as well as a clean export does.
+• Webpages, captured. Paste in a link to a chord page once, while you have signal, and the app keeps it — then never asks the network about it again. You choose reader text or the whole page before a byte is saved.
+• Lyrics and chords you type yourself, monospaced, so the chords stay over the syllables you put them over.
+
+A song can hold more than one chart — the fingerstyle arrangement and the three-chord version of the same tune — and opens on whichever you made primary.
+
+WHEN YOU CANNOT REMEMBER THE TITLE
+
+You remember how the second verse goes. You do not remember what the song is called. Search reads the words inside your charts, typed and captured alike, as well as titles, artists and setlists. Half a line is enough.
+
+WHEN YOU HAVE A GIG
+
+Build the set, drag it into the order you want, and watch the running time add up beside it — so you find out at home that you are nine minutes short, not on stage. A song with no chart attached is flagged while you can still do something about it.
+
+Then one tap starts it. The chart fills the screen at a size you can read from a music stand, the top bar says where you are in the set, the bottom says what is coming next, and the screen stays awake until the set is over.
 
 WHAT A SONG HOLDS
 
 A title and an artist are all that is asked for. Key, capo, tuning, tempo, length, tags, notes and how solid you are on it are all optional, and the form keeps them folded away until you want them.
 
-CHARTS THAT OPEN WITH NO SIGNAL
+YOUR BOOK IS YOURS
 
-Three kinds of chart attach to a song:
+Export the whole thing — database, charts and all — as a single zip file, and keep it wherever you keep the things that matter. Import it back onto the same phone, or onto a new one.
 
-• PDFs, drawn a page at a time, with zoom and rotate. A photocopied page out of a fake book works as well as a clean export does.
-• Webpages, captured for offline use. Paste in a link to a chord page and the app fetches it once, keeps what is worth keeping, and never asks the network about it again. You choose reader text or the whole page before a byte is saved.
-• Lyrics and chords you type yourself, in a monospaced field, so the chords stay over the syllables you put them over.
+SetListArray asks Android for one permission, INTERNET, and uses it for exactly one thing: fetching a webpage you pasted in yourself, so that it still opens when the venue has none. There is no analytics, no crash reporting, no advertising and no sign-in. Your songs live in the app's own private storage on the device, and they are backed up when you export them and not before.
 
-A song can hold several charts. One of them is the primary one, and that is what the song opens on.
+It can look like the rest of your phone, too. The accent colour follows your Material You wallpaper palette or is picked by hand, and dark mode follows the system or is set outright. Performance mode has a darker theme of its own for a dim stage.
 
-SETLISTS
-
-Build a set out of your book, reorder it, and watch the running time add up beside it as you go. A song with no chart attached is flagged on the set while you are still at home, rather than when you are standing in front of people.
-
-PERFORMANCE MODE
-
-One tap starts the set. The chart fills the screen at a size you can read from a music stand, the top bar says where you are in the set, the bottom bar says what is next, and the screen can be held awake for as long as the set lasts.
-
-SEARCH
-
-One field searches titles, artists and setlists — and the text inside your charts, typed and captured alike. Half a line of the second verse is enough to find the song it belongs to.
-
-THE LIBRARY IS YOURS TO CARRY
-
-Export the whole book — database, charts and all — as a single zip file, and keep it wherever you keep things that matter. Import it back onto the same phone, or onto a new one.
-
-NO ACCOUNT, NO SYNC, NO TRACKING
-
-SetListArray asks Android for one permission, INTERNET, and uses it for exactly one thing: fetching a webpage you pasted in yourself, so that it still opens when the venue has no signal. There is no analytics, no crash reporting, no advertising and no sign-in. Your songs live in the app's own private storage on the device, and they are backed up when you export them and not before.
-
-IT CAN LOOK LIKE THE REST OF YOUR PHONE
-
-The accent colour can follow your Material You wallpaper palette or be picked by hand, and dark mode can follow the system or be set outright. Performance mode has a darker theme of its own for a dim stage.
-
-FREE SOFTWARE
-
-SetListArray is licensed under the GNU General Public License, version 3 or later. Every dependency's licence notice is readable inside the app, under Settings.
+Free software, under the GNU General Public License, version 3 or later. Every dependency's licence notice is readable inside the app, under Settings.
