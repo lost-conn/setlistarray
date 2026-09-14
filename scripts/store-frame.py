@@ -163,12 +163,45 @@ def face(filename, size, weight, optical=None):
 
 
 def wrap(draw, text, font, max_width):
-    """Break `text` into the fewest lines that each fit `max_width`.
+    """Break `text` into the fewest lines that each fit `max_width`, evenly.
 
-    A plain greedy wrap on spaces. Captions here are one short sentence and the
-    alternative — a hyphenating, penalty-minimising line breaker — would be a
-    great deal of machinery to make eight lines of prose slightly more even.
+    Two passes, and the second one is the whole point. A plain greedy wrap
+    fills each line to the measure and puts whatever is left on the last one,
+    which is fine for a paragraph and bad for a two-line heading: the caption
+    `You remember the verse, not the title` came out as thirty-one characters
+    over `title`, a single orphaned word under a full line, which reads as a
+    mistake at the size these are set.
+
+    So: greedy once to learn how many lines the caption needs, then find the
+    narrowest measure that still produces that many lines and greedy again at
+    that width. Squeezing the measure forces the break earlier and the lines
+    even out, and because the line count is held fixed it can never cost a
+    line. A binary search over integer widths settles it in a dozen passes
+    over a sentence of eight words.
+
+    This is deliberately not the hyphenating, penalty-minimising line breaker
+    an earlier draft of this comment argued against, and that argument still
+    holds — that would be a great deal of machinery for eight lines of prose.
+    Balancing at a line count you already know is arithmetic.
     """
+    lines = _greedy(draw, text, font, max_width)
+    if len(lines) < 2:
+        return lines
+    lo, hi, best = 1, int(max_width), lines
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        trial = _greedy(draw, text, font, mid)
+        if len(trial) <= len(lines):
+            best, hi = trial, mid - 1
+        else:
+            lo = mid + 1
+    return best
+
+
+def _greedy(draw, text, font, max_width):
+    """Fill each line to `max_width` and start a new one when the next word
+    will not fit. A word wider than the measure gets a line of its own and
+    overhangs it, which is the only sane thing to do without hyphenation."""
     words, lines, current = text.split(), [], ""
     for word in words:
         trial = f"{current} {word}".strip()

@@ -19,6 +19,17 @@
     "shot wants its caption underneath instead. That is one word in this file rather",
     "than a branch in Python.",
     "",
+    "A caption names the moment, not the screen. That is a deliberate register and",
+    "it matches `store/metadata/en-US/full_description.txt`, which is organised the",
+    "same way: nobody browsing Play is looking for a feature list, they are looking",
+    "for a description of something that has happened to them. The first pass here",
+    "described what each screen contained — `Search finds the words inside your",
+    "charts` — which is true, reads as a specification, and answers a question the",
+    "reader has not asked yet. `You remember the verse, not the title` is the same",
+    "feature and the reason anybody wants it. Keep new captions in that register,",
+    "and keep them to roughly forty characters: they are read at thumbnail size on",
+    "a phone, and the compositor sets them across two lines at this length.",
+    "",
     "Every key in `defaults` may be repeated inside a shot to override it, and only",
     "the ones that differ are worth writing. `caption_position` is `above`, `below`",
     "or `none`; `plate_scale` is the plate's width as a fraction of the 1080px",
@@ -48,25 +59,25 @@
 
   "shots": {
     "library": {
-      "caption": "Every song you know, and how solid you are on it"
+      "caption": "Asked to play something? This is what you know"
     },
     "song-detail": {
-      "caption": "Key, capo, tempo, and the chart you read from"
+      "caption": "The key, the capo, everything you worked out"
     },
     "chart-viewer": {
-      "caption": "The chart, full screen, with nothing on top of it"
+      "caption": "No signal for miles, and the chart still opens"
     },
     "search-in-chart": {
-      "caption": "Search finds the words inside your charts"
+      "caption": "You remember the verse, not the title"
     },
     "setlists": {
-      "caption": "Sets with the running time already worked out"
+      "caption": "The sets you play, kept ready between gigs"
     },
     "setlist-detail": {
-      "caption": "Reorder the set and watch the clock follow"
+      "caption": "Nine minutes short? Better to know at home"
     },
     "performance": {
-      "caption": "Where you are, what is next, screen kept awake",
+      "caption": "Music-stand size, and the screen stays awake",
       "caption_position": "below",
       "plate_offset": [0, -72]
     }
