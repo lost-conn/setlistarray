@@ -1,13 +1,44 @@
-# Photograph SetListArray on a headless emulator and keep the frames.
+# Photograph SetListArray on a headless emulator, frame the pictures, and — only
+# when asked — hand the finished store page to Google Play.
 #
-# Card S1, and **the capture half only**. This file is meant to grow: card S4
-# adds the compositing — captions from `store/shots.json`, the device frame,
-# the 1080x1920 crop Play actually accepts — and then the upload to the Play
-# listing beside the copy `store/metadata/` already holds. The job below stops
-# one step short of all of that on purpose, so that what it produces can be
-# looked at by a person before anything of it is published. Room has been left:
-# a `composite` job reading this one's artifact is the obvious next shape, and
-# the artifact name and layout below are the seam it will attach to.
+# Three jobs, in the order a person would do this by hand. `capture` boots a
+# headless emulator and walks the app through `scripts/store-shots.sh`, leaving
+# one raw frame per screen and the insets it measured off the panel. `compose`
+# takes those onto a plain runner with no emulator, no Android SDK and no
+# secret, and runs `scripts/store-frame.py`: the gradient fitted out of the
+# launcher icon, the device plate, the captions from `store/shots.json`, and
+# every shape rule Play has, checked. `publish` sends the words in
+# `store/metadata/en-US/` and the pictures `compose` made, and it is the only
+# one of the three that has ever heard of a credential.
+#
+# ## The default run publishes nothing
+#
+# `upload` is an input and it is false unless somebody sets it, so the ordinary
+# run captures, composites, validates and attaches the pictures to the run for a
+# person to look at — and sends nothing anywhere. That is the shape card S1
+# chose and the reason is still the reason: a store page is read by strangers
+# and reviewed by nobody, and the only moment anybody ever actually looks at
+# these seven pictures is the moment between making them and publishing them.
+# Deleting that moment would save one click.
+#
+# With `upload: true` the run captures and composites again from scratch rather
+# than reaching back for the artifact of the run somebody approved. The argument
+# is that the pipeline is deterministic — same commit, same seeded database, same
+# pinned system image, same compositor, therefore the same bytes — so "the
+# pictures that were looked at" and "the pictures that go to Play" are the same
+# pictures either way, and a run that fetches its inputs from another run is a
+# run whose inputs can be from another *commit*.
+#
+# That "therefore" is carrying real weight and nothing in this file enforces it.
+# An emulator is not a pure function; a system image can be re-pulled under the
+# same tag, a font can be rasterised a hair differently, and no byte-for-byte
+# comparison is made anywhere here. The trade was made knowingly, because the
+# two failures are not the same size: re-rendering risks a store page that is
+# right about the app and differs in a handful of pixels from the one that was
+# approved, and downloading risks a store page that is confidently wrong about
+# which version of the app it is showing. If that ever stops being the right
+# call, the seam to change is the `needs:` of `publish` and the artifact it
+# reads — not this comment.
 #
 # Everything the pictures *are* comes out of `scripts/store-shots.sh`, run here
 # exactly as it runs on a laptop, and the list of screens out of `src/shots.rs`
@@ -21,18 +52,25 @@
 # ## `workflow_dispatch` only, and never on a tag
 #
 # Deliberate, and it is the one thing about this file worth not changing
-# casually. A tag means a release, and a release is `play.yml`'s job; this one
-# holds no secret, names no environment and uploads nothing anywhere. Store
+# casually. A tag means a release, and a release is `play.yml`'s job. Store
 # screenshots change when the *app's screens* change, which is not on the same
 # clock as a version bump — and a listing run that fired automatically on every
 # tag would be a run nobody asked for, producing pictures nobody looked at,
-# competing for the same emulator time as the build that actually ships.
+# competing for the same emulator time as the build that actually ships. Now
+# that this file can reach Play at all, the argument is stronger rather than
+# weaker: a trigger nobody typed must never be a trigger that rewrites the store
+# page, which is why `upload` is an input with a default and not a condition on
+# the ref.
 #
-# There is nothing here a stranger's pull request could steal, because there is
-# nothing here: no `play` environment, no keystore, no service account. That is
-# a property worth keeping as this file grows — if S4's upload step ever wants
-# a credential, it belongs in a job of its own that names the environment, not
-# bolted onto this one.
+# Card S1 wrote down a rule for the day this file grew an upload — that a step
+# wanting a credential belongs in a job of its own naming the environment, never
+# bolted onto the capture — and that rule has been kept rather than bent.
+# `secrets` appears exactly once below, in `publish`, which is a separate job,
+# names the `play` environment and runs only on `upload: true`. `capture` and
+# `compose` still hold no secret and name no environment, which is precisely
+# what makes it safe for them to be the two that boot an emulator and run a
+# rendering pipeline. Nothing here runs on `pull_request`, and nothing should,
+# for the reason `play.yml` gives at greater length.
 #
 # ## Why the AVD is 1080x1920
 #
@@ -56,6 +94,15 @@ name: Listing
 
 on:
   workflow_dispatch:
+    inputs:
+      upload:
+        description: "Send the finished listing to Play (off: build it and stop)"
+        type: boolean
+        default: false
+      changes_not_sent_for_review:
+        description: "Commit without submitting for review; needed while this is a draft app"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -185,10 +232,171 @@ jobs:
       # nothing would otherwise leave a green run with an empty artifact, and
       # the next person to look would be looking at the wrong half of the
       # pipeline.
+      #
+      # `insets.json` goes with them and is not a nicety. `store-frame.py` crops
+      # the navigation bar off every frame by the rectangle that file measured on
+      # the device, deliberately rather than by a constant it could get wrong the
+      # first time the AVD is rebuilt with gesture navigation, and it refuses to
+      # run at all when the file is absent. The first version of this step took
+      # `setlistarray/.shots/*.png` and nothing else, which was harmless while
+      # the compositing happened on somebody's laptop next to the captures and
+      # stopped being harmless the moment `compose` below became the only reader:
+      # seven frames arrived and the one number needed to use them did not.
       - name: Attach the frames to the run
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: listing-shots-${{ github.run_number }}
-          path: setlistarray/.shots/*.png
+          path: |
+            setlistarray/.shots/*.png
+            setlistarray/.shots/insets.json
           if-no-files-found: error
           retention-days: 30
+
+  # No emulator, no Android SDK, no Rust, no siblings, no secret: a Python
+  # interpreter, two libraries and the repository's own artwork. Separate from
+  # `capture` for a reason that is not speed — the compositing is the part that
+  # actually gets iterated on, because a caption, a plate offset or a type scale
+  # is a line in `store/shots.json` and somebody will want to see it rendered
+  # three times in an afternoon. Re-running this job alone against a capture that
+  # already exists is the cheapest loop this workflow has, and it costs nothing
+  # to leave that door open.
+  #
+  # Checked out at the workspace root rather than into `setlistarray/` the way
+  # `capture` does it. That layout exists so rinch and rhypedb can sit *beside*
+  # the repo where `Cargo.toml`'s path dependencies expect them; nothing in this
+  # job compiles Rust, so it would be a directory level added to every path here
+  # in order to leave room for two things that are not coming.
+  compose:
+    needs: capture
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out SetListArray
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Pinned like everything else, and for the ordinary reason plus one more:
+      # this job draws type. Pillow renders the captions with its own bundled
+      # FreeType, so the version of Pillow is part of what the pictures look
+      # like, in the same way the AVD's system image is. A floating `pip install
+      # pillow` would make the listing's typography depend on the day the job
+      # ran, and the first symptom would be a re-render that nobody changed
+      # differing from the one that was approved — which is exactly the doubt the
+      # header above already admits this pipeline carries. No reason to add to
+      # it for the sake of not typing a version number.
+      - name: Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Pillow and NumPy, which the compositor needs and nothing else here does
+        run: python3 -m pip install --disable-pip-version-check pillow==12.1.1 numpy==2.3.5
+
+      # Back into `.shots/`, the directory `store-shots.sh` would have written on
+      # a laptop, so that the command below is the same command a person runs by
+      # hand. A compositor invoked one way in CI and another way locally is a
+      # compositor whose CI failures cannot be reproduced.
+      - name: Fetch the frames the emulator took
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: listing-shots-${{ github.run_number }}
+          path: .shots
+
+      - name: Composite the listing
+        run: python3 scripts/store-frame.py .shots store/metadata/en-US/images
+
+      # The same assertions a second time, on purpose. `store-frame.py` runs them
+      # itself at the end of every render — it says why in its own header, and
+      # the short version is that a check somebody has to remember is a check
+      # that is not run on the afternoon it matters — so this step is not adding
+      # coverage. It is adding a *place*: the render step answers "did the
+      # compositor produce pictures", this one answers "is the directory about to
+      # be handed on acceptable to Play", and when the two disagree the
+      # difference is between the rendering and what reached the disk. It is also
+      # the exact command a person runs against a downloaded artifact, which is
+      # worth having written down somewhere it is known to work.
+      - name: Hold them to Play's limits
+        run: python3 scripts/store-frame.py --check store/metadata/en-US/images
+
+      # The finished listing, which git does not keep: `.gitignore` says why, and
+      # the short of it is that these are a pure function of the app and the
+      # words, and two megabytes of PNG in a diff is two megabytes nobody reads.
+      # This artifact is the other half of that bargain — the pictures have to be
+      # *somewhere* a person can open them, and on a default run this is the only
+      # thing the whole workflow produces.
+      - name: Attach the finished listing to the run
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: listing-images-${{ github.run_number }}
+          path: store/metadata/en-US/images
+          if-no-files-found: error
+          retention-days: 30
+
+  # The only job here that can change anything a stranger sees, and the only one
+  # that runs on a condition rather than always.
+  #
+  # `concurrency: group: play` is the same group `play.yml` declares, and sharing
+  # it across two workflows is the entire point. Play allows one open edit per
+  # package: `edits.insert` fails while another edit is outstanding, and
+  # `play.yml`'s upload action holds one open for as long as it takes to push an
+  # eleven megabyte bundle. A listing run and a release run started within the
+  # same few minutes would therefore have one of them fail — not with "somebody
+  # else is uploading", but with an error about an edit, in whichever of the two
+  # jobs happened to arrive second. Queueing is a great deal cheaper than the
+  # afternoon spent working out that those two runs had anything to do with each
+  # other. `cancel-in-progress: false` for the same reason it is false there: the
+  # run in front is talking to Play, and killing it mid-edit is how an edit gets
+  # left open.
+  publish:
+    needs: compose
+    if: inputs.upload
+    runs-on: ubuntu-24.04
+    environment: play
+    timeout-minutes: 15
+    concurrency:
+      group: play
+      cancel-in-progress: false
+    steps:
+      - name: Check out SetListArray
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      # `google-auth` and the rest arrive as its dependencies. Pinned for the
+      # usual reason and not the typographic one above: nothing this job does is
+      # visible in a picture, it just has to keep working.
+      - name: The Play API client
+        run: python3 -m pip install --disable-pip-version-check google-api-python-client==2.200.0
+
+      # Into the directory `store-frame.py` writes and `play-listing.py` reads by
+      # default, so the script needs no arguments and this workflow is not a
+      # third place that knows the layout.
+      - name: Fetch the pictures compose made
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: listing-images-${{ github.run_number }}
+          path: store/metadata/en-US/images
+
+      # Before the credential is anywhere near the process. `play-listing.py`
+      # validates before it opens an edit whichever way it is run, so this step
+      # buys no safety the next one does not already have; what it buys is a log.
+      # When an upload fails, the question asked five minutes later is "what was
+      # it trying to send", and the answer is a lot easier to find under a step
+      # named for it than interleaved with the failure.
+      - name: What this run would send
+        run: python3 scripts/play-listing.py --dry-run
+
+      # The one step in this file that writes to Google Play. Everything about
+      # what it sends — the package, the three text fields, the deleteall before
+      # each image type, the single edit the whole thing commits as — is in
+      # `scripts/play-listing.py`'s header, which is where that argument belongs;
+      # a workflow that explained the API it calls would be a workflow that goes
+      # stale the first time the script is changed without it.
+      - name: Send the listing to Play
+        env:
+          PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          python3 scripts/play-listing.py \
+            ${{ inputs.changes_not_sent_for_review && '--changes-not-sent-for-review' || '' }}
