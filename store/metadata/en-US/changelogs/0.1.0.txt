@@ -1,0 +1,5 @@
+The first release.
+
+Songs with the details that matter and none of the ones that do not. Charts attached as PDFs, as webpages captured for offline use, or as lyrics and chords you type yourself. Setlists you can reorder, with the running time beside them. A performance mode that fills the screen and keeps it awake. Search that reaches inside your charts. Export and import of the whole library as one zip file.
+
+No account, no sync, nothing uploaded. Tell me what breaks.

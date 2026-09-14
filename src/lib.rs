@@ -1568,6 +1568,256 @@ mod tests {
         }
     }
 
+    /// Everything Google Play shows about this app before anybody installs
+    /// it, held to the limits Play refuses an upload for exceeding.
+    ///
+    /// The copy lives in `store/metadata/en-US/`, in the layout fastlane's
+    /// `supply` defines — `title.txt`, `short_description.txt`,
+    /// `full_description.txt`, and one file per version under `changelogs/` —
+    /// rather than in a text box in the Play Console. A text box is not
+    /// reviewable, not diffable and not revertible: nobody can tell you what
+    /// the store page said last month, and nobody can tell you who changed
+    /// it. In the repository it is all three, and `.github/workflows/play.yml`
+    /// can read the release note out of it on the way to an upload instead of
+    /// asking a human to remember. Card S4 will read this same tree for the
+    /// screenshots; this test is part of what makes that safe to do.
+    ///
+    /// **The limits are counted in UTF-16 code units, and that is the whole
+    /// reason this is a test and not a glance at a character counter.** Play
+    /// measures a field the way a Java `String` measures itself, which is
+    /// neither bytes nor Rust `char`s, and the difference is not theoretical
+    /// in a repository whose house style is long-form prose: an em dash is
+    /// three bytes and one code unit, so a byte-counting check calls a
+    /// perfectly legal 28-unit title a 30-byte one and, in the direction that
+    /// actually costs something, waves through a 4,000-byte full description
+    /// that Play measures at rather less and a 4,000-*unit* one it measures at
+    /// rather more. The failure that would buy is the expensive kind: the
+    /// workflow has already checked out three repositories, installed an NDK,
+    /// built the bundle and signed it with the upload key by the time Play
+    /// says no. `chars()` is wrong the other way, on anything outside the
+    /// BMP — one `char`, two of Play's units — which is why neither shortcut
+    /// is taken here. Count the way the thing doing the rejecting counts.
+    ///
+    /// These three are `include_str!`'d rather than read at run time because
+    /// their paths never change: a missing one should be a compile error
+    /// naming the file, the way `Cargo.lock`'s is above, not a test that got
+    /// far enough to run and then reported a path.
+    #[test]
+    fn the_play_listing_copy_fits_inside_the_limits_play_enforces() {
+        assert_listing_field(
+            "store/metadata/en-US/title.txt",
+            include_str!("../store/metadata/en-US/title.txt"),
+            30,
+        );
+        assert_listing_field(
+            "store/metadata/en-US/short_description.txt",
+            include_str!("../store/metadata/en-US/short_description.txt"),
+            80,
+        );
+        assert_listing_field(
+            "store/metadata/en-US/full_description.txt",
+            include_str!("../store/metadata/en-US/full_description.txt"),
+            4000,
+        );
+    }
+
+    /// A release with no release note, caught on a laptop instead of on a
+    /// runner holding the upload key.
+    ///
+    /// `.github/workflows/play.yml` reads
+    /// `store/metadata/en-US/changelogs/$version.txt` and hands it to Play as
+    /// the release's "What's new", and it fails the run outright when the file
+    /// is missing rather than shipping a release with nothing in that field.
+    /// That is the right thing for the workflow to do and it is a miserable
+    /// place to find out: the run has built the bundle and signed it before it
+    /// gets there, and when the trigger was a `v*` tag the tag itself now has
+    /// to be deleted and pushed again, because the versionCode
+    /// (`git rev-list --count HEAD`) has to move before Play will accept a
+    /// second upload. `cargo test` costs none of that and answers the same
+    /// question.
+    ///
+    /// **Keyed on the versionName, deliberately.** The note is looked up by
+    /// `Cargo.toml`'s `version` — the same string the workflow's "The tag is
+    /// the version it releases" step reads with the same `sed`, and the same
+    /// one `build-apk.sh` injects as the bundle's versionName. It is *not*
+    /// keyed on the versionCode, although Play's API is: the versionCode here
+    /// is the commit count, so it changes with every commit including the one
+    /// that adds the note, and a person sitting down to write release notes
+    /// cannot know it. A key nobody can compute in advance is a key nobody
+    /// will get right.
+    #[test]
+    fn a_release_note_exists_for_the_version_this_tree_would_ship() {
+        let version = crate_version();
+        let path = changelogs_dir().join(format!("{version}.txt"));
+        let note = std::fs::read_to_string(&path).unwrap_or_else(|err| {
+            panic!(
+                "Cargo.toml's version is {version} and there is no release note for it at \
+                 store/metadata/en-US/changelogs/{version}.txt ({err}). Write one before \
+                 tagging: the Play workflow requires it whenever the run will actually \
+                 upload, and finds out after the bundle is built and signed."
+            )
+        });
+        assert_listing_field(
+            &format!("store/metadata/en-US/changelogs/{version}.txt"),
+            &note,
+            500,
+        );
+    }
+
+    /// The release notes for every *other* version, which nothing else in this
+    /// file would ever look at.
+    ///
+    /// `a_release_note_exists_for_the_version_this_tree_would_ship` reads
+    /// exactly one file and is blind by construction to everything beside it,
+    /// which leaves two ways for this directory to rot quietly. One is a note
+    /// written ahead of the bump — `0.2.0.txt` committed while `Cargo.toml`
+    /// still says `0.1.0` — which can sit there three hundred units over the
+    /// limit for as long as it is not the current version, and then fail
+    /// during the release it was written for rather than during the afternoon
+    /// it was written in. The other is a file Play will never read at all:
+    /// `0.1.txt`, `v0.1.0.txt`, `0.1.0.md`, an editor's `0.1.0.txt~`, a
+    /// `.DS_Store` off somebody's Mac. `supply` keys on the filename, so a
+    /// misnamed note is not an error anywhere in the pipeline — it is simply
+    /// never found, and a release goes out with an empty "What's new" while a
+    /// perfectly good note sits in the repository next to it. Both of those
+    /// are invisible until they cost a release, so the whole directory is
+    /// walked rather than the one file that happens to matter today.
+    ///
+    /// Walked with `read_dir` off `CARGO_MANIFEST_DIR`, the way
+    /// `the_http_client_is_named_in_exactly_one_file` walks `src/`, because
+    /// `include_str!` can only be pointed at a path somebody has already
+    /// thought to write down — and a file nobody thought to write down is the
+    /// entire subject of this test.
+    #[test]
+    fn every_release_note_is_named_for_a_version_and_fits_in_the_field() {
+        let dir = changelogs_dir();
+        let mut notes: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+            .expect("store/metadata/en-US/changelogs exists")
+            .map(|entry| entry.expect("a readable directory entry").path())
+            .collect();
+        notes.sort();
+
+        assert!(
+            !notes.is_empty(),
+            "store/metadata/en-US/changelogs is empty; every release Play accepts wants a note"
+        );
+
+        for path in &notes {
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .expect("a file name this repository committed");
+            assert!(
+                is_version_filename(name),
+                "store/metadata/en-US/changelogs/{name} is not named like a version, so \
+                 `supply` will never send it and the release it was written for will go out \
+                 with an empty \"What's new\". The name Play keys on is the versionName and \
+                 nothing else: `0.1.0.txt`, no `v`, no suffix."
+            );
+            let note = std::fs::read_to_string(path).expect("a readable release note");
+            assert_listing_field(&format!("store/metadata/en-US/changelogs/{name}"), &note, 500);
+        }
+    }
+
+    /// `Cargo.toml`'s `version`, which is this app's versionName everywhere it
+    /// matters: the string `build-apk.sh` injects into the bundle, the string
+    /// the Play workflow's tag check compares `v$GITHUB_REF_NAME` against, and
+    /// the name of the release note above.
+    ///
+    /// Read with `strip_prefix` on an unindented line rather than with a TOML
+    /// parser, which is the same bet `parse_lockfile_packages` takes and for
+    /// the same reason: this is one line of a file this repository owns, the
+    /// `[package]` table is the only place in it where `version = "` starts at
+    /// column zero (a dependency's version is inside an inline table, indented
+    /// or not, and `head -n 1` is how the workflow's own `sed` settles it
+    /// anyway), and a parser would be a dependency bought for one line.
+    fn crate_version() -> &'static str {
+        include_str!("../Cargo.toml")
+            .lines()
+            .find_map(|line| line.strip_prefix("version = \""))
+            .and_then(|rest| rest.strip_suffix('"'))
+            .expect("Cargo.toml's [package] table states a version")
+    }
+
+    /// `store/metadata/en-US/changelogs`, resolved off the manifest directory
+    /// so it is found from wherever the test binary happens to be run.
+    fn changelogs_dir() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("store")
+            .join("metadata")
+            .join("en-US")
+            .join("changelogs")
+    }
+
+    /// Whether a file in `changelogs/` is named the one way `supply` will look
+    /// for it: `<major>.<minor>.<patch>.txt`, digits only, no `v`, nothing
+    /// else. Written out rather than reached for with a regular expression
+    /// because this crate has no regex dependency and this app's whole
+    /// dependency posture is that it does not grow one for a line of string
+    /// splitting.
+    fn is_version_filename(name: &str) -> bool {
+        let Some(stem) = name.strip_suffix(".txt") else {
+            return false;
+        };
+        let parts: Vec<&str> = stem.split('.').collect();
+        parts.len() == 3
+            && parts
+                .iter()
+                .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+    }
+
+    /// One listing field, held to the three things it has to be: copy rather
+    /// than an empty file, inside Play's limit, and clean at its edges.
+    ///
+    /// The edges are the part worth explaining. Play stores what it is handed,
+    /// verbatim, so a trailing space at the end of a line survives into the
+    /// store page and a blank line at the end of the file becomes blank space
+    /// under the last paragraph of it. Neither shows up in an editor and
+    /// neither is legible in a diff — `git diff` marks a whitespace-only line
+    /// with the same `+` it gives a sentence — which is exactly the
+    /// combination that ships. So every line has to end on a non-space
+    /// character and the file has to end with exactly one newline: the one
+    /// every text file in this tree ends with, and no second one.
+    ///
+    /// The length is measured on the trimmed text, because that final newline
+    /// is a property of the file and not of the field — it is the one
+    /// character here that Play never sees.
+    fn assert_listing_field(path: &str, text: &str, limit: usize) {
+        assert!(
+            !text.trim().is_empty(),
+            "{path} is empty. Play does not refuse an empty field, it publishes one"
+        );
+
+        let ragged: Vec<usize> = text
+            .lines()
+            .enumerate()
+            .filter(|(_, line)| line.trim_end() != *line)
+            .map(|(index, _)| index + 1)
+            .collect();
+        assert!(
+            ragged.is_empty(),
+            "{path} has trailing whitespace on line(s) {ragged:?}, and Play stores the file \
+             verbatim"
+        );
+        assert_eq!(
+            text,
+            format!("{}\n", text.trim_end()),
+            "{path} does not end with exactly one newline; a blank line at the end of the \
+             file is blank space at the end of the listing"
+        );
+
+        let field = text.trim();
+        let units = field.encode_utf16().count();
+        assert!(
+            units <= limit,
+            "{path} is {units} UTF-16 code units and Play's limit is {limit}. That is the \
+             count Play makes; this text is {bytes} bytes and {chars} chars, and neither \
+             number is the one that decides whether the upload is accepted",
+            bytes = field.len(),
+            chars = field.chars().count(),
+        );
+    }
+
     /// One `[[package]]` table read out of `Cargo.lock`: its name, its
     /// version, and the names of the packages it depends on. Where more than
     /// one version of a crate is in the graph, Cargo spells a dependency on

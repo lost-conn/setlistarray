@@ -19,6 +19,17 @@
 # upload. Production is deliberately not a choice: promoting a release there is
 # for a person in Play Console, having looked at it.
 #
+# What Play *says* about the app comes out of the repository too, and not out
+# of a text box in the console: `store/metadata/en-US/` holds the title, both
+# descriptions and one release note per version, in the layout fastlane's
+# `supply` defines, and this job copies the note for the version being released
+# into the directory the upload action reads. The notes are keyed by
+# versionName — `Cargo.toml`'s version, the same string the tag check below
+# reads — and not by versionCode, which is `git rev-list --count HEAD` and
+# therefore a number nobody sitting down to write release notes can know. A
+# store page nobody can diff is a store page nobody can review, which is the
+# whole reason the copy is in git rather than in a browser tab.
+#
 # The secrets live in the `play` environment rather than on the repository, so
 # only a job that names the environment can read them and the environment's
 # own rules decide which refs may. That matters once the repository is public:
@@ -176,6 +187,42 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      # The "What's new" text this release goes out with, lifted from the
+      # repository. The upload action wants a *directory* of notes, one file
+      # per language named `whatsnew-<locale>`, and the tree keeps them keyed by
+      # version instead — the two shapes cannot both be the file on disk, so
+      # the note is copied into a directory built here rather than pointed at
+      # where it lives.
+      #
+      # Required whenever the run will actually upload, which is `TRACK !=
+      # 'none'` and deliberately not `github.ref_type == 'tag'`: a manual
+      # dispatch to `internal` puts a build in front of real testers and wants
+      # notes exactly as much as a tag does. A `track: none` run never reaches
+      # Play, so it stays unblocked — that is the run somebody makes to get the
+      # signed bundle for the app's first, manual upload, and failing it for
+      # want of a release note would be failing it for want of something
+      # nothing is about to read.
+      #
+      # This is the second place that check happens, and the worse of the two.
+      # `a_release_note_exists_for_the_version_this_tree_would_ship` in
+      # `src/lib.rs` is the same assertion as a `cargo test`, and that is where
+      # it should fail: by the time this step runs the bundle has been built
+      # and signed, and on a tag the tag itself has to be deleted and pushed
+      # again, because the versionCode is the commit count and Play will not
+      # take the same one twice.
+      - name: The release note this version ships with
+        if: env.TRACK != 'none'
+        working-directory: setlistarray
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+          note="store/metadata/en-US/changelogs/$version.txt"
+          if [[ ! -s "$note" ]]; then
+            echo "::error::$note is missing or empty; Play needs a release note for version $version"
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/whatsnew"
+          cp "$note" "$RUNNER_TEMP/whatsnew/whatsnew-en-US"
+
       - name: Upload to Play
         if: env.TRACK != 'none'
         uses: r0adkll/upload-google-play@e738b9dd8f2476ea806d921b64aacd24f34515a5 # v1.1.5
@@ -185,3 +232,4 @@ jobs:
           releaseFiles: setlistarray/setlistarray.aab
           track: ${{ env.TRACK }}
           status: ${{ env.STATUS }}
+          whatsNewDirectory: ${{ runner.temp }}/whatsnew
