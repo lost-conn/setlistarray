@@ -142,6 +142,18 @@ jobs:
       # pictures with. Moving it is a deliberate act with a re-shoot attached,
       # exactly like moving the system image, and for the same reason: both of
       # them draw.
+      #
+      # **The pin did not fix the device loss.** It is kept because an
+      # unpinned renderer in a job whose whole output is pixels is wrong on
+      # its own terms, but it was tried as a fix and it failed: the run after
+      # it died in the same place, a second after the same surface, and the
+      # only thing that changed was the shape of the emulator's own
+      # `Created VkDevice` line — which is how we know the pin took and the
+      # emulator version was never the culprit. Suspects eliminated, in order:
+      # the AVD's shape, then the emulator binary. What is left is the runner,
+      # most plausibly `/dev/kvm` going unread and everything falling back to
+      # TCG, which is what the step below now records. The capture builds with
+      # `--software` in the meantime; see "Build the shots APK".
       API_LEVEL: 34
       AVD_TARGET: default
       AVD_ARCH: x86_64
@@ -217,6 +229,20 @@ jobs:
       # several minutes is an emulator with several minutes in which to go
       # wrong. `--target x86_64` matches AVD_ARCH above; the two have to agree
       # or the install fails with an ABI nobody mentions.
+      #
+      # `--software` is the tiny-skia painter rather than the GPU shell users
+      # get, and it is here because on this runner the GPU shell does not
+      # survive its own start-up — three runs, three device losses, the AVD
+      # and the emulator binary both eliminated. `store-shots.sh`'s header has
+      # the full account and, more importantly, the measurement that made this
+      # switch defensible rather than resigned: the two painters were compared
+      # over all seven screens and the entire difference is edge antialiasing,
+      # plus two button shadows a percent and a half darker. Nothing is
+      # missing, clipped or moved.
+      #
+      # It is still the wrong painter in the sense that matters — no user runs
+      # it — so this flag is the first thing to delete if the runner ever
+      # brings up a Vulkan device.
       - name: Build the shots APK
         working-directory: setlistarray
         env:
@@ -225,7 +251,7 @@ jobs:
           export ANDROID_SDK_BUILD_TOOLS="$ANDROID_HOME/build-tools/35.0.0"
           export ANDROID_SDK_PLATFORM="$ANDROID_HOME/platforms/android-35/android.jar"
           export RINCH_DIR="$GITHUB_WORKSPACE/rinch-fixes"
-          ./build-apk.sh --shots --target "$AVD_ARCH" --build-only < /dev/null
+          ./build-apk.sh --shots --software --target "$AVD_ARCH" --build-only < /dev/null
           test -f setlistarray.apk
 
       # The action boots the AVD and runs `script` against it;

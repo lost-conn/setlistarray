@@ -47,20 +47,49 @@
 # Which painter these shots are taken with
 # ---------------------------------------------------------------------------
 #
-# The same one users get: rinch's GPU shell, the default since card K41 and the
-# default of `build-apk.sh`. That was not a given — the worry going in was that
-# the emulator's SwiftShader could not bring up the Vulkan device the GPU shell
-# asks for, in which case `--software` (the tiny-skia painter) was the
-# documented fallback and these shots would have been taken with a painter no
-# user runs. It brings it up:
+# On a laptop, the same one users get: rinch's GPU shell, the default since
+# card K41 and the default of `build-apk.sh`. The emulator here brings up the
+# Vulkan device it asks for —
 #
 #   rinch::shell::android_runtime: GPU: SwiftShader Device (Subzero) (Vulkan)
 #
-# so the fallback stays a flag rather than the default. If a future emulator
-# image loses Vulkan, pass `--software` and *say so wherever the pictures go* —
-# card K36 is on record that the two painters have differed in what they draw,
-# not only in how fast they draw it, and a store page is the worst place to
-# find that out.
+# — and the seven frames come out.
+#
+# **On a GitHub runner it does not, and CI passes `--software`.** Three runs
+# died the same way, three seconds in, about a second after the surface came
+# up and immediately after vello finished compiling its shader modules:
+#
+#   GPU DEVICE LOST: reason=Unknown msg=Unexpected error variant
+#                    (driver implementation is at fault)
+#
+# Two suspects were investigated and both are innocent. The AVD: one built
+# exactly as CI builds it — two cores, 1536M, 16-bit depth, an 800M data
+# partition — captured all seven frames here without complaint. The emulator
+# binary: the action installs "latest" unpinned, which had drifted a major
+# version ahead of this machine, so it was pinned to the build that works
+# here; the pin took (the `Created VkDevice` line changed shape) and the death
+# did not move. What is left is the runner itself, most likely `/dev/kvm`
+# going unread and the whole emulator falling back to TCG, which fits the 2.2
+# seconds that shader compile takes there.
+#
+# So this is the `--software` case the paragraph below used to warn about, and
+# the warning was right to demand evidence rather than a shrug. Here it is,
+# measured before the switch: all seven screens captured both ways on the same
+# AVD in the same session and compared pixel by pixel. 4–7% of pixels differ,
+# and every one of them is an edge. Not one pixel on any shot has a 9×9
+# neighbourhood that differs throughout; per-channel means agree within 0.06,
+# so it is coverage and not colour; the best whole-image translation is zero.
+# The only non-edge differences are two button shadows — present, same size,
+# same shape, drawn about 1.5% darker with the falloff a pixel earlier — and a
+# scrollbar off by exactly one. Card K36's divergence, where the GPU painter
+# clipped an `opacity` layer the software one did not, does not appear in
+# these screens.
+#
+# That makes tiny-skia a defensible painter for a store page rather than a
+# last resort. It stays second-best for one reason that no measurement can
+# fix: no user runs it. If the runner ever grows a working Vulkan device,
+# drop `--software` from `.github/workflows/listing.yml` and the pictures go
+# back to being drawn by the thing that draws them on a phone.
 #
 # ---------------------------------------------------------------------------
 # The status bar is put into a demo state, and the bars are measured
