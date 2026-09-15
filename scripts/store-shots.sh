@@ -107,8 +107,10 @@
 # ways it shows up are both bad: seven screenshots on a store page with seven
 # different clocks in them, or a reviewer's eye landing on a broken wifi icon
 # instead of on a chord chart. `com.android.systemui.demo` is the platform's own
-# answer, meant for exactly this, and it pins all of it: a settled 9:30, full
-# signal, full battery, nothing else.
+# answer, meant for exactly this, and it pins all of it: a settled 9:30, wifi,
+# a full battery, nothing else. The mobile signal is deliberately among the
+# things hidden rather than among the things pinned — see the note where it is
+# hidden, below.
 #
 # It is entered before the tour and **exited afterwards, including on failure**,
 # through the same `trap` that shuts the emulator down. A device left in demo
@@ -291,7 +293,22 @@ demo_mode_enter() {
     # but no internet" variant, which is the truth about a swiftshader AVD and
     # is not the truth about anybody's phone.
     demo -e command network -e wifi show -e level 4 -e fully true
-    demo -e command network -e mobile show -e level 4 -e datatype none -e fully true
+
+    # The mobile signal is hidden, and not shown at full bars beside the wifi.
+    #
+    # Both were drawn at first, which is what a real phone does and which
+    # looked wrong the moment anybody read a finished screenshot: SystemUI
+    # draws wifi as a filled cone and mobile as a filled triangle, the same
+    # grey at the same height a few pixels apart, and at listing size the pair
+    # reads as one icon printed twice rather than as two kinds of signal. The
+    # first person to look at the composited frames asked why there were two
+    # wifi indicators, which is the whole argument.
+    #
+    # Wifi is the one kept because it is the more ordinary state for a phone
+    # someone is sitting at home with, and because it carries no carrier
+    # name, no bars to count and nothing else for a reader to spend attention
+    # on.
+    demo -e command network -e mobile hide
 
     # A full battery with no bolt through it. An emulator is always "plugged
     # in", and a charging icon in a screenshot reads as a phone tethered to a
@@ -304,7 +321,7 @@ demo_mode_enter() {
     demo -e command status -e volume hide -e bluetooth hide -e location hide \
         -e alarm hide -e sync hide -e tty hide -e eri hide -e mute hide -e speakerphone hide
 
-    ok "status bar pinned (9:30, full signal, full battery)"
+    ok "status bar pinned (9:30, wifi only, full battery)"
 }
 
 demo_mode_exit() {
