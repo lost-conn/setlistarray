@@ -218,9 +218,32 @@ jobs:
           force-avd-creation: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot -camera-back none -camera-front none
           disable-animations: true
-          script: |
-            cd "$GITHUB_WORKSPACE/setlistarray"
-            scripts/store-shots.sh --apk "$GITHUB_WORKSPACE/setlistarray/setlistarray.apk" --out "$GITHUB_WORKSPACE/setlistarray/.shots"
+          # One command, by absolute path, and the shape of this is load-bearing.
+          #
+          # This action runs **each line** of `script:` in its own `sh -c`. The
+          # first version of this step was two lines — a `cd` into the checkout,
+          # then the script by a relative path — and the log says exactly what
+          # happened to it:
+          #
+          #     /usr/bin/sh -c cd "$GITHUB_WORKSPACE/setlistarray"
+          #     /usr/bin/sh -c scripts/store-shots.sh --apk … --out …
+          #     /usr/bin/sh: 1: scripts/store-shots.sh: not found
+          #
+          # Two shells. The `cd` happened in a process that then exited, and the
+          # script ran from the workspace root where `scripts/` does not exist —
+          # 127, a command not found, rather than anything about the emulator or
+          # the APK. Worth recognising on sight, because every other multi-line
+          # `run:` in this repository does carry state from line to line and this
+          # one silently does not.
+          #
+          # `>-` folds the lines below into that single command. The `cd` is gone
+          # rather than joined with `&&`, because `store-shots.sh` resolves its
+          # own root from `BASH_SOURCE` and never cared what the working
+          # directory was.
+          script: >-
+            "$GITHUB_WORKSPACE/setlistarray/scripts/store-shots.sh"
+            --apk "$GITHUB_WORKSPACE/setlistarray/setlistarray.apk"
+            --out "$GITHUB_WORKSPACE/setlistarray/.shots"
 
       # Raw frames, exactly as the panel drew them: no caption, no crop, no
       # device frame. That is what card S4 will take as its input, and it is

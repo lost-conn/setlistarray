@@ -1827,6 +1827,53 @@ mod tests {
         }
     }
 
+    /// `reactivecircus/android-emulator-runner` runs **each line** of its
+    /// `script:` in a shell of its own, and nothing about the file says so.
+    ///
+    /// The capture step was written the way every other multi-line `run:` in
+    /// this repository is written — a `cd` into the checkout, then the command
+    /// — and the run failed with a message about the wrong thing entirely:
+    ///
+    /// ```text
+    /// /usr/bin/sh -c cd "$GITHUB_WORKSPACE/setlistarray"
+    /// /usr/bin/sh -c scripts/store-shots.sh --apk … --out …
+    /// /usr/bin/sh: 1: scripts/store-shots.sh: not found
+    /// ```
+    ///
+    /// Two shells. The `cd` ran in a process that immediately exited, the
+    /// script was looked for from the workspace root where `scripts/` does not
+    /// exist, and the result was a 127 that says "not found" about a file that
+    /// is present, executable and committed. Fifteen minutes of emulator time
+    /// to learn that, and no way to learn it any faster, because the behaviour
+    /// belongs to the action and reproduces nowhere else.
+    ///
+    /// So the step is one folded command now, and this holds it there. The
+    /// check is deliberately shallow — it asserts the block scalar is the
+    /// folding `>-` and not the literal `|`, which is the one distinction that
+    /// matters — because the alternative is a YAML parser in the dependency
+    /// tree of a music app.
+    #[test]
+    fn the_emulator_step_hands_its_action_a_single_command() {
+        let workflow = include_str!("../.github/workflows/listing.yml");
+        let after_action = workflow
+            .split_once("android-emulator-runner")
+            .expect("listing.yml still uses the emulator action")
+            .1;
+        let script = after_action
+            .lines()
+            .find(|line| line.trim_start().starts_with("script:"))
+            .expect("the emulator step still has a script:");
+
+        assert!(
+            script.trim() == "script: >-",
+            "the emulator step's script: is `{}`, and this action runs every line of it in \
+             a separate shell — so a `cd` on one line is gone by the next and the command \
+             fails with a 127 about a file that is right there. Fold it into one command \
+             with `>-`, or give every path in it an absolute root.",
+            script.trim()
+        );
+    }
+
     /// The `id` of every shot in `src/shots.rs`'s `SHOTS` table, read out of the
     /// file as text.
     ///
