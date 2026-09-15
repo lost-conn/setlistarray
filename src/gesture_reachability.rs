@@ -19,7 +19,7 @@
 //! `oncontextmenu` — of what rinch#266 changed about it. `src/bin/
 //! gesture_probe.rs` is the harness that established the desktop half
 //! empirically and is where card C6 found this out; see its module doc and
-//! the README's "Touch on Android is a tap and a scroll, and nothing else"
+//! `docs/ANDROID.md`'s "Touch on Android is a tap and a scroll, and nothing else"
 //! for the long version.
 //!
 //! ## The table

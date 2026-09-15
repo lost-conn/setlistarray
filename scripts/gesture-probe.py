@@ -8,7 +8,7 @@ this connects to the debug server, synthesises presses and moves through the
 node back.
 
 No coordinate is ever read off a picture: every one comes from a
-`query_selector` layout box, which is what the README's HiDPI warning asks
+`query_selector` layout box, which is what `docs/NOTES.md`'s HiDPI warning asks
 for.
 
     cargo run --release --features devtools --bin gesture_probe &

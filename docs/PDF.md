@@ -729,7 +729,7 @@ storage at all" the largest unknown in the card, and it was. The answer is yes
 did not appear at all: the PNG on disk, the `src` correct, and a blank card
 until the user touched something. A finished image decode dirties no DOM node,
 and four separate layers each assumed a dirty node is the only reason to work.
-They are written up in README.md under "The Rinch contributions". A fifth, not
+They are written up in [RINCH.md](RINCH.md) under "The Rinch contributions". A fifth, not
 fixed: `width: 100%` on an `<img>` lays it out at the bitmap's unscaled height,
 so `song_detail` states both axes in pixels.
 

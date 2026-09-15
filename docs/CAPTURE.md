@@ -769,7 +769,7 @@ does not recurse into it. That was enough for text, because
 *descendant* with `ifc_root == None`, so `compute_inline_block_layouts` never
 measured it, and the Parley `InlineBox` pushed for it read a `layout` that was
 still zero. The fix is to recurse, exactly as the `display: contents` branch
-already does. Fixed in `../rinch-fixes`; see the README's PR list.
+already does. Fixed in `../rinch-fixes`; see the PR list in [RINCH.md](RINCH.md).
 
 ### Verified
 

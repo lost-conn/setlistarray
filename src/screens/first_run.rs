@@ -103,7 +103,7 @@ use crate::store::{AttachmentsStore, LibraryViewStore, SettingsStore, SetlistsSt
 use crate::theme::{SCREEN_PAD, T_META};
 
 /// Verbatim from the design handoff (§13, "First run — WIREFRAME (`1r`)"),
-/// which was retired on 2026-09-10 — the README says where it went. A test
+/// which was retired on 2026-09-10 — `docs/NOTES.md` says where it went. A test
 /// used to hold these against that file word for word; with the file gone,
 /// these three constants are where the screen's words are authored.
 const QUESTION: &str = "What's a song you know how to play?";

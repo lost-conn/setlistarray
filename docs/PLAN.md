@@ -156,7 +156,8 @@ measurements so the comparison does not have to be redone.
 
 ## Phase A — Unblock rendering
 
-Depends on the Rinch fixes in flight (see "The paint regression" in the README).
+Depends on the Rinch fixes in flight (see "The paint regression" in
+[RINCH.md](RINCH.md)).
 
 | # | Card | Size |
 | --- | --- | --- |
@@ -224,7 +225,7 @@ proved both gestures on the **desktop** backend — a handle drag fires
 `dragstart → dragenter/dragover → drop → dragend` with usable coordinates, and
 a horizontal drag on a row reports its delta — and then proved, by reading the
 one function every Android touch passes through, that **neither can ever fire
-on a phone**. The table and the three consequences are in the README under
+on a phone**. The table and the three consequences are in [ANDROID.md](ANDROID.md) under
 "Touch on Android is a tap and a scroll, and nothing else". In one line:
 Android's `TouchGesture` emits `MouseDown` only at finger-*up*, immediately
 followed by `MouseUp`, and only for a finger that never moved; a finger that
@@ -335,7 +336,7 @@ gives it a second thing to choose.
 `<textarea>` cannot scroll to its caret, and tapping to place the caret lands
 about a line off. The first is worked around by growing the field with its
 value; the second is not worked around at all. Both, plus the missing IME
-inset, are written up under "Still open" in the README. The third one this
+inset, are written up under "Still open" in [ANDROID.md](ANDROID.md). The third one this
 screen was written around — no monospaced face on Android — is fixed: the app
 now ships DejaVu Sans Mono and declares it as `monospace`.
 
@@ -499,6 +500,6 @@ out on its own, or this crate growing a different client. X2 is what would.
 The promise is also what `android.permission.INTERNET` in the manifest is
 justified by — see Phase E — so it is now load-bearing rather than decorative.
 
-**Rinch upstream.** Two faults are open (README). Others will surface; the
+**Rinch upstream.** Two faults are open ([RINCH.md](RINCH.md)). Others will surface; the
 pattern that works is a headless repro in `rinch-dom`'s test style plus a
 bisect when it is a regression.

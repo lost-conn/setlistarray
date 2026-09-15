@@ -53,7 +53,7 @@ whole crate rather than the file named. Match the surrounding style by hand.
 `Cargo.toml` points at `../rinch-fixes` (an integration branch of
 github.com/joeleaver/rinch carrying fixes not yet merged upstream) and
 `../rhypedb-main`. A framework bug is fixed in `../rinch-fixes` and then PR'd
-upstream — see the PR list at the bottom of README.md for the shape of that,
+upstream — see the PR list in `docs/RINCH.md` for the shape of that,
 and card A1 for moving the pin once they land.
 
 ## The house style

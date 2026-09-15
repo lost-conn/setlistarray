@@ -3,7 +3,7 @@
 # the library screen and report pass/fail per check.
 #
 # This is the regression net card A3 asks for: the paint regression (see
-# README, "The paint regression") produced a DOM and layout that were
+# docs/RINCH.md, "The paint regression") produced a DOM and layout that were
 # byte-for-byte identical to a good render — only pixels caught it. So pixels
 # are what this script checks, sampled the same way the fix was verified by
 # hand: `import` grabs the live X11 window, `convert`/`compare` sample it.

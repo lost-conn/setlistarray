@@ -21,7 +21,7 @@
   "checks": [
     {
       "name": "thumb_painted",
-      "description": "The library's first row 38x38 attachment thumb is actually painted, not just laid out. Caught the display:contents paint regression (README: 'The paint regression') where boxes were sized correctly but never drawn.",
+      "description": "The library's first row 38x38 attachment thumb is actually painted, not just laid out. Caught the display:contents paint regression (docs/RINCH.md: 'The paint regression') where boxes were sized correctly but never drawn.",
       "type": "gray_mean",
       "region": {
         "anchor": "top-left",

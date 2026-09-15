@@ -769,8 +769,9 @@ mod tests {
     /// This test used to be `the_android_manifest_asks_for_no_permissions`,
     /// and it asserted that `android/AndroidManifest.xml` contained no
     /// `<uses-permission>` element at all. That was the promise the README
-    /// made, the manifest's own header comment made, and — from card E1 — this
-    /// test made. It is not the promise any more, and the narrowing was
+    /// then made (the section is now `docs/ANDROID.md`'s "One permission, on
+    /// purpose"), the manifest's own header comment made, and — from card E1
+    /// — this test made. It is not the promise any more, and the narrowing was
     /// deliberate rather than accidental, so it is written down here.
     ///
     /// **What happened.** Card E1 built the offline webpage capture engine

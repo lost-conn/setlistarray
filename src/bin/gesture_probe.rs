@@ -18,7 +18,7 @@
 //! Every handler appends to a single text node (`.probe-log`), so the whole
 //! event trace can be read back over the `--features devtools` IPC with
 //! `query_selector` + `get_text_content` — no screenshots, and therefore none
-//! of the HiDPI coordinate trouble the README warns about. Drive it with
+//! of the HiDPI coordinate trouble `docs/NOTES.md` warns about. Drive it with
 //! `scripts/gesture-probe.py`.
 //!
 //! ```text
@@ -44,8 +44,8 @@
 //! only the wheel does, and the wheel never reaches the row's handlers.
 //!
 //! On **Android** neither gesture can fire, and the reason is in the shell
-//! rather than in anything an app can write. See the README, "Touch on Android
-//! is a tap and a scroll, and nothing else". The short version: `MouseDown` is
+//! rather than in anything an app can write. See `docs/ANDROID.md`, "Touch on
+//! Android is a tap and a scroll, and nothing else". The short version: `MouseDown` is
 //! emitted only at finger-*up*, immediately followed by `MouseUp` at the same
 //! point, and only for a finger that never travelled 8px — so the runtime's
 //! pending drag is created and consumed in one batch and becomes a click. A
@@ -152,7 +152,7 @@ fn app() -> NodeHandle {
 
                 for i in 0..ROWS {
                     // Each `for` body is its own re-running closure, so it can
-                    // only capture `Copy` values and owned clones (README).
+                    // only capture `Copy` values and owned clones (docs/NOTES.md).
                     let press = press.clone();
                     let press_move = press.clone();
                     let press_up = press.clone();
