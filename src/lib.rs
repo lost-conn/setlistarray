@@ -1827,6 +1827,71 @@ mod tests {
         }
     }
 
+    /// `actions/upload-artifact` throws hidden files away before it matches
+    /// the path, and `.shots` is a hidden directory.
+    ///
+    /// Since v4.4 the action filters dot-files and anything under a
+    /// dot-directory out of its candidate set first, so a capture that had
+    /// just written seven PNGs to `.shots/` — the run said where, by absolute
+    /// path — ended with:
+    ///
+    /// ```text
+    /// No files were found with the provided path:
+    /// setlistarray/.shots/*.png setlistarray/.shots/insets.json
+    /// ```
+    ///
+    /// That message reads as "the step before this produced nothing", which is
+    /// the opposite of what had happened, and it cost a run to tell apart.
+    /// `include-hidden-files: true` is the fix; the directory is hidden on
+    /// purpose, being scratch output gitignored next to `.screenshots`, and
+    /// renaming it for CI would mean the laptop and the runner write to
+    /// different places to work around a default.
+    ///
+    /// This holds it for any artifact anybody adds later, because the trap is
+    /// entirely invisible until a workflow has run: nothing local, and no
+    /// amount of reading the YAML, tells you that a leading dot means the file
+    /// will not be collected.
+    #[test]
+    fn an_artifact_built_from_hidden_files_asks_for_them() {
+        let workflow = include_str!("../.github/workflows/listing.yml");
+
+        // Steps are the six-space `- ` items; everything deeper belongs to the
+        // step above it, which is what makes this a step-wise check and not a
+        // whole-file one — two artifacts with different answers would both be
+        // judged correctly.
+        let mut steps: Vec<String> = Vec::new();
+        for line in workflow.lines() {
+            if line.starts_with("      - ") {
+                steps.push(String::new());
+            }
+            if let Some(step) = steps.last_mut() {
+                step.push_str(line);
+                step.push('\n');
+            }
+        }
+
+        for step in steps.iter().filter(|s| s.contains("upload-artifact")) {
+            // Comments are skipped, and this test is the reason that matters:
+            // the comment explaining the trap quotes the very path that
+            // springs it, so a scan that read comments would find a hidden
+            // path in a step that had already been fixed.
+            let hidden = step
+                .lines()
+                .filter(|line| !line.trim_start().starts_with('#'))
+                .any(|line| line.contains("/."));
+
+            if hidden {
+                assert!(
+                    step.contains("include-hidden-files: true"),
+                    "an upload-artifact step collects a path under a dot-directory and does \
+                     not set `include-hidden-files: true`. The action drops hidden files \
+                     before matching, so this will fail with \"No files were found\" about \
+                     files that are certainly there. The step:\n{step}"
+                );
+            }
+        }
+    }
+
     /// `reactivecircus/android-emulator-runner` runs **each line** of its
     /// `script:` in a shell of its own, and nothing about the file says so.
     ///

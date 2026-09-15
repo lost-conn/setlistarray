@@ -352,6 +352,20 @@ jobs:
           path: |
             setlistarray/.shots/*.png
             setlistarray/.shots/insets.json
+          # `.shots` is a dot-directory, and since v4.4 this action filters
+          # hidden files out *before* it matches the glob. So the capture
+          # succeeded, seven PNGs sat on disk exactly where the log said they
+          # did, and the run still ended with
+          #
+          #     No files were found with the provided path:
+          #     setlistarray/.shots/*.png setlistarray/.shots/insets.json
+          #
+          # which reads like the capture produced nothing and means the
+          # opposite. The directory is hidden on purpose — it is scratch
+          # output, gitignored next to `.screenshots` — so the fix is to say
+          # that hidden is fine here rather than to rename it and have the
+          # laptop and the runner write to different places.
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
 
