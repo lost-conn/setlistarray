@@ -112,13 +112,41 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
-      # The emulator the pictures are taken on. Pinned, all three of them:
-      # a system image is a rendering engine, a set of system fonts and a
-      # status bar, and every one of those ends up in the frame.
+      # The emulator the pictures are taken on. A system image is a rendering
+      # engine, a set of system fonts and a status bar, and every one of those
+      # ends up in the frame — so all of it is pinned, and an earlier version
+      # of this comment claimed that while three of the five were not.
+      #
+      # API level, target and arch name the image. They were always here and
+      # they were never the problem. EMULATOR_BUILD is, and it is the reason
+      # this comment is longer than it was.
+      #
+      # The action installs the emulator with `sdkmanager --install emulator
+      # --channel=0` — "latest", unpinned, resolved afresh on every run. On
+      # 2026-09-15 that resolved to 37.2.9 while this laptop had 36.5.10, and
+      # the capture job died three seconds after launch:
+      #
+      #     GPU DEVICE LOST: reason=Unknown msg=Unexpected error variant
+      #                      (driver implementation is at fault)
+      #
+      # …immediately after vello finished initialising its shader modules,
+      # which is the shape of a SwiftShader regression and not of anything
+      # this repository did. The AVD was investigated first and exonerated:
+      # an AVD built exactly as CI builds one — two cores, 1536M, 16-bit
+      # depth, an 800M data partition — captured all seven frames on this
+      # machine without complaint. A whole major version of the emulator, and
+      # therefore a different bundled SwiftShader ICD, is the difference that
+      # was left.
+      #
+      # So the binary is pinned to the build this project has actually taken
+      # pictures with. Moving it is a deliberate act with a re-shoot attached,
+      # exactly like moving the system image, and for the same reason: both of
+      # them draw.
       API_LEVEL: 34
       AVD_TARGET: default
       AVD_ARCH: x86_64
       AVD_PROFILE: pixel
+      EMULATOR_BUILD: 15081367
     steps:
       - name: Check out SetListArray
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -214,6 +242,7 @@ jobs:
           target: ${{ env.AVD_TARGET }}
           arch: ${{ env.AVD_ARCH }}
           profile: ${{ env.AVD_PROFILE }}
+          emulator-build: ${{ env.EMULATOR_BUILD }}
           avd-name: sla-shots
           force-avd-creation: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot -camera-back none -camera-front none
@@ -244,6 +273,31 @@ jobs:
             "$GITHUB_WORKSPACE/setlistarray/scripts/store-shots.sh"
             --apk "$GITHUB_WORKSPACE/setlistarray/setlistarray.apk"
             --out "$GITHUB_WORKSPACE/setlistarray/.shots"
+
+      # What actually drew the pictures, recorded whether or not they arrived.
+      #
+      # This runs after the capture rather than before it because the emulator
+      # and the system image are installed by the action's own step, so there
+      # is nothing to ask before that step has run. `if: always()` because the
+      # run this matters most for is the one that failed.
+      #
+      # It exists because the 2026-09-15 device loss could not be attributed
+      # from its own log: `sdk-installer.ts` sends `sdkmanager` to /dev/null,
+      # so nothing anywhere said which emulator build or which image revision
+      # had been fetched, and answering "was it the toolchain?" took a local
+      # reproduction and an afternoon. Three lines here settle it permanently.
+      #
+      # `/dev/kvm` is in the same breath deliberately. Without it the action's
+      # `disable-linux-hw-accel: auto` quietly appends `-accel off` and the
+      # whole emulator runs under TCG — which is a perfectly good alternative
+      # explanation for a GPU device loss, and one that the udev step above
+      # can lose silently if it ever stops working.
+      - name: What took the pictures
+        if: always()
+        run: |
+          "$ANDROID_HOME/emulator/emulator" -version | head -n 2 || true
+          cat "$ANDROID_HOME/system-images/android-$API_LEVEL/$AVD_TARGET/$AVD_ARCH/source.properties" || true
+          test -r /dev/kvm && echo "/dev/kvm: readable" || echo "::warning::/dev/kvm is not readable; the emulator ran under TCG"
 
       # Raw frames, exactly as the panel drew them: no caption, no crop, no
       # device frame. That is what card S4 will take as its input, and it is
