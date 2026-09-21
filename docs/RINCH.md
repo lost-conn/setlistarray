@@ -1,18 +1,33 @@
 # The Rinch contributions
 
 Every fault this app found in the GUI framework underneath it, what each one
-looked like from up here, and which pull request carries the fix. This is why
-`Cargo.toml` points at `../rinch-fixes` rather than at a git revision. Moved
-out of the README.
+looked like from up here, and which pull request carries the fix. Moved out of
+the README.
+
+**This is no longer why `Cargo.toml` points at a working tree — as of
+2026-09-21 it does not.** Every commit the `../rinch-fixes` integration branch
+carried is on upstream `main`, so the pin moved to a git revision and card A1
+is done. The list below is now history rather than a standing reason, and it is
+worth keeping as history: it is the record of what this app cost the framework
+to build, and the shape a contribution takes here.
+
+One caution for anyone auditing that list again. Upstream squash-merges, which
+rewrites commit subjects, and several fixes landed through *supersession* PRs
+rather than the ones filed here — #540 was closed and its commit merged inside
+#555 as `911c856`, unmodified and with authorship preserved. So a closed PR does
+not mean a dropped fix, and neither `git cherry` nor title matching can tell you
+what landed. Check for the fix's own markers in upstream's source; that is the
+only method that was right.
 
 ---
 
 ## The Rinch contributions (upstream)
 
-This app depends on Rinch through the `../rinch-fixes` path dependency (see
+This app depended on Rinch through the `../rinch-fixes` path dependency (see
 "Running it" in [BUILDING.md](BUILDING.md)) rather than a pinned git revision,
 because `main` was missing fixes this app needed and several features it
-wanted.
+wanted. That is no longer true and the pin has moved; the paragraphs below are
+kept in their original tense as the record of what was carried and why.
 Each carries a PR with a regression test that fails before and passes after,
 and two of them add something that was never there at all. Three have since
 landed on `main`; one was superseded there, its diagnosis credited but its

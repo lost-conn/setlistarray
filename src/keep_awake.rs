@@ -168,13 +168,47 @@ pub struct AndroidLock;
 #[cfg(target_os = "android")]
 impl ScreenLock for AndroidLock {
     fn set_keep_awake(&self, on: bool) {
-        // Nothing to remember and nothing to report. The JNI call posts to the
-        // UI thread and returns; `addFlags`/`clearFlags` are an or and an
-        // and-not, so writing the value that is already there costs a call and
-        // changes nothing. Failures are logged inside `rinch-android` — this
-        // app has no better answer to "the activity is going away" than
-        // carrying on.
-        rinch_android::screen::keep_screen_on(on);
+        // This used to be one idempotent line — `keep_screen_on(on)` wrote the
+        // flag and there was nothing to remember. Upstream replaced that with a
+        // refcounted RAII guard (`keep_screen_on() -> KeepScreenOn`), so the
+        // hold now lives as long as a value does, and something on this side
+        // has to be that value's home. Android has joined the desktop in
+        // needing state behind the trait, for the same reason and with the
+        // same contract kept: the rest of the app still writes the current
+        // answer on every route change and this absorbs the repeats.
+        //
+        // A `thread_local!` and not the `static Mutex` the desktop arm uses,
+        // and the difference is forced rather than stylistic. The desktop's
+        // cookie is a plain `u32`, and a per-thread copy of it would mean a
+        // second thread quietly taking out a second inhibit; `KeepScreenOn` is
+        // deliberately `!Send + !Sync` — its refcount is thread-local and the
+        // guard carries a `PhantomData<*const ()>` to say so — so it cannot go
+        // in a `static` at all, and the thread it was acquired on is the only
+        // thread allowed to drop it. That suits this caller: `set` is driven by
+        // the frame thread's effect and nothing else reaches here.
+        //
+        // Upstream's own advice for "held while some state is true" is
+        // `keep_screen_on_while`, which wraps exactly this in an `Effect`. It
+        // is not used because this app already owns that effect in `lib.rs`,
+        // computing `keep_awake::wanted` for both platforms; taking upstream's
+        // version would give Android a second effect answering the same
+        // question and leave the desktop arm driven by the first.
+        use std::cell::RefCell;
+        thread_local! {
+            static HELD: RefCell<Option<rinch_android::screen::KeepScreenOn>> =
+                const { RefCell::new(None) };
+        }
+        HELD.with(|held| {
+            let mut held = held.borrow_mut();
+            match (on, held.is_some()) {
+                // Already in the state being asked for, which is where most
+                // calls land — see the desktop arm's note on the same two arms.
+                (true, true) | (false, false) => {}
+                (true, false) => *held = Some(rinch_android::screen::keep_screen_on()),
+                // Dropping the guard is the release; there is no call to make.
+                (false, true) => *held = None,
+            }
+        });
     }
 }
 

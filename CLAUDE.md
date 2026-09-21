@@ -48,13 +48,31 @@ count absolute pixels. Do not "fix" a red net by re-baselining at 1x.
 103 pre-existing diffs are the baseline, and `cargo fmt -- <file>` rewrites the
 whole crate rather than the file named. Match the surrounding style by hand.
 
-## The frameworks are local path dependencies
+## Rinch is a pinned revision; rhypedb is still a path
 
-`Cargo.toml` points at `../rinch-fixes` (an integration branch of
-github.com/joeleaver/rinch carrying fixes not yet merged upstream) and
-`../rhypedb-main`. A framework bug is fixed in `../rinch-fixes` and then PR'd
-upstream — see the PR list in `docs/RINCH.md` for the shape of that,
-and card A1 for moving the pin once they land.
+`Cargo.toml` pins `rinch`, `rinch-android`, `rinch-http` and
+`rinch-tabler-icons` to a **git revision** of github.com/joeleaver/rinch, all
+five entries on the same rev on purpose — mixed revisions compile two copies of
+`rinch-core` and hand the two shells different `DomDocument` traits.
+`../rhypedb-main` is still a path dependency.
+
+This changed on 2026-09-21 (card A1). It used to point at `../rinch-fixes`, an
+integration branch carrying fixes not yet upstream; every one of those has since
+landed, so the working tree is no longer load-bearing. **The checkout is still
+there and is still where framework work happens** — fix a rinch bug there, PR it
+upstream (`docs/RINCH.md` has the list and the shape), then bump the rev here.
+
+To build this app against a local rinch, add a `[patch]` rather than editing
+those lines back to paths:
+
+```toml
+[patch."https://github.com/joeleaver/rinch.git"]
+rinch = { path = "../rinch-fixes/crates/rinch" }
+```
+
+Why that matters: under the old path deps, which branch happened to be checked
+out in a sibling directory silently decided what this app was built from. A
+`git checkout` next door changed the app without changing a line here.
 
 ## The house style
 

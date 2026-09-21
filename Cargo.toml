@@ -19,13 +19,13 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 # Not re-exported by the rinch prelude, but ActionIcon's `icon` prop needs the type
 # and the handoff calls for Tabler icons throughout.
-rinch-tabler-icons = { path = "../rinch-fixes/crates/rinch-tabler-icons" }
+rinch-tabler-icons = { git = "https://github.com/joeleaver/rinch.git", rev = "651ecf7aa6ed85cc878951b6cab09ebd73d9c109" }
 
 # Offline webpage capture (src/capture/). One HTTP API over ureq natively and
 # `fetch` on wasm, so the capture engine never names a transport — the plan's
 # call, and the reason there is no direct `ureq` line in this file even though
 # ureq is what runs underneath on both the platforms this app ships to.
-rinch-http = { path = "../rinch-fixes/crates/rinch-http" }
+rinch-http = { git = "https://github.com/joeleaver/rinch.git", rev = "651ecf7aa6ed85cc878951b6cab09ebd73d9c109" }
 
 # The HTML parser the capture sanitiser walks. html5ever is the parser Servo
 # uses, so it is spec-correct on the malformed markup chord sites actually
@@ -154,24 +154,39 @@ zip = { version = "8", default-features = false, features = ["deflate"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# TEMPORARY, and the one place this project depends on a working tree.
+# A pinned upstream revision, which is card A1 finally being done.
 #
-# `local/both-fixes` in that checkout is main plus the two branches under review
-# upstream — joeleaver/rinch#245 (paint) and #246 (viewport scale). Developing
-# against them beats developing against the old d25f646 pin, which renders
-# correctly but predates five months of the framework.
+# For most of this project's life these were paths into a `../rinch-fixes`
+# working tree, because `main` was missing fixes this app needed and several
+# features it wanted, and the honest place to develop them was a branch beside
+# the app that found them. Twenty-one PRs later every one of those carried
+# commits is on `main` — verified commit by commit against the contents of
+# upstream rather than against commit titles, because upstream squash-merges
+# and both `git cherry` and title matching lie about that. docs/RINCH.md has
+# the list and which PR carried each.
 #
-# When both PRs merge, card A1/A2: replace the path with
-#   rinch = { git = "https://github.com/joeleaver/rinch.git", rev = "<merged>", … }
-#   rinch-tabler-icons = { git = "https://github.com/joeleaver/rinch.git", rev = "<merged>" }
-# and delete src/bin/probe.rs.
+# So the working tree is no longer load-bearing and this names a revision like
+# any other dependency. What that buys is a build that does not depend on which
+# branch happens to be checked out in a sibling directory — the failure mode
+# the path dep always had, and one that produced a different app without
+# changing a line of this repository.
+#
+# Moving the pin: bump `RINCH_REV` in every table below together. They are one
+# revision deliberately — cargo will unify a single git source across all five
+# entries, and mixed revisions would silently compile two copies of
+# `rinch-core` and give the desktop and Android shells different `DomDocument`
+# traits. To develop against a local rinch again, `[patch]` it rather than
+# editing these lines back to paths:
+#
+#   [patch."https://github.com/joeleaver/rinch.git"]
+#   rinch = { path = "../rinch-fixes/crates/rinch" }
 #
 # `desktop` and `android` are mutually exclusive backends — one shell each — so
 # the dependency is declared per target rather than in `[dependencies]`. Only
 # one of these tables is ever active in a given build, so cargo's feature
 # unification never sees both.
 [target.'cfg(not(target_os = "android"))'.dependencies]
-rinch = { path = "../rinch-fixes/crates/rinch", default-features = false, features = [
+rinch = { git = "https://github.com/joeleaver/rinch.git", rev = "651ecf7aa6ed85cc878951b6cab09ebd73d9c109", default-features = false, features = [
     "desktop",
     "components",
     "theme",
@@ -198,14 +213,14 @@ rinch = { path = "../rinch-fixes/crates/rinch", default-features = false, featur
 zbus = "5"
 
 [target.'cfg(target_os = "android")'.dependencies]
-rinch = { path = "../rinch-fixes/crates/rinch", default-features = false, features = [
+rinch = { git = "https://github.com/joeleaver/rinch.git", rev = "651ecf7aa6ed85cc878951b6cab09ebd73d9c109", default-features = false, features = [
     "android",
     "components",
     "theme",
 ] }
 # Pulled in transitively by `rinch/android`, but named here too: the safe-area
 # insets and the display density are read directly (src/platform.rs).
-rinch-android = { path = "../rinch-fixes/crates/rinch-android" }
+rinch-android = { git = "https://github.com/joeleaver/rinch.git", rev = "651ecf7aa6ed85cc878951b6cab09ebd73d9c109" }
 # `android_main` reports a failure to find app-private storage through the
 # logger `rinch`'s Android shell installs; stderr goes nowhere on a phone.
 log = "0.4"
