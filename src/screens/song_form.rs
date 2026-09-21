@@ -432,6 +432,18 @@ pub fn SongForm(editing: Option<SongId>) -> NodeHandle {
                                 style: {format!("{DETAIL_ROW} flex-wrap: wrap; padding: 12px 0;")},
                                 span { style: {DETAIL_LABEL}, "Confidence" }
                                 for (label, value) in confidence_choices() {
+                                    // Both bindings are named with their types on purpose.
+                                    // Every use of them below sits inside a closure — `key:`
+                                    // and `label:` reach `label` through `ToString`, `active:`
+                                    // and `onclick:` capture `value` — and a closure body is
+                                    // not checked until its captures' types are known, so
+                                    // nothing in the loop ever pins the item and the element
+                                    // type of the iterable never reaches the pattern. The
+                                    // sibling loop in `filter_sheet.rs` needs none of this
+                                    // because its `active:` is a plain call whose parameter
+                                    // type does the pinning eagerly.
+                                    let label: &'static str = label;
+                                    let value: Option<Confidence> = value;
                                     Chip {
                                         key: {label},
                                         label: {label.to_string()},

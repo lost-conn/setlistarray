@@ -147,7 +147,13 @@ fn app() -> NodeHandle {
             // *other* axis from the swipe. Question (b) lives right here.
             div {
                 class: "probe-list",
-                onscroll: move |top: f64| trace.push(format!("scroll {top:.0}")),
+                // Upstream's `onscroll` hands over a whole `ScrollEvent` rather than
+                // the bare vertical offset it used to. The trace only ever wanted
+                // the vertical half, so this reads `scroll_top` and keeps the line
+                // it writes byte for byte what the expectations already match.
+                onscroll: move |ev: ScrollEvent| {
+                    trace.push(format!("scroll {:.0}", ev.scroll_top))
+                },
                 style: "flex: 1; min-height: 0; overflow-y: auto; padding: 0 12px;",
 
                 for i in 0..ROWS {
@@ -239,7 +245,7 @@ fn app() -> NodeHandle {
 
 #[cfg(not(target_os = "android"))]
 fn main() {
-    run("gesture_probe", 393, 852, app);
+    App::new(app).title("gesture_probe").size(393, 852).run();
 }
 
 // Desktop-only, like `probe.rs`. Kept compilable for Android so a whole-crate

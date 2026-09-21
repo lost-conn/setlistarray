@@ -110,7 +110,7 @@ fn app() -> NodeHandle {
 
 #[cfg(not(target_os = "android"))]
 fn main() {
-    run("probe", 460, 300, app);
+    App::new(app).title("probe").size(460, 300).run();
 }
 
 // Desktop-only, like the fault it demonstrates. Kept compilable for Android so
