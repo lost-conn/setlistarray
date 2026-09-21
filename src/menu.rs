@@ -159,7 +159,9 @@ pub fn SongMenuItems(id: SongId) -> NodeHandle {
                 "Edit song…"
             }
             DropdownMenuLabel { style: {LABEL}, "Set confidence" }
-            for (label, value) in confidence_choices() {
+            for choice in confidence_choices() {
+                let label = choice.0;
+                let value = choice.1;
                 DropdownMenuItem {
                     key: {label},
                     style: {SUBITEM},

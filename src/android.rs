@@ -47,13 +47,10 @@ fn android_main(android_app: AndroidApp) {
     // They go in through the entry point rather than being registered
     // beforehand so that they are in place before the first layout pass —
     // otherwise the first frame measures against a fallback and reflows.
-    run_android_with_fonts(
-        android_app,
-        "SetListArray",
-        crate::WIDTH,
-        crate::HEIGHT,
-        crate::app,
-        Some(crate::theme_props()),
-        crate::FONTS,
-    );
+    App::new(crate::app)
+        .title("SetListArray")
+        .size(crate::WIDTH, crate::HEIGHT)
+        .theme(crate::theme_props())
+        .fonts(crate::FONTS)
+        .run_android(android_app);
 }

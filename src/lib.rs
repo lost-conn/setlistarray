@@ -725,14 +725,12 @@ pub fn run_desktop() {
     // flag, for screenshots and for anyone who wants something to look at
     // before they have typed a song in.
     start(DataDir::desktop_default(), args.iter().any(|a| a == "--seed"));
-    run_with_fonts(
-        "SetListArray",
-        WIDTH,
-        HEIGHT,
-        app,
-        Some(theme_props()),
-        FONTS,
-    );
+    App::new(app)
+        .title("SetListArray")
+        .size(WIDTH, HEIGHT)
+        .theme(theme_props())
+        .fonts(FONTS)
+        .run();
 }
 
 /// The Android entry point's half of the same work: the platform hands us the
