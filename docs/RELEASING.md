@@ -96,6 +96,14 @@ Where the words live, all of it reviewable in a diff:
   composited with, keyed by the shot ids in `src/shots.rs`; a `cargo test`
   asserts those two sets match in both directions.
 
+**When the listing copy changes, read `site/index.html` too.** The landing page
+tells the same story out of the same four questions, and its prose is written
+by hand rather than generated from these files — deliberately, because the
+registers differ and Play forbids formatting the page wants, but the cost of
+that decision is that the two can drift apart and nothing catches it. Nothing
+here is generated from anything there; this paragraph is the whole mechanism.
+[docs/SITE.md](SITE.md) has the rest.
+
 The finished images are the one part not in git — `.gitignore` says why — so
 rebuild them before looking at anything locally:
 

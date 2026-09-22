@@ -1,0 +1,181 @@
+# Build the landing page and put it on GitHub Pages at
+# setlistarray.lostconnection.dev.
+#
+# `site/` is hand-written HTML and CSS and needs no build step at all. What it
+# needs is the two things that are *derived* and therefore not in git: the font
+# subsets, and the screenshots.
+#
+# ## The fonts are rebuilt here, every time
+#
+# `scripts/site-fonts.py` is a pure function of `assets/fonts/`, it takes a few
+# seconds, and its output is a megabyte of binary that would otherwise sit in
+# the repository being re-committed whenever a face is touched. So it runs on
+# the runner, like `cargo-about` does for the licence notices.
+#
+# ## The screenshots come from the last Listing run, and that is a decision
+#
+# Photographing the app means booting a headless emulator, installing an APK
+# and walking it through seven screens — the `capture` job in `listing.yml`,
+# twenty minutes of it, currently on a software painter because the runner's
+# Vulkan device does not survive start-up. Doing that again here would mean a
+# one-word change to a paragraph on this page costing an emulator, and it would
+# mean this page going down whenever that emulator has a bad afternoon.
+#
+# So this fetches the raw frames from the most recent successful `Listing` run
+# instead, and runs `store-frame.py --preset site` over them. That is the same
+# input the store pictures were composited from, which is the point: the page
+# and the listing show the same seven screens of the same build, and they are
+# the screens a person looked at before approving that listing.
+#
+# The cost is honest and worth stating, because `listing.yml`'s own header
+# argues against exactly this for `publish`: inputs from another run can be
+# inputs from another *commit*. Here they can be, and the failure that allows
+# is a landing page showing a slightly older version of a screen. Against a
+# store listing being confidently wrong about which app it is advertising,
+# which is what that header is protecting, this is a different size of mistake
+# and it buys a deploy that takes forty seconds and does not depend on an
+# emulator. `shots_run` is the way out when it matters: pass a run id and this
+# takes that run's frames instead of the newest.
+#
+# If no such artifact exists at all, the run fails rather than deploying a page
+# with seven holes in it. A landing page missing its screenshots looks like a
+# broken app, which is the opposite of what it is for.
+name: Site
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "site/**"
+      - "scripts/site-fonts.py"
+      - "scripts/store-frame.py"
+      - ".github/workflows/site.yml"
+  workflow_dispatch:
+    inputs:
+      shots_run:
+        description: "Listing run id to take the screenshots from (blank: the newest successful one)"
+        type: string
+        default: ""
+
+# `pages` and `id-token` are what `deploy-pages` needs; `actions: read` is what
+# `gh run download` needs to reach another workflow's artifact.
+permissions:
+  contents: read
+  actions: read
+  pages: write
+  id-token: write
+
+# One deploy at a time, and never cancel one in flight: Pages serves whatever
+# finished last, and a cancelled deploy is a deploy that may or may not have
+# swapped the directory over.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out SetListArray
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Pinned for the reason the compositing job in listing.yml gives at
+      # length: Pillow renders with its own bundled FreeType and is part of
+      # what the pictures look like. This job only crops and rescales, so the
+      # type never reaches it — but the two invocations of the same script
+      # should not be built on different libraries, or the difference between
+      # the listing and the page becomes a thing somebody has to rule out.
+      - name: Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      # Pillow and NumPy for the compositor, fontTools and Brotli for the
+      # subsetter. `store-frame.py` imports NumPy by way of `icon_gradient` at
+      # module load, so it is needed even though `--preset site` never fits a
+      # gradient.
+      - name: What the two scripts need
+        run: |
+          python3 -m pip install --disable-pip-version-check \
+            pillow==12.1.1 numpy==2.3.5 fonttools==4.60.1 brotli==1.2.0
+
+      # Into `.shots/`, the directory `store-shots.sh` writes on a laptop, so
+      # the compositor command below is the command a person runs by hand.
+      - name: Fetch the frames the last Listing run took
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHOTS_RUN: ${{ inputs.shots_run }}
+        run: |
+          set -euo pipefail
+          if [ -z "$SHOTS_RUN" ]; then
+            SHOTS_RUN=$(gh run list --workflow Listing --status success \
+              --limit 1 --json databaseId --jq '.[0].databaseId')
+          fi
+          if [ -z "$SHOTS_RUN" ] || [ "$SHOTS_RUN" = "null" ]; then
+            echo "::error::No successful Listing run to take screenshots from. Run the" \
+                 "Listing workflow once (upload: false is fine — this only wants its frames)," \
+                 "then run this again."
+            exit 1
+          fi
+          echo "Taking the screenshots from Listing run $SHOTS_RUN"
+          echo "https://github.com/${{ github.repository }}/actions/runs/$SHOTS_RUN" >> "$GITHUB_STEP_SUMMARY"
+          gh run download "$SHOTS_RUN" --pattern 'listing-shots-*' --dir .shots
+          # `gh run download` puts each artifact in a subdirectory of its own
+          # name when a pattern matches; flatten it, because store-frame.py
+          # reads `<dir>/<id>.png` and `<dir>/insets.json` directly.
+          find .shots -mindepth 2 -maxdepth 2 -type f -exec mv -t .shots {} +
+          test -f .shots/insets.json
+
+      - name: Crop the plates the page shows
+        run: python3 scripts/store-frame.py .shots site/img --preset site
+
+      - name: Cut the font subsets
+        run: python3 scripts/site-fonts.py site/fonts
+
+      # The custom domain. Pages re-reads this on every deploy, and a deploy
+      # without it reverts the site to <user>.github.io/setlistarray and breaks
+      # every link anybody has saved — so it is written here rather than only
+      # set once in the repository's settings, where an artifact that did not
+      # contain it would silently override it.
+      - name: CNAME
+        run: echo "setlistarray.lostconnection.dev" > site/CNAME
+
+      # One last look at what is about to be served, from the other side: the
+      # tests in src/site.rs hold the page to the app, and this holds the
+      # directory to the page. Every file index.html and style.css reference
+      # has to actually be in the artifact — a subset that was not cut or a
+      # plate that was not composited would otherwise deploy as a hole.
+      - name: Everything the page asks for is in the directory
+        run: |
+          set -euo pipefail
+          missing=0
+          for ref in $(grep -ho 'src="[^"]*"\|url([^)]*)\|href="fonts/[^"]*"' site/index.html site/style.css \
+                       | sed 's/^src="//; s/^href="//; s/"$//; s/^url(//; s/)$//' \
+                       | grep -v '^http' | grep -v '^#' | sort -u); do
+            if [ ! -e "site/$ref" ]; then
+              echo "::error::site/index.html or site/style.css references $ref and it is not there"
+              missing=1
+            fi
+          done
+          exit $missing
+
+      - name: Configure Pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+
+      - name: Upload the page
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to Pages
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

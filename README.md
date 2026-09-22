@@ -111,6 +111,7 @@ Android prerequisites, and the generated launcher icon.
 | [docs/RELEASING.md](docs/RELEASING.md) | How a tag becomes a build on Play, and how the store listing is built out of this repository. |
 | [docs/CAPTURE.md](docs/CAPTURE.md) | The offline webpage capture engine: what it fetches, what it throws away, and which sites survive it. |
 | [docs/PDF.md](docs/PDF.md) | Choosing a PDF rasteriser, with the measurements. |
+| [docs/SITE.md](docs/SITE.md) | The landing page: why it is static HTML and not rinch, what the page is made of, how its fonts and screenshots are built, and what the tests hold. |
 | [docs/PLAN.md](docs/PLAN.md) | The phased build plan, and what is left of it. |
 
 Built on [Rinch](https://github.com/joeleaver/rinch), a Rust GUI framework, and

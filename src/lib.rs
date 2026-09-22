@@ -60,6 +60,12 @@ mod shots;
 /// only the registration and the `content://` read are Android's, and every
 /// decision above them is testable on a laptop.
 pub mod share;
+/// Tests only: what holds `site/`, the landing page, to the app it advertises.
+/// The page repeats this crate's colours, the compositor's plate shape and the
+/// tour's screen ids, and every one of those is a string shared across two
+/// languages. See the module's own note.
+#[cfg(test)]
+mod site;
 mod store;
 mod theme;
 mod ui;

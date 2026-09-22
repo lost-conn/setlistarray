@@ -13,3 +13,13 @@
 # S4's workflow regenerates them on the runner and attaches them to the run for
 # a human to look at before anything reaches Play.
 /store/metadata/en-US/images
+
+# The landing page's derived halves (card "Website?"). `site/index.html` and
+# `site/style.css` are written by hand and belong in a diff; these two
+# directories are built from things that are already in the repository —
+# `scripts/site-fonts.py` cuts the faces out of `assets/fonts/`, and
+# `scripts/store-frame.py --preset site` crops the plates out of the frames the
+# Listing workflow photographs. Same bargain as the listing images above: keep
+# what is worth reviewing, rebuild what is a pure function of it.
+/site/fonts
+/site/img
