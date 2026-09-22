@@ -1,0 +1,279 @@
+/* The landing page at setlistarray.lostconnection.dev.
+ *
+ * Hand-written CSS with no build step and no framework, for the same reason
+ * the store listing is built out of this repository rather than typed into a
+ * console: the page is a thing that ships, and a thing that ships is worth
+ * keeping in a diff. See docs/SITE.md for why this is not built in rinch,
+ * which is what the card originally asked for.
+ *
+ * ---------------------------------------------------------------------------
+ * The colours are not chosen here
+ * ---------------------------------------------------------------------------
+ *
+ * Every hex below is copied out of `src/theme.rs` — LIGHT_NEUTRALS and
+ * DARK_NEUTRALS verbatim, and the RUST accent, which is the app's default and
+ * the one the store pictures are pinned to. The page and the app are painted
+ * from one set of values, so a screenshot dropped onto this background sits on
+ * the same paper it was photographed on.
+ *
+ * Copying them means they can drift, and this repository's habit is to make
+ * drift a build failure rather than a thing somebody notices later. So
+ * `the_site_css_repeats_the_theme_tokens_exactly` in src/site.rs reads this
+ * file at test time and asserts both neutral blocks appear in it declaration
+ * for declaration. Move a hex in theme.rs without moving it here and the build
+ * stops. That is the same guard `store/shots.json` and `src/shots.rs` have:
+ * two files in two languages joined only by these strings.
+ */
+
+:root{
+  color-scheme: light dark;
+  --sla-paper: #FBF7F0; --sla-card: #FFFFFF;
+  --sla-hairline: #E7DFD4; --sla-hairline-soft: #EFE8DD;
+  --sla-muted: #6E645A; --sla-ink-2: #4A423B; --sla-ink: #1C1917;
+  --sla-accent: #B54724; --sla-accent-on-tint: #8E3419; --sla-on-accent: #FBF7F0;
+  --plate-shadow: 0 18px 44px -20px rgba(28,25,23,.42), 0 0 0 1px rgba(28,25,23,.07);
+  --pad:22px;
+}
+
+/* The app follows the system's dark mode and so does this. The neutrals are
+ * DARK_NEUTRALS; the accent is RUST's `base_dark` and the pair authored with
+ * it, which theme.rs is explicit about being authored rather than computed —
+ * so they are copied rather than derived here too. */
+@media (prefers-color-scheme: dark){
+  :root{
+    --sla-paper: #181512; --sla-card: #211C18;
+    --sla-hairline: #2C2620; --sla-hairline-soft: #241F1A;
+    --sla-muted: #9B9188; --sla-ink-2: #D6CCC1; --sla-ink: #F5EFE6;
+    --sla-accent: #E8845C; --sla-accent-on-tint: #F0A483; --sla-on-accent: #1A1310;
+    --plate-shadow: 0 18px 44px -20px rgba(0,0,0,.66), 0 0 0 1px rgba(255,255,255,.06);
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * The faces
+ * ---------------------------------------------------------------------------
+ *
+ * The same three the app ships and for the same reason it ships them: a page
+ * that asked Google Fonts for Newsreader would be a page making a third-party
+ * request, and the receipt at the bottom of it says there are none. These are
+ * subsets built by `scripts/site-fonts.py` out of `assets/fonts/`, which is
+ * also where their licences come from — the OFL requires the licence to travel
+ * with a subset, so it is in fonts/licenses/ and linked from the colophon.
+ *
+ * Newsreader carries two variation axes, `opsz` and `wght`, and the subsetter
+ * keeps both: `font-optical-sizing: auto` on the body is what makes the
+ * wordmark and the display questions set at their intended optical size rather
+ * than at a text weight blown up. site-fonts.py asserts the axes survived.
+ *
+ * Each face is declared twice, against two `unicode-range`s. `ext` carries the
+ * accented Latin-1 letters and the far end of the punctuation block; `base`
+ * carries ASCII and the punctuation English prose actually uses. A browser
+ * fetches a face only if the page contains a character its range covers, so
+ * today every visitor gets the four `base` files — 194 KB — and nobody gets
+ * the other 129 KB until the copy on this page starts needing it.
+ *
+ * The two ranges overlap and the order below is load-bearing: where more than
+ * one face claims a character, the last one declared wins, so `base` has to
+ * come second or every em dash on the page would pull down the extended file.
+ * Both range strings are copied from SLICES in scripts/site-fonts.py, and
+ * `the_site_serves_the_slices_the_subsetter_cuts` in src/site.rs fails the
+ * build if the two files stop agreeing about them.
+ */
+@font-face{font-family:Newsreader;src:url(fonts/newsreader-ext.woff2) format('woff2-variations');font-weight:200 800;font-style:normal;font-display:swap;unicode-range:U+A0-FF,U+2000-206F,U+2212}
+@font-face{font-family:Newsreader;src:url(fonts/newsreader-italic-ext.woff2) format('woff2-variations');font-weight:200 800;font-style:italic;font-display:swap;unicode-range:U+A0-FF,U+2000-206F,U+2212}
+@font-face{font-family:Karla;src:url(fonts/karla-ext.woff2) format('woff2-variations');font-weight:200 800;font-style:normal;font-display:swap;unicode-range:U+A0-FF,U+2000-206F,U+2212}
+@font-face{font-family:'DejaVu Sans Mono';src:url(fonts/dejavu-mono-ext.woff2) format('woff2');font-weight:400;font-display:swap;unicode-range:U+A0-FF,U+2000-206F,U+2212}
+
+@font-face{font-family:Newsreader;src:url(fonts/newsreader-base.woff2) format('woff2-variations');font-weight:200 800;font-style:normal;font-display:swap;unicode-range:U+0-7F,U+A0,U+2013-2014,U+2018-2019,U+201C-201D,U+2022,U+2026}
+@font-face{font-family:Newsreader;src:url(fonts/newsreader-italic-base.woff2) format('woff2-variations');font-weight:200 800;font-style:italic;font-display:swap;unicode-range:U+0-7F,U+A0,U+2013-2014,U+2018-2019,U+201C-201D,U+2022,U+2026}
+@font-face{font-family:Karla;src:url(fonts/karla-base.woff2) format('woff2-variations');font-weight:200 800;font-style:normal;font-display:swap;unicode-range:U+0-7F,U+A0,U+2013-2014,U+2018-2019,U+201C-201D,U+2022,U+2026}
+@font-face{font-family:'DejaVu Sans Mono';src:url(fonts/dejavu-mono-base.woff2) format('woff2');font-weight:400;font-display:swap;unicode-range:U+0-7F,U+A0,U+2013-2014,U+2018-2019,U+201C-201D,U+2022,U+2026}
+
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0; background:var(--sla-paper); color:var(--sla-ink);
+  font-family:Karla,'Helvetica Neue',sans-serif;
+  font-size:17px; line-height:1.62;
+  font-optical-sizing:auto;
+}
+.page{max-width:1080px;margin:0 auto;padding:0 var(--pad)}
+a{color:var(--sla-accent)}
+a:focus-visible{outline:2px solid var(--sla-accent);outline-offset:3px;border-radius:4px}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+
+/* --- masthead ------------------------------------------------------------ */
+.masthead{display:flex;align-items:center;gap:14px;padding:26px 0 0}
+.mark{width:38px;height:38px;border-radius:10px;display:block}
+.wordmark{font-family:Newsreader,Georgia,serif;font-weight:500;font-size:24px;letter-spacing:-.008em;margin-right:auto}
+.mastnav{display:flex;gap:22px;font-size:15px}
+.mastnav a{color:var(--sla-ink-2);text-decoration:none;border-bottom:1px solid var(--sla-hairline);padding-bottom:2px}
+.mastnav a:hover{color:var(--sla-accent);border-bottom-color:var(--sla-accent)}
+@media (max-width:560px){.mastnav{display:none}}
+
+/* ---------------------------------------------------------------------------
+ * The hero, which is a chart
+ * ---------------------------------------------------------------------------
+ *
+ * The most characteristic thing this app holds is a chord chart: symbols in a
+ * monospaced field sitting over the syllables somebody put them over. So the
+ * headline is one, rather than a sentence about one. Scroll down to the
+ * song-detail plate and the app is rendering the same object.
+ *
+ * Monospace means exactly one thing on this page — written down plainly — and
+ * it is used twice, here and in the receipt. Nowhere else, so it does not
+ * decay into a font for small labels.
+ *
+ * The alignment is real: the chord line and the lyric line are two lines of
+ * one monospaced block, and the chords are positioned by counting characters.
+ * That only holds while neither line wraps, which is what the clamp below is
+ * for — 31 characters is the longer of the two lines, and the font size is
+ * tied to the viewport so those 31 characters fit from a 360px phone up to the
+ * 760px hero without ever reflowing. Edit the words and the character counts
+ * move; `the_hero_chart_lines_are_the_width_the_css_is_tuned_for` in
+ * src/site.rs is what catches that.
+ */
+.hero{padding:clamp(32px,9vw,104px) 0 clamp(44px,6vw,72px);max-width:760px}
+.chart{
+  font-family:'DejaVu Sans Mono',ui-monospace,monospace;
+  font-size:clamp(1.05rem,4.4vw,2.35rem);
+  line-height:1.26; margin:0 0 30px; font-weight:400;
+  display:block; color:var(--sla-ink);
+}
+/* white-space:pre lives on the couplet rather than on the block, so that the
+ * newlines between the two couplets in the markup are not themselves rendered
+ * as blank lines. Each couplet is its own pre-formatted run; the gap between
+ * them is margin, the way a chart breaks between phrases. */
+.couplet{display:block;white-space:pre;overflow-x:auto}
+.couplet + .couplet{margin-top:.62em}
+.chord{color:var(--sla-accent)}
+.standfirst{font-size:clamp(1.05rem,1.9vw,1.2rem);color:var(--sla-ink-2);max-width:31em;margin:0 0 34px}
+
+.actions{display:flex;flex-wrap:wrap;gap:12px;align-items:center}
+
+/* Google's badge, at Google's rules. It is the call to action rather than a
+ * button of this page's own because the brand guidelines say so outright — a
+ * lockup or a home-made button must not be the thing that drives an install —
+ * and because a black badge on cream is then something the rest of the page
+ * has to live with, the rust stays on the chords and the links and is not
+ * spent here as well.
+ *
+ * `--badge-h` is well over the 28px minimum. The quarter-of-its-height of
+ * clear space the guidelines ask for is 13px at this size: it is margin to the
+ * right and below, the standfirst's 34px bottom margin supplies it above, and
+ * the page's own 22px gutter supplies it to the left. site/brand/README.md has
+ * the provenance and the reason the file is an SVG rather than a PNG. */
+.badge{--badge-h:52px;display:inline-block;line-height:0;margin:0 calc(var(--badge-h) / 4) calc(var(--badge-h) / 4) 0}
+.badge img{height:var(--badge-h);width:auto;display:block}
+.badge:focus-visible{outline:2px solid var(--sla-accent);outline-offset:4px;border-radius:8px}
+.btn{
+  font:inherit;font-size:16px;text-decoration:none;display:inline-block;
+  padding:12px 20px;border-radius:12px;border:1px solid transparent;
+  transition:background-color .14s ease,border-color .14s ease,color .14s ease;
+}
+.btn-source{border-color:var(--sla-hairline);color:var(--sla-ink);background:var(--sla-card)}
+.btn-source:hover{border-color:var(--sla-accent);color:var(--sla-accent)}
+.actions .note{font-size:14.5px;color:var(--sla-muted)}
+@media (max-width:560px){.actions .note{flex-basis:100%}}
+
+/* ---------------------------------------------------------------------------
+ * The four questions
+ * ---------------------------------------------------------------------------
+ *
+ * The same spine the README and store/metadata/en-US/full_description.txt are
+ * organised around, and for the reason `store/shots.json` gives about captions:
+ * nobody arriving here is looking for a feature list, they are looking for a
+ * description of something that has happened to them.
+ *
+ * They are set in Newsreader *italic* because they are things a person says.
+ * Headings this page writes itself — "What a song holds" — stay roman. Spoken
+ * against written, carried by the type rather than by a label.
+ */
+.q{
+  border-top:1px solid var(--sla-hairline);
+  padding:clamp(44px,6vw,72px) 0;
+  display:grid;gap:clamp(28px,4vw,60px);align-items:center;
+}
+/* Above 900px the plate sits beside the prose and the sides alternate, so the
+ * eye has somewhere to go between sections. nth-of-type counts <section>
+ * elements, and the receipt and the get-it block are sections too — but they
+ * are not .q, so the compound selector never matches them. */
+@media (min-width:900px){
+  .q{grid-template-columns:1fr 300px}
+  .q:nth-of-type(even){grid-template-columns:300px 1fr}
+  .q:nth-of-type(even) .qtext{order:2}
+  .q:nth-of-type(even) .plate{order:1}
+}
+.said{
+  font-family:Newsreader,Georgia,serif;font-style:italic;font-weight:400;
+  font-size:clamp(1.85rem,4.1vw,2.85rem);line-height:1.15;letter-spacing:-.012em;
+  margin:0 0 20px;text-wrap:balance;
+}
+.written{
+  font-family:Newsreader,Georgia,serif;font-weight:500;
+  font-size:clamp(1.5rem,3vw,2rem);line-height:1.2;margin:0 0 18px;
+}
+.qtext p{max-width:33em;margin:0 0 16px;color:var(--sla-ink-2)}
+.qtext p:last-child{margin-bottom:0}
+.plate{margin:0}
+/* The pictures are 600px wide for a 300px slot, so they are sharp on a phone.
+ * They are the raw capture with the navigation bar cropped off and nothing
+ * else done to them — no gradient, no plate, no caption — which is
+ * `--preset site` in scripts/store-frame.py. The corners are rounded here
+ * rather than masked there, so the files stay opaque and half the size an
+ * alpha channel would make them.
+ *
+ * The aspect ratio is the cropped frame's: 1080 wide by 1920 tall less the
+ * 126px navigation bar. It is declared rather than left to the image's own
+ * dimensions because the pictures are built by the deploy and never committed
+ * (see .gitignore's note about the listing images, which applies here for the
+ * same reason), so the browser has to reserve the space before one arrives or
+ * every section below jumps when it does. SITE_PLATE_ASPECT in
+ * scripts/store-frame.py is the same pair of numbers, that script fails the
+ * run if a capture ever disagrees with them, and
+ * `the_site_reserves_the_shape_the_compositor_emits` in src/site.rs fails the
+ * build if these two files ever stop saying the same thing. */
+.plate img{display:block;width:100%;max-width:300px;height:auto;aspect-ratio:1080/1794;border-radius:26px;box-shadow:var(--plate-shadow)}
+@media (min-width:900px){.plate img{max-width:none}}
+
+/* ---------------------------------------------------------------------------
+ * The receipt
+ * ---------------------------------------------------------------------------
+ *
+ * Set in the chart face, because these are the other thing on this page that
+ * is simply written down rather than argued. Deliberately not accented: the
+ * rust on this page marks chords and the two buttons, and a receipt that
+ * highlighted its own best lines would be doing the opposite of what a receipt
+ * is for.
+ *
+ * The last row says the page makes no third-party requests, which is only
+ * worth printing because it is true and checkable in a network panel. It stays
+ * true because `the_site_asks_nothing_of_anybody_else` in src/site.rs fails
+ * the build on any absolute URL in a subresource — the same shape as the test
+ * holding the app to one Android permission.
+ */
+.receipt{border-top:1px solid var(--sla-hairline);padding:clamp(44px,6vw,72px) 0}
+.receipt-body{
+  font-family:'DejaVu Sans Mono',ui-monospace,monospace;
+  font-size:14.5px;line-height:1.6;margin:0;
+  display:grid;grid-template-columns:max-content 1fr;gap:11px clamp(16px,3vw,40px);
+  border-top:1px solid var(--sla-hairline-soft);padding-top:18px;max-width:640px;
+}
+.receipt-body dt{color:var(--sla-muted)}
+.receipt-body dd{margin:0;color:var(--sla-ink)}
+.receipt .after{margin:22px 0 0;color:var(--sla-muted);font-size:15px;max-width:33em}
+
+/* --- get it, and the colophon -------------------------------------------- */
+.get{border-top:1px solid var(--sla-hairline);padding:clamp(44px,6vw,72px) 0}
+.get p{color:var(--sla-ink-2);max-width:33em}
+.colophon{
+  border-top:1px solid var(--sla-hairline);margin-top:clamp(44px,6vw,72px);
+  padding:28px 0 56px;color:var(--sla-muted);font-size:14.5px;
+  display:flex;flex-wrap:wrap;gap:8px 26px;
+}
+.colophon a{color:var(--sla-muted)}
+.colophon a:hover{color:var(--sla-accent)}
+
+/* The only motion on this page is the colour change under a pointer, and even
+ * that goes when the system asks for less. Nothing here animates on scroll. */
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}

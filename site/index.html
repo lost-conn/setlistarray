@@ -1,0 +1,181 @@
+<!doctype html>
+<!--
+  The landing page. Everything it says about the app is a trimmed cousin of
+  store/metadata/en-US/full_description.txt, organised around the same four
+  questions the README is — but the copy is written here rather than generated
+  from those files. The registers genuinely differ: Play forbids formatting
+  this page wants, and this page has a structure Play has no room for. A
+  generator that emitted marketing prose would cost more than the drift it
+  saved. docs/RELEASING.md carries the reminder to look at both together.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SetListArray — the songs you know how to play</title>
+<meta name="description" content="An offline-first book of the songs you know how to play, with the chart you read from attached to each one. No account, no sign-in, and nothing about your book leaves the phone.">
+<link rel="icon" href="img/icon.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="page">
+
+  <header class="masthead">
+    <img class="mark" src="img/icon.png" alt="" width="38" height="38">
+    <span class="wordmark">SetListArray</span>
+    <nav class="mastnav">
+      <a href="#book">What it does</a>
+      <a href="#receipt">What it doesn't</a>
+      <a href="#get">Get it</a>
+    </nav>
+  </header>
+
+  <section class="hero">
+    <!--
+      The chart is aria-hidden and the sentence is repeated above it for a
+      screen reader, because a monospaced chart read aloud is the chord line
+      and the lyric line interleaved as one run of nonsense. What a sighted
+      reader gets from the layout, a listener gets from the sentence.
+    -->
+    <h1>
+      <span class="sr">Someone hands you a guitar and asks you to play something.</span>
+      <span class="chart" aria-hidden="true"><span class="couplet"><span class="chord">G                   D</span>
+Someone hands you a guitar</span><span class="couplet"><span class="chord">    Em          C</span>
+and asks you to play something.</span></span>
+    </h1>
+    <p class="standfirst">An offline-first book of the songs you know how to play, with
+    the chart you read from attached to each one. No account, no sign-in, and nothing
+    about your book leaves the phone.</p>
+    <div class="actions">
+      <!--
+        Google's own artwork, unmodified and served from this origin. Both of
+        those are required: the brand guidelines want the badge rather than a
+        button of our own for anything driving installs, and a hotlinked copy
+        would make the last line of the receipt below false. site/brand/ has
+        the provenance and the three rules with numbers in them.
+      -->
+      <a class="badge" href="https://play.google.com/store/apps/details?id=dev.lostconnection.setlistarray">
+        <img src="brand/google-play-badge.svg" alt="Get it on Google Play" width="176" height="52">
+      </a>
+      <span class="note">Free software, GPLv3. No account, no sign-in.</span>
+    </div>
+  </section>
+
+  <main id="book">
+
+    <section class="q">
+      <div class="qtext">
+        <h2 class="said">&ldquo;Play something.&rdquo;</h2>
+        <p>The question gets hard at exactly the moment it is asked. Your book answers
+        it in advance: every song is marked solid, rusty or still learning, and the
+        library opens already sorted that way &mdash; the ones you could start this second,
+        then the ones that want a run-through first.</p>
+        <p>Mark them as you go. Sort by what you have not played in months when you
+        want to bring something back.</p>
+      </div>
+      <figure class="plate"><img src="img/library.webp" alt="The library, grouped by confidence, with seven songs marked solid." loading="lazy"></figure>
+    </section>
+
+    <section class="q">
+      <div class="qtext">
+        <h2 class="said">&ldquo;There's no signal here.&rdquo;</h2>
+        <p>The campsite three hours up a fire road. The basement. The green room with
+        one bar. Charts live on the phone, not on a page that has to load: PDFs drawn
+        a page at a time with zoom and rotate, webpages you pasted in once while you
+        had signal, and lyrics and chords you typed yourself in a monospaced field, so
+        the chords stay over the syllables you put them over.</p>
+        <p>A song can hold more than one chart &mdash; the fingerstyle arrangement and the
+        three-chord version of the same tune &mdash; and opens on whichever you made primary.</p>
+      </div>
+      <figure class="plate"><img src="img/chart-viewer.webp" alt="A chart open full width, with the page and zoom controls along the bottom." loading="lazy"></figure>
+    </section>
+
+    <section class="q">
+      <div class="qtext">
+        <h2 class="said">&ldquo;I remember the second verse. I don't remember the title.&rdquo;</h2>
+        <p>Search reads the words inside your charts, typed and captured alike, as well
+        as titles, artists and setlists. Half a line is enough.</p>
+      </div>
+      <figure class="plate"><img src="img/search-in-chart.webp" alt="A search matching a line of lyrics inside a chart rather than a song's title." loading="lazy"></figure>
+    </section>
+
+    <section class="q">
+      <div class="qtext">
+        <h2 class="said">&ldquo;How long does the set actually run?&rdquo;</h2>
+        <p>Build it, put it in the order you want, and watch the running time add up
+        beside it &mdash; so you find out at home that you are nine minutes short, not on
+        stage. A song with nothing to read from is flagged while you can still do
+        something about it.</p>
+        <p>Then one tap starts the set. The chart fills the screen at a size you can
+        read from a music stand, the top bar says where you are, the bottom says what
+        is coming next, and the screen stays awake until the set is over.</p>
+      </div>
+      <figure class="plate"><img src="img/setlist-detail.webp" alt="A setlist with positions, cumulative start times and a running total." loading="lazy"></figure>
+    </section>
+
+    <section class="q">
+      <div class="qtext">
+        <h2 class="written">What a song holds</h2>
+        <p>A title and an artist are all that is asked for. Key, capo, tuning, tempo,
+        length, tags, notes, when you last played it and how solid you are on it are
+        all optional, and the form keeps them folded away until you want them.</p>
+      </div>
+      <figure class="plate"><img src="img/song-detail.webp" alt="A song's detail screen, its charts listed and its optional fields folded away." loading="lazy"></figure>
+    </section>
+
+    <section class="receipt" id="receipt">
+      <h2 class="written">What it doesn't do</h2>
+      <dl class="receipt-body">
+        <dt>permissions</dt><dd>INTERNET, for pages you paste in yourself</dd>
+        <dt>analytics</dt><dd>none</dd>
+        <dt>crash reporting</dt><dd>none</dd>
+        <dt>advertising</dt><dd>none</dd>
+        <dt>accounts</dt><dd>none</dd>
+        <dt>your library</dt><dd>app-private storage, on the device</dd>
+        <dt>cloud backup</dt><dd>off</dd>
+        <dt>backups</dt><dd>one zip file, when you export one</dd>
+        <dt>licence</dt><dd>GPL-3.0-or-later</dd>
+        <dt>this page</dt><dd>no third-party requests</dd>
+      </dl>
+      <p class="after">A test fails the build if a second permission ever appears in the
+      manifest, and another holds the one HTTP call site to a single file. The last line
+      is checkable the same way: open the network tab.</p>
+    </section>
+
+    <section class="get" id="get">
+      <h2 class="written">Get it</h2>
+      <p>On Google Play. It builds from source too, onto a laptop or onto a phone
+      &mdash; <a href="https://github.com/lost-conn/setlistarray/blob/master/docs/BUILDING.md">the
+      instructions are in the repository</a>, and the licence means the source travels
+      with any copy of the app.</p>
+      <div class="actions">
+        <a class="badge" href="https://play.google.com/store/apps/details?id=dev.lostconnection.setlistarray">
+          <img src="brand/google-play-badge.svg" alt="Get it on Google Play" width="176" height="52">
+        </a>
+        <a class="btn btn-source" href="https://github.com/lost-conn/setlistarray">Read the source</a>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="colophon">
+    <span>SetListArray is free software under the GNU GPL, version 3 or later.</span>
+    <a href="https://github.com/lost-conn/setlistarray">Source</a>
+    <a href="https://github.com/lost-conn/setlistarray/blob/master/docs/BUILDING.md">Building it</a>
+    <a href="#receipt">Privacy</a>
+    <!--
+      Straight at the licence texts rather than at the directory holding them:
+      Pages serves no directory listing, so `fonts/licenses/` is a 404 and the
+      one link on this page that exists to satisfy a licence would be the one
+      link on it that is broken. Both are named because the three faces are not
+      under one licence, and the subsets scripts/site-fonts.py cuts are
+      modified copies, which is the case both licences actually speak to.
+    -->
+    <span>Set in Newsreader and Karla, under the
+    <a href="fonts/licenses/OFL-1.1.txt">Open Font License</a>, and DejaVu Sans Mono, under the
+    <a href="fonts/licenses/DejaVu-copyright.txt">Bitstream Vera licence</a>.</span>
+  </footer>
+
+</div>
+</body>
+</html>

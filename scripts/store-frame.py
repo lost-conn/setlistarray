@@ -3,6 +3,7 @@
 
     scripts/store-frame.py .shots store/metadata/en-US/images
     scripts/store-frame.py --check store/metadata/en-US/images
+    scripts/store-frame.py .shots site/img --preset site
 
 `scripts/store-shots.sh` (card S1) leaves one raw 1080x1920 PNG per screen in
 `.shots/`, plus an `insets.json` saying where the system bars were. This reads
@@ -69,6 +70,23 @@ Note that the three asset classes have *different* rules and that a single
 may be 320–3840px on a side with its long side at most twice its short side; the
 feature graphic must be exactly 1024x500, which is 2.048:1 and would fail the
 screenshot rule it looks like it should pass; the icon must be exactly 512x512.
+
+────────────────────────────────────────────────────────────────────────────
+`--preset site`, which is the same crop and none of the rest
+────────────────────────────────────────────────────────────────────────────
+
+The landing page in `site/` wants the same screens, and wants almost nothing
+this file does to them. It has its own paper behind the picture, its own prose
+beside it saying what the screen is, and its own CSS to round the corners — so
+the gradient, the plate and the caption are all noise there, and the caption is
+the same sentence printed twice. What both presets do want is the crop, for the
+reason two sections up: the navigation bar is the emulator's furniture and
+belongs in neither picture.
+
+So `--preset site` is `crop_to_content` and a resize, out to WebP. It is in
+this file rather than in a script of its own because the crop is the part worth
+sharing and it is the part that is subtle — a second script would sooner or
+later measure the navigation bar its own way. `build_site` has the rest.
 """
 
 import argparse
@@ -128,6 +146,20 @@ CAPTION_SIZE = 58
 CAPTION_WEIGHT = 500
 CAPTION_OPSZ = 72
 CAPTION_LEADING = 1.22
+
+# The landing page's numbers, which are not Play's and are not in shots.json.
+# `site/style.css` shows a plate in a 300px slot, so 600 is the two-times
+# asset; the aspect is the captured 1080x1920 frame with the emulator's 126px
+# navigation bar taken off it. The page reserves exactly this shape before an
+# image arrives, so `build_site` refuses a capture that is not it rather than
+# letting the page load crooked. Change either number and change the
+# `aspect-ratio` on `.plate img` with it — `src/site.rs` is the test that
+# notices when only one of them moves.
+SITE_PLATE_WIDTH = 600
+SITE_PLATE_ASPECT = (1080, 1794)
+# Shown at 38px in the masthead, so twice that, and large enough to be the
+# favicon a browser scales down for a tab.
+SITE_ICON_SIZE = 96
 
 RED = "\033[31m"
 GREEN = "\033[32m"
@@ -549,12 +581,95 @@ def build(raw_dir, out_dir):
     print("    featureGraphic.png, icon.png")
 
 
+def build_site(raw_dir, out_dir):
+    """The same frames, for the landing page instead of for Play.
+
+    Everything `render_shot` does above is for a picture that will be looked at
+    as a thumbnail in a store, with no page around it: the gradient gives it a
+    background, the plate gives it an edge, and the caption says what the
+    screen is because nothing else on that surface will. The landing page has a
+    page around it. It has its own paper under the picture, its own prose
+    beside it saying what the screen is, and its own CSS to round the corners —
+    so all three of those become noise, and the caption in particular becomes
+    the same sentence twice.
+
+    What is left is the crop, which is the one thing both presets want: the
+    navigation bar is the emulator's furniture rather than the app's, and it
+    belongs in neither picture.
+
+    WebP, opaque, at twice the 300px slot the page shows them in. Opaque
+    because the corners are rounded in CSS rather than masked here, and an
+    alpha channel purchased for four corners costs about half the file again.
+    """
+    insets_path = raw_dir / "insets.json"
+    if not insets_path.is_file():
+        die(
+            f"{insets_path} is missing. The captures in {raw_dir} predate the insets "
+            "scripts/store-shots.sh now records, and this compositor crops by them rather than "
+            "by a constant — re-run scripts/store-shots.sh"
+        )
+    insets = json.loads(insets_path.read_text())
+
+    shot_ids = list(json.loads(LAYOUT_FILE.read_text())["shots"])
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    for shot_id in shot_ids:
+        raw = raw_dir / f"{shot_id}.png"
+        if not raw.is_file():
+            die(f"{raw} is missing; run scripts/store-shots.sh first")
+        plate = crop_to_content(Image.open(raw).convert("RGB"), insets)
+
+        # The page cannot be shipped the pictures — they are built by the deploy
+        # and never committed, the way the listing's are not (see .gitignore) —
+        # so `site/style.css` declares the shape it is going to reserve for one
+        # and the browser holds that space open until the file arrives. That
+        # only works while every capture really is this shape. A phone in
+        # gesture navigation, a tablet, or a landscape capture would each land
+        # here with a different one, and the failure it would cause on the page
+        # is every section below the fold jumping when an image loads — which
+        # is exactly the kind of fault nobody sees on the machine that built it.
+        if plate.size != (SITE_PLATE_ASPECT[0], SITE_PLATE_ASPECT[1]):
+            die(
+                f"{raw.name} crops to {plate.size[0]}x{plate.size[1]}, and site/style.css "
+                f"reserves {SITE_PLATE_ASPECT[0]}x{SITE_PLATE_ASPECT[1]} for it. Either this "
+                "capture came off a device the page has never been shaped for, or the shape "
+                "changed and `.plate img`'s aspect-ratio has to change with it"
+            )
+
+        height = round(SITE_PLATE_WIDTH * plate.size[1] / plate.size[0])
+        path = out_dir / f"{shot_id}.webp"
+        plate.resize((SITE_PLATE_WIDTH, height), Image.LANCZOS).save(
+            path, "WEBP", quality=82, method=6
+        )
+        print(f"    {path.name}  {SITE_PLATE_WIDTH}x{height}  {path.stat().st_size:,} B")
+
+    # The masthead's mark and the tab's favicon, which are the same file. PNG
+    # rather than WebP, because this one is also what a browser is handed for
+    # `rel="icon"` and that is the one place on the page where the older format
+    # is still the safer answer. It comes out of here rather than being
+    # committed for no better reason than that everything else in site/img/
+    # does — one directory, one rule about how it is filled, and nothing in it
+    # that has to be remembered separately.
+    icon = Image.open(ICON_SRC / "whole.png").convert("RGBA")
+    icon.resize((SITE_ICON_SIZE, SITE_ICON_SIZE), Image.LANCZOS).save(
+        out_dir / "icon.png", optimize=True
+    )
+    print(f"    icon.png  {SITE_ICON_SIZE}x{SITE_ICON_SIZE}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Composite the Play listing's pictures out of the raw emulator frames.",
     )
     parser.add_argument("raw_dir", nargs="?", help="where scripts/store-shots.sh left its PNGs")
     parser.add_argument("out_dir", help="where the finished pictures go")
+    parser.add_argument(
+        "--preset",
+        choices=("store", "site"),
+        default="store",
+        help="'store' composites Play's nine pictures; 'site' emits the landing page's "
+        "caption-free plates instead (see build_site)",
+    )
     parser.add_argument(
         "--check",
         action="store_true",
@@ -563,6 +678,16 @@ def main():
     args = parser.parse_args()
 
     out_dir = Path(args.out_dir)
+    if args.preset == "site":
+        # Play's limits are Play's. Nothing the landing page emits is uploaded
+        # anywhere, and `check` would fail it on the picture count alone.
+        if args.check:
+            parser.error("--check is about Play's limits and has nothing to say about --preset site")
+        if args.raw_dir is None:
+            parser.error("a raw directory is required for --preset site")
+        build_site(Path(args.raw_dir), out_dir)
+        return
+
     if args.check and args.raw_dir is None:
         check(out_dir)
         return
